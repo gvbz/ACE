@@ -90,6 +90,7 @@
 #include "Camera/PlayerCameraManager.h"
 #include "ACECameraRetail.h"
 #include "ACECameraSettings.h"
+#include "Personal/PersonalCamera.h" // personal: camera
 #include "ACELedgeSlide.h"
 #include "ACELandingMotion.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -3858,7 +3859,7 @@ void AACEPlayerController::ApplyRetailCameraPivot(USpringArmComponent* Boom, UCa
 	{
 		return;
 	}
-	const float PivotZ = ACECameraRetail::DefaultPivotZAc * GetCameraScaleCm();
+	const float PivotZ = PersonalCamera::PivotHeightAc(bCameraInHead) * GetCameraScaleCm(); // personal: camera
 	Boom->ProbeSize = ACECameraRetail::ViewerRadiusAc * WorldScale;
 	Boom->SetRelativeLocation(FVector(0.f, 0.f, PivotZ - Capsule->GetScaledCapsuleHalfHeight()));
 }
@@ -4259,6 +4260,7 @@ void AACEPlayerController::UpdateOrbitCamera(float DeltaTime)
 	if (!bCameraDefaultsCaptured)
 	{
 		ResetCameraToRetailDefaults(Boom);
+		PersonalCamera::Restore(Boom, UserCameraArmLength, GetCameraScaleCm()); // personal: camera
 	}
 	// Follow predicted cell ownership immediately, including walking/window
 	// entry and portals while the server's position update is still in flight.
@@ -4312,6 +4314,7 @@ void AACEPlayerController::UpdateOrbitCamera(float DeltaTime)
 
 	UpdateCombatTargetCameraAssist(DeltaTime, Boom);
 	UpdateCameraSlope(Boom, DeltaTime);
+	PersonalCamera::Update(Boom, UserCameraArmLength, GetCameraScaleCm(), bCameraInHead || bCameraLookDown || bCameraMapMode, DeltaTime); // personal: camera
 }
 
 void AACEPlayerController::UpdateCameraSlope(USpringArmComponent* Boom, float DeltaTime)
@@ -4397,7 +4400,7 @@ void AACEPlayerController::StepCameraZoom(USpringArmComponent* Boom, bool bClose
 		// Retail rejects offsets outside the bounds instead of changing modes or
 		// flattening the camera pitch to make them fit. Numpad 5 owns first person.
 		if (Next < ACECameraRetail::CloserMinLengthAc*ScaleCm
-			|| (!bCloser && Next > ACECameraRetail::MaximumArmLength(Boom->GetRelativeRotation(),ScaleCm))) break;
+			|| (!bCloser && Next > PersonalCamera::MaxArmLength(ScaleCm))) break; // personal: camera
 		UserCameraArmLength=Next;
 	}
 }

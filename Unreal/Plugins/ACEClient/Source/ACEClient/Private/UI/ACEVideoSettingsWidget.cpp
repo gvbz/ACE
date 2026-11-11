@@ -112,7 +112,7 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  for (const TCHAR* Key:{TEXT("MasterVolume"),TEXT("EffectsVolume"),TEXT("AmbientVolume")}) AddValue(Key);
  ActiveSoundOnly=WidgetTree->ConstructWidget<UCheckBox>(); ActiveSoundOnly->SetWidgetStyle(RoundToggle); ActiveSoundOnly->SetContent(Label(TEXT("Play Sounds Only When Active"))); Box->AddChild(Fixed(ActiveSoundOnly,272,20));
  Section(TEXT("Camera Options"));
- for (const TCHAR* Key:{TEXT("CameraStiffness"),TEXT("CameraAdjustment"),TEXT("FieldOfViewDegrees")}) AddValue(Key);
+ for (const TCHAR* Key:{TEXT("CameraStiffness"),TEXT("CameraAdjustment"),TEXT("PersonalCameraHeight"),TEXT("FieldOfViewDegrees")}) AddValue(Key); // personal: camera
  CameraAlignToSlope=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("CameraAlignToSlope"));
  CameraAlignToSlope->SetWidgetStyle(RoundToggle); CameraAlignToSlope->SetContent(Label(TEXT("Align camera to slope"))); Box->AddChild(Fixed(CameraAlignToSlope,272,20));
  Section(TEXT("Graphics Options"));

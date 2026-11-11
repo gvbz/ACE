@@ -496,6 +496,7 @@ bool FACECameraEdgeTest::RunTest(const FString& Parameters)
     Controller->UserCameraArmLength=1000.f;
     Controller->StepCameraZoom(Boom,false,1.f/144);
     TestTrue(TEXT("Tilted view may zoom beyond ten units of arm length while each horizontal axis remains below ten"),Controller->UserCameraArmLength>1000.f);
+    Controller->UserCameraArmLength=450.f*Controller->GetCameraScaleCm(); // personal: camera (PersonalCamera::MaxArmLength)
     const float AtLimit=Controller->UserCameraArmLength;
     Controller->StepCameraZoom(Boom,false,.05f);
     TestEqual(TEXT("Out-of-bounds zoom step leaves the previous offset intact"),Controller->UserCameraArmLength,AtLimit);
