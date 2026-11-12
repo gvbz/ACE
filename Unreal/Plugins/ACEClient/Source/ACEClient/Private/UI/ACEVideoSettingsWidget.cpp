@@ -135,6 +135,7 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  UACEHoverTooltipWidget::SetWidgetTooltip(ObjectGlow,FText::FromString(TEXT("Glow on selected and hovered objects, including your own character. Turn off to remove the custom glow in desktop and VR. Selection and interaction still work. Changes apply and save immediately.")));
  ShowFrameRate=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("ShowFrameRate"));
  ShowFrameRate->SetWidgetStyle(RoundToggle);ShowFrameRate->SetContent(Label(TEXT("Show FPS overlay")));Box->AddChild(Fixed(ShowFrameRate,272,20));
+ AddValue(TEXT("PersonalFarTerrainRadius")); ValueSliders[TEXT("PersonalFarTerrainRadius")]->SetStepSize(1.f); // personal: far-terrain
  Resolution=Combo(TEXT("Resolution")); Resolution->Rename(TEXT("DisplayResolution"));
  Resolution->OnOpening.AddDynamic(this,&UACEVideoSettingsWidget::RefreshResolutions);
  UACEHoverTooltipWidget::SetWidgetTooltip(Resolution,FText::FromString(TEXT("Resolution for fullscreen and windowed modes. Borderless fills the desktop at its native resolution.")));

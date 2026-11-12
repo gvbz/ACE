@@ -306,6 +306,7 @@ public:
 
 	/** Night/day land emissive. SceneryScale (-1 = derive) keeps interiors readable at night. */
 	void SetWorldEmissiveScale(float LandScale, float SceneryScale = -1.f, const FLinearColor& AmbientTint = FLinearColor::White);
+	float GetWorldEmissiveScale() const { return WorldEmissiveScale; } // personal: far-terrain
 
 	/** Retail linear distance fog (MinWorldFog→MaxWorldFog) on land/scenery materials. */
 	void SetWorldDistanceFog(float StartCm, float EndCm, const FLinearColor& Color, float Amount);
