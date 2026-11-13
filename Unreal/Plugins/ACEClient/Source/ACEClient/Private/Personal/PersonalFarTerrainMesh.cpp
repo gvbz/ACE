@@ -1,5 +1,6 @@
 #include "Personal/PersonalFarTerrainMesh.h"
 #include "Personal/PersonalFarTerrainBake.h"
+#include "Personal/PersonalFarTerrainDetail.h"
 #include "ACERuntimeOptions.h"
 #include "ACETypes.h"
 #include "Dat/ACELandblockMeshBuilder.h"
@@ -77,6 +78,7 @@ namespace
 			// AC normal (-SlopeX, -SlopeY, 1); AceVectorToUnreal flips X.
 			Out.Normals.Add(FVector(SlopeX, -SlopeY, 1.f).GetSafeNormal());
 			Out.UVs.Add(FVector2D((X + 0.5f) / FPersonalFarTerrainBake::ColorTextureSize, (Y + 0.5f) / FPersonalFarTerrainBake::ColorTextureSize));
+			Out.DetailUVs.Add(PersonalFarTerrainDetail::CornerUV(X, Y));
 			Out.Corners.Add(FIntPoint(X, Y));
 			return Slot;
 		}
@@ -96,7 +98,8 @@ int32 RadiusSetting()
 }
 
 void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
-	const TSet<FIntPoint>& Holes, int32 HoleRadius, float WorldScale, FPersonalFarTerrainMesh& Out)
+	const TSet<FIntPoint>& Holes, int32 HoleRadius, float WorldScale, FPersonalFarTerrainMesh& Out,
+	const FIntRect* DetailCells)
 {
 	Out = FPersonalFarTerrainMesh();
 	Out.Center = Center;
@@ -136,6 +139,7 @@ void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
 	Out.Vertices.Reserve(VertexCount);
 	Out.Normals.Reserve(VertexCount);
 	Out.UVs.Reserve(VertexCount);
+	Out.DetailUVs.Reserve(VertexCount);
 	Out.Corners.Reserve(VertexCount);
 	Out.Triangles.Reserve(VertexCount * 6);
 
@@ -171,13 +175,16 @@ void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
 				const int32 LR = Builder.Vertex(K, X + Step, Y);
 				const int32 TL = Builder.Vertex(K, X, Y + Step);
 				const int32 TR = Builder.Vertex(K, X + Step, Y + Step);
+				const bool bDetail = DetailCells && X >= DetailCells->Min.X && X + Step <= DetailCells->Max.X
+					&& Y >= DetailCells->Min.Y && Y + Step <= DetailCells->Max.Y;
+				TArray<int32>& Triangles = bDetail ? Out.DetailTriangles : Out.Triangles;
 				if (bSplit)
 				{
-					Out.Triangles.Append({TL, LL, LR, TL, LR, TR});
+					Triangles.Append({TL, LL, LR, TL, LR, TR});
 				}
 				else
 				{
-					Out.Triangles.Append({TR, LL, LR, TR, TL, LL});
+					Triangles.Append({TR, LL, LR, TR, TL, LL});
 				}
 			}
 		}

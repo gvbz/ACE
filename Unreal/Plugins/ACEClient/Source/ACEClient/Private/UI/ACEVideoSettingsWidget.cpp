@@ -27,6 +27,7 @@
 #include "GameFramework/GameUserSettings.h"
 #include "Styling/CoreStyle.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Personal/PersonalOptionCheckBox.h" // personal: far-textures
 
 TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
 {
@@ -135,6 +136,7 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  UACEHoverTooltipWidget::SetWidgetTooltip(ObjectGlow,FText::FromString(TEXT("Glow on selected and hovered objects, including your own character. Turn off to remove the custom glow in desktop and VR. Selection and interaction still work. Changes apply and save immediately.")));
  ShowFrameRate=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("ShowFrameRate"));
  ShowFrameRate->SetWidgetStyle(RoundToggle);ShowFrameRate->SetContent(Label(TEXT("Show FPS overlay")));Box->AddChild(Fixed(ShowFrameRate,272,20));
+ Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain Textures")),TEXT("PersonalFarTerrainTextures"),TEXT("Draw the far terrain within about 2.7 km with the terrain textures. Off leaves it at flat colors. Changes apply and save immediately.")),272,20)); // personal: far-textures
  AddValue(TEXT("PersonalFarTerrainRadius")); ValueSliders[TEXT("PersonalFarTerrainRadius")]->SetStepSize(1.f); // personal: far-terrain
  Resolution=Combo(TEXT("Resolution")); Resolution->Rename(TEXT("DisplayResolution"));
  Resolution->OnOpening.AddDynamic(this,&UACEVideoSettingsWidget::RefreshResolutions);

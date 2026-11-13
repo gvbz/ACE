@@ -13,6 +13,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "ProceduralMeshComponent.h"
+#include "RHI.h"
+#include "TextureResource.h"
 #include "TimerManager.h"
 #include "UObject/UObjectIterator.h"
 
@@ -135,7 +137,7 @@ bool UPersonalFarTerrainSubsystem::EnsureMesh(UACEDatSubsystem& Dat)
 }
 
 void UPersonalFarTerrainSubsystem::ApplyMesh(const TSharedRef<FPersonalFarTerrainMesh, ESPMode::ThreadSafe>& Mesh,
-	int32 Radius, TSet<FIntPoint>&& Holes, float WorldScale)
+	int32 Radius, TSet<FIntPoint>&& Holes, float WorldScale, TOptional<FIntPoint> InDetailCenter)
 {
 	bBuilding = false;
 	if (!ShellActor || !ShellMesh || !ShellMaterial)
@@ -143,14 +145,164 @@ void UPersonalFarTerrainSubsystem::ApplyMesh(const TSharedRef<FPersonalFarTerrai
 		return;
 	}
 	ShellActor->SetActorLocation(PersonalFarTerrainMesh::Origin(Mesh->Center, WorldScale));
-	ShellMesh->CreateMeshSection_LinearColor(0, Mesh->Vertices, Mesh->Triangles, Mesh->Normals, Mesh->UVs,
-		TArray<FLinearColor>(), TArray<FProcMeshTangent>(), false);
-	ShellMesh->SetMaterial(0, ShellMaterial);
+	// Section 0: flat colors from the color map. Section 1: the part with the detail texture.
+	if (Mesh->Triangles.Num() > 0)
+	{
+		ShellMesh->CreateMeshSection_LinearColor(0, Mesh->Vertices, Mesh->Triangles, Mesh->Normals, Mesh->UVs,
+			TArray<FLinearColor>(), TArray<FProcMeshTangent>(), false);
+		ShellMesh->SetMaterial(0, ShellMaterial);
+	}
+	else
+	{
+		ShellMesh->ClearMeshSection(0);
+	}
+	if (DetailMaterial && Mesh->DetailTriangles.Num() > 0)
+	{
+		ShellMesh->CreateMeshSection_LinearColor(1, Mesh->Vertices, Mesh->DetailTriangles, Mesh->Normals, Mesh->DetailUVs,
+			TArray<FLinearColor>(), TArray<FProcMeshTangent>(), false);
+		ShellMesh->SetMaterial(1, DetailMaterial);
+	}
+	else
+	{
+		ShellMesh->ClearMeshSection(1);
+	}
+	BuiltDetailCenter = InDetailCenter;
 	bWireframe = false;
 	BuiltCenter = Mesh->Center;
 	BuiltRadius = Radius;
 	BuiltHoles = MoveTemp(Holes);
 	// The loaded terrain may have changed while the worker ran.
+	Update();
+}
+
+bool UPersonalFarTerrainSubsystem::EnsureDetailTexture()
+{
+	if (DetailTexture && DetailMaterial)
+	{
+		return true;
+	}
+	UWorld* World = GetWorld();
+	UGameInstance* Game = World ? World->GetGameInstance() : nullptr;
+	UACEDatSubsystem* Dat = Game ? Game->GetSubsystem<UACEDatSubsystem>() : nullptr;
+	UMaterialInterface* Base = Dat ? Dat->EnsureAceLandMaterialBase() : nullptr;
+	if (!Base)
+	{
+		return false;
+	}
+	if (!DetailTexture)
+	{
+		// Every mip is there from the start, empty. The worker's uploads fill them.
+		constexpr int32 Size = PersonalFarTerrainDetail::TextureSize;
+		UTexture2D* Texture = UTexture2D::CreateTransient(Size, Size, PF_B8G8R8A8);
+		FTexturePlatformData* PlatformData = Texture ? Texture->GetPlatformData() : nullptr;
+		if (!PlatformData || PlatformData->Mips.Num() != 1)
+		{
+			return false;
+		}
+		Texture->SRGB = true;
+		Texture->CompressionSettings = TC_Default;
+		Texture->LODGroup = TEXTUREGROUP_World;
+		Texture->AddressX = TA_Wrap;
+		Texture->AddressY = TA_Wrap;
+		Texture->NeverStream = true;
+		for (int32 Mip = 0, MipSize = Size; MipSize >= 1; ++Mip, MipSize /= 2)
+		{
+			if (Mip > 0)
+			{
+				FTexture2DMipMap* Added = new FTexture2DMipMap();
+				Added->SizeX = MipSize;
+				Added->SizeY = MipSize;
+				PlatformData->Mips.Add(Added);
+			}
+			FByteBulkData& Bulk = PlatformData->Mips[Mip].BulkData;
+			Bulk.Lock(LOCK_READ_WRITE);
+			FMemory::Memzero(Bulk.Realloc(int64(MipSize) * MipSize * sizeof(FColor)), int64(MipSize) * MipSize * sizeof(FColor));
+			Bulk.Unlock();
+		}
+		Texture->UpdateResource();
+		DetailTexture = Texture;
+	}
+	DetailMaterial = UMaterialInstanceDynamic::Create(Base, this);
+	if (!DetailMaterial)
+	{
+		return false;
+	}
+	DetailMaterial->SetTextureParameterValue(TEXT("ACETexture"), DetailTexture);
+	DetailMaterial->SetScalarParameterValue(TEXT("LandDepthBias"), DepthBiasCm);
+	AppliedEmissive = -1.f;
+	return true;
+}
+
+void UPersonalFarTerrainSubsystem::UpdateDetail(FIntPoint Center, const FString& DatDirectory)
+{
+	if (!PersonalFarTerrainDetail::Enabled())
+	{
+		// The mesh goes back to flat colors. The texture keeps what it has.
+		DetailCenter.Reset();
+		return;
+	}
+	if (bDetailBusy || !Bake || (DetailCenter.IsSet() && *DetailCenter == Center))
+	{
+		return;
+	}
+	const bool bFirst = !Detail.IsValid();
+	if (bFirst)
+	{
+		Detail = MakeShared<FPersonalFarTerrainDetail, ESPMode::ThreadSafe>();
+		DetailTiles = PersonalFarTerrainDetail::MakeDatTileSource(DatDirectory);
+	}
+	bDetailBusy = true;
+	Async(EAsyncExecution::ThreadPool,
+		[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), State = Detail, Tiles = DetailTiles, Data = Bake, Center, DatDirectory, bFirst]()
+	{
+		const double Start = FPlatformTime::Seconds();
+		const uint64 Key = PersonalFarTerrainBake::SourceKey(DatDirectory);
+		if (bFirst && Key != 0)
+		{
+			State->LoadTiles(FPersonalFarTerrainDetail::TileCachePath(Key), Key);
+		}
+		const int32 TilesBefore = State->TileCount();
+		auto Uploads = MakeShared<TArray<FPersonalFarTerrainDetail::FUpload>, ESPMode::ThreadSafe>();
+		State->Update(*Data, Center, Tiles, *Uploads);
+		if (State->UnsavedTiles() > 0 && Key != 0)
+		{
+			// A failed save only means these tiles are made again next time.
+			State->SaveTiles(FPersonalFarTerrainDetail::TileCachePath(Key), Key);
+		}
+		const double Seconds = FPlatformTime::Seconds() - Start;
+		if (bFirst || Seconds > 0.25)
+		{
+			UE_LOG(LogTemp, Log, TEXT("PersonalFarTerrain: detail texture %.2fs (%d parts, %d new tiles, %d tiles in all)"),
+				Seconds, Uploads->Num(), State->TileCount() - TilesBefore, State->TileCount());
+		}
+		AsyncTask(ENamedThreads::GameThread, [Weak, Center, Uploads]()
+		{
+			if (UPersonalFarTerrainSubsystem* Self = Weak.Get())
+			{
+				Self->ApplyDetail(Center, Uploads);
+			}
+		});
+	});
+}
+
+void UPersonalFarTerrainSubsystem::ApplyDetail(FIntPoint Center, const TSharedRef<TArray<FPersonalFarTerrainDetail::FUpload>, ESPMode::ThreadSafe>& Uploads)
+{
+	if (!EnsureDetailTexture())
+	{
+		// Stays busy, so it is not tried again: the far terrain keeps its flat colors.
+		UE_LOG(LogTemp, Warning, TEXT("PersonalFarTerrain: no detail texture; far terrain keeps flat colors"));
+		return;
+	}
+	bDetailBusy = false;
+	for (FPersonalFarTerrainDetail::FUpload& Upload : *Uploads)
+	{
+		// The render thread copies the pixels later. The uploads live until the last copy is done.
+		FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(Upload.X, Upload.Y, 0, 0, Upload.Width, Upload.Height);
+		DetailTexture->UpdateTextureRegions(Upload.Mip, 1, Region, Upload.Width * sizeof(FColor), sizeof(FColor),
+			reinterpret_cast<uint8*>(Upload.Pixels.GetData()),
+			[Uploads](uint8*, const FUpdateTextureRegion2D* Done) { delete Done; });
+	}
+	DetailCenter = Center;
 	Update();
 }
 
@@ -211,22 +363,35 @@ void UPersonalFarTerrainSubsystem::Update()
 			}
 		}
 	}
-	const bool bChanged = Center != BuiltCenter || Radius != BuiltRadius || Holes.Num() != BuiltHoles.Num() || !Holes.Includes(BuiltHoles);
+	UpdateDetail(Center, Dat->GetDatDirectory());
+	// The mesh uses the detail texture only while the texture has everything the mesh would draw with it.
+	TOptional<FIntPoint> WantDetail;
+	if (DetailCenter.IsSet() && PersonalFarTerrainDetail::Covers(*DetailCenter, Center))
+	{
+		WantDetail = DetailCenter;
+	}
+	const bool bChanged = Center != BuiltCenter || Radius != BuiltRadius || Holes.Num() != BuiltHoles.Num() || !Holes.Includes(BuiltHoles)
+		|| WantDetail != BuiltDetailCenter;
 	if (bChanged && !bBuilding)
 	{
 		// The mesh has about 100,000 triangles: build it on a worker, apply it here.
 		bBuilding = true;
 		const float WorldScale = Terrain->WorldScale;
 		Async(EAsyncExecution::ThreadPool,
-			[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), Data = Bake, Center, Radius, HoleRadius, WorldScale, Holes = MoveTemp(Holes)]() mutable
+			[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), Data = Bake, Center, Radius, HoleRadius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable
 		{
 			auto Mesh = MakeShared<FPersonalFarTerrainMesh, ESPMode::ThreadSafe>();
-			PersonalFarTerrainMesh::Build(*Data, Center, Radius, Holes, HoleRadius, WorldScale, *Mesh);
-			AsyncTask(ENamedThreads::GameThread, [Weak, Mesh, Radius, WorldScale, Holes = MoveTemp(Holes)]() mutable
+			FIntRect DetailCells;
+			if (WantDetail.IsSet())
+			{
+				DetailCells = PersonalFarTerrainDetail::MeshCells(*WantDetail);
+			}
+			PersonalFarTerrainMesh::Build(*Data, Center, Radius, Holes, HoleRadius, WorldScale, *Mesh, WantDetail.IsSet() ? &DetailCells : nullptr);
+			AsyncTask(ENamedThreads::GameThread, [Weak, Mesh, Radius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable
 			{
 				if (UPersonalFarTerrainSubsystem* Self = Weak.Get())
 				{
-					Self->ApplyMesh(Mesh, Radius, MoveTemp(Holes), WorldScale);
+					Self->ApplyMesh(Mesh, Radius, MoveTemp(Holes), WorldScale, WantDetail);
 				}
 			});
 		});
@@ -242,12 +407,20 @@ void UPersonalFarTerrainSubsystem::Update()
 	{
 		AppliedEmissive = Emissive;
 		ShellMaterial->SetScalarParameterValue(TEXT("EmissiveStrength"), Emissive);
+		if (DetailMaterial)
+		{
+			DetailMaterial->SetScalarParameterValue(TEXT("EmissiveStrength"), Emissive);
+		}
 	}
 	const bool bWantWireframe = CVarFarTerrainWireframe.GetValueOnGameThread() != 0 && GEngine && GEngine->WireframeMaterial;
 	if (bWantWireframe != bWireframe)
 	{
 		bWireframe = bWantWireframe;
 		ShellMesh->SetMaterial(0, bWireframe ? static_cast<UMaterialInterface*>(GEngine->WireframeMaterial) : ShellMaterial);
+		if (DetailMaterial)
+		{
+			ShellMesh->SetMaterial(1, bWireframe ? static_cast<UMaterialInterface*>(GEngine->WireframeMaterial) : DetailMaterial);
+		}
 	}
 	SetShown(true);
 }

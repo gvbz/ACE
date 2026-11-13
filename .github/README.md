@@ -15,6 +15,9 @@ with a few added options. The original README is in the repository root.
 - Far terrain: one low-detail terrain mesh past the loaded landblocks,
   out to the `Far Terrain Radius` setting (0 = off, default 48, max 96
   landblocks).
+- Far terrain textures: the far terrain within about 2.7 km is drawn
+  with the same terrain textures as the loaded terrain (`Far Terrain
+  Textures` toggle, on by default).
 
 Added code is in `Personal` folders and files named `Personal*`. Edits
 in existing files are marked `// personal:`.

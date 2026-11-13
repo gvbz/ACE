@@ -13,10 +13,14 @@
 namespace
 {
 	constexpr uint32 FarTerrainCacheMagic = 0x54464150; // "PAFT"
-	constexpr uint32 FarTerrainCacheVersion = 2;
+	constexpr uint32 FarTerrainCacheVersion = 4;
 	constexpr int32 BakeVertexDim = FACELandblockMeshBuilder::VertexDim;
 
-	/** Average color of a baked terrain texture. Every eighth pixel is enough. */
+	/**
+	 * Average color of a baked terrain texture. Every eighth pixel is enough.
+	 * The bytes are averaged as they are, like the mips of loaded terrain
+	 * (FACEDatTextureResolver::BuildOpaqueMip), so both look the same from far away.
+	 */
 	bool AverageBakedColor(FACELandblockMeshBuilder& Builder, uint32 PalCode, FColor& Out)
 	{
 		TArray<FColor> Pixels;
@@ -26,19 +30,17 @@ namespace
 			return false;
 		}
 		constexpr int32 Step = 8;
-		FLinearColor Sum(0, 0, 0, 0);
-		int32 Count = 0;
+		int64 SumR = 0, SumG = 0, SumB = 0, Count = 0;
 		for (int32 Y = 0; Y < Height; Y += Step)
 		{
 			for (int32 X = 0; X < Width; X += Step)
 			{
-				Sum += FLinearColor(Pixels[Y * Width + X]);
+				const FColor& Pixel = Pixels[Y * Width + X];
+				SumR += Pixel.R; SumG += Pixel.G; SumB += Pixel.B;
 				++Count;
 			}
 		}
-		Sum /= float(Count);
-		Sum.A = 1.f;
-		Out = Sum.ToFColor(true);
+		Out = FColor(uint8(SumR / Count), uint8(SumG / Count), uint8(SumB / Count));
 		return true;
 	}
 
@@ -68,6 +70,7 @@ void FPersonalFarTerrainBake::Init()
 {
 	HeightIndex.Init(0, Dim * Dim);
 	TerrainCode.Init(0, Dim * Dim);
+	TerrainRaw.Init(0, Dim * Dim);
 	for (TArray<float>& Level : Levels) Level.Reset();
 	ColorPixels.Reset();
 }
@@ -100,9 +103,18 @@ void FPersonalFarTerrainBake::AddLandblock(int32 BlockX, int32 BlockY, const FAC
 			const int32 Corner = (BlockX * CellsPerLandblock + VX) * Dim + BlockY * CellsPerLandblock + VY;
 			const uint16 Terrain = Land.Terrain[Vertex];
 			HeightIndex[Corner] = Land.Height[Vertex];
-			TerrainCode[Corner] = (Terrain & 0x3) != 0 ? RoadCode : uint8((Terrain >> 2) & 0x1F);
+			TerrainRaw[Corner] = uint8(Terrain & 0x7F);
+			TerrainCode[Corner] = CodeOfRaw(TerrainRaw[Corner]);
 		}
 	}
+}
+
+uint32 FPersonalFarTerrainBake::PalCodeAt(int32 X, int32 Y) const
+{
+	// Same corner order as FACELandblockMeshBuilder::BuildLandblock.
+	const uint8 A = TerrainRaw[Index(X, Y)], B = TerrainRaw[Index(X + 1, Y)];
+	const uint8 C = TerrainRaw[Index(X + 1, Y + 1)], D = TerrainRaw[Index(X, Y + 1)];
+	return FACELandblockMeshBuilder::GetPalCode(A & 3, B & 3, C & 3, D & 3, A >> 2, B >> 2, C >> 2, D >> 2);
 }
 
 void FPersonalFarTerrainBake::BuildLevels()
@@ -172,7 +184,7 @@ bool FPersonalFarTerrainBake::Save(const FString& Path, uint64 Key) const
 	Writer.Serialize(const_cast<float*>(HeightTable), sizeof(HeightTable));
 	Writer.Serialize(const_cast<FColor*>(Palette), sizeof(Palette));
 	Writer.Serialize(const_cast<uint8*>(HeightIndex.GetData()), HeightIndex.Num());
-	Writer.Serialize(const_cast<uint8*>(TerrainCode.GetData()), TerrainCode.Num());
+	Writer.Serialize(const_cast<uint8*>(TerrainRaw.GetData()), TerrainRaw.Num());
 	return FFileHelper::SaveArrayToFile(Bytes, *Path);
 }
 
@@ -197,8 +209,12 @@ bool FPersonalFarTerrainBake::Load(const FString& Path, uint64 Key)
 	Reader.Serialize(HeightTable, sizeof(HeightTable));
 	Reader.Serialize(Palette, sizeof(Palette));
 	Reader.Serialize(HeightIndex.GetData(), HeightIndex.Num());
-	Reader.Serialize(TerrainCode.GetData(), TerrainCode.Num());
-	for (uint8& Code : TerrainCode) Code = FMath::Min(Code, RoadCode);
+	Reader.Serialize(TerrainRaw.GetData(), TerrainRaw.Num());
+	for (int32 I = 0; I < TerrainRaw.Num(); ++I)
+	{
+		TerrainRaw[I] &= 0x7F;
+		TerrainCode[I] = CodeOfRaw(TerrainRaw[I]);
+	}
 	return !Reader.IsError();
 }
 

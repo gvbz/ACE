@@ -4,6 +4,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "Async/Future.h"
 #include "Personal/PersonalFarTerrainBake.h"
+#include "Personal/PersonalFarTerrainDetail.h"
 #include "PersonalFarTerrainSubsystem.generated.h"
 
 class UACETerrainPresenterComponent;
@@ -36,8 +37,14 @@ private:
 	bool EnsureBake(const FString& DatDirectory);
 	bool EnsureMesh(class UACEDatSubsystem& Dat);
 	void SetShown(bool bShown);
-	/** Game thread: take a mesh a worker built. */
-	void ApplyMesh(const TSharedRef<FPersonalFarTerrainMesh, ESPMode::ThreadSafe>& Mesh, int32 Radius, TSet<FIntPoint>&& Holes, float WorldScale);
+	/** Game thread: take a mesh a worker built. DetailCenter is set when it uses the detail texture. */
+	void ApplyMesh(const TSharedRef<FPersonalFarTerrainMesh, ESPMode::ThreadSafe>& Mesh, int32 Radius, TSet<FIntPoint>&& Holes, float WorldScale,
+		TOptional<FIntPoint> InDetailCenter);
+	/** Start bringing the detail texture to Center when it is somewhere else. */
+	void UpdateDetail(FIntPoint Center, const FString& DatDirectory);
+	/** Game thread: copy what a worker made into the detail texture. */
+	void ApplyDetail(FIntPoint Center, const TSharedRef<TArray<FPersonalFarTerrainDetail::FUpload>, ESPMode::ThreadSafe>& Uploads);
+	bool EnsureDetailTexture();
 
 	UPROPERTY()
 	TObjectPtr<AActor> ShellActor;
@@ -63,4 +70,18 @@ private:
 	bool bBuilding = false;
 	float AppliedEmissive = -1.f;
 	bool bWireframe = false;
+
+	/** Detail texture: the terrain textures of the landblocks around DetailCenter. */
+	UPROPERTY()
+	TObjectPtr<UTexture2D> DetailTexture;
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> DetailMaterial;
+	TSharedPtr<FPersonalFarTerrainDetail, ESPMode::ThreadSafe> Detail;
+	FPersonalFarTerrainDetail::FBakeTile DetailTiles;
+	/** A worker is updating the detail texture. */
+	bool bDetailBusy = false;
+	/** Landblock the detail texture was last made for. Unset until the first one is there. */
+	TOptional<FIntPoint> DetailCenter;
+	/** Detail texture center the current mesh was built for. Unset when it has no detail part. */
+	TOptional<FIntPoint> BuiltDetailCenter;
 };
