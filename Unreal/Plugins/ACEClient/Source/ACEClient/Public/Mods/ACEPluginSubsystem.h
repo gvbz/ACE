@@ -281,8 +281,21 @@ public:
     TSharedPtr<struct FACEAutoCraftState> AutoCraft;
     TSharedRef<SWidget> MakeAutoCraftPanel(bool bShowTitle=true);
     void RefreshAutoCraft(bool Force=false);
+    bool ImportAutoCraftCatalog(const FString& Path);
+    bool RemoveAutoCraftCatalog();
+    void LoadAutoCraftCatalog(struct FACEAutoCraftState& State);
+    TSharedPtr<FJsonObject> UCMGrenadeSpell(const FACEWorldObject& Item) const;
+    void ExtendUCMCombatSnapshot(const TSharedPtr<FJsonObject>& Out);
     bool StartAutoCraft();
-    void TickAutoCraft();
+    void TickAutoCraft(FACEClientPlugin* Policy=nullptr);
+    void ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& Out);
+    void ExecuteUCMCraft(FACEClientPlugin& Policy,const TSharedPtr<FJsonObject>& Intent);
+    TSharedPtr<struct FACEAutoCraftState> UCMCraft;
+    TArray<TSharedPtr<FJsonValue>> FellowshipTells;
+    uint32 FellowshipTellSerial=0;
+    FString FellowshipManagerStatus;
+    TSharedPtr<FJsonObject> UCMServicesProfile;
+    void QueueFellowshipTell(const FString& Text,const FString& Sender,int32 SenderId,bool Local=false);
     void PauseAutoCraft();
     TSharedRef<SWidget> MakeUCMLogPanel();
     const FACEUCMLog& GetUCMLog() const { return UCMLog; }
@@ -348,7 +361,7 @@ public:
     bool PrepareCombatAction(FACEClientPlugin& P, const TSharedPtr<FJsonObject>& Intent, int32 Mode);
     void UpdateCombatTransition(FACEClientPlugin& P);
     void DrawRoute();
-    bool IsDrivingMovement() const { return !MovementOwner.IsEmpty()||!FastCastOwner.IsEmpty(); }
+    bool IsDrivingMovement() const { return !MovementOwner.IsEmpty()||!FastCastOwner.IsEmpty()||!OptionalCastOwner.IsEmpty(); }
     bool IsFastBuffMovementActive() const { return !FastCastOwner.IsEmpty() && FastCastStarted; }
     void ObservePlayerTell(const FString& Text,const FString& Sender,int32 SenderId);
     TArray<TSharedPtr<FJsonValue>> BuffCommands() const;
@@ -480,6 +493,7 @@ private:
     TWeakObjectPtr<UGameViewportClient> SuspendedWorldViewport;
     bool PreviousWorldRenderingDisabled=false;
     bool Tick(float DeltaTime);
+    void TickIdleEquipmentMana();
     void Execute(FACEClientPlugin& Plugin, const TSharedPtr<FJsonObject>& Intent);
     void ReportActivityFailure(FACEClientPlugin& Plugin, const TSharedPtr<FJsonObject>& Intent, const FString& Reason, bool NotifyPolicy = true);
     void CheckPendingSpellTimeout();
@@ -498,6 +512,10 @@ private:
     void RemoveDesktopDock();
     FString MovementOwner;
     FString FastCastOwner;
+    FString OptionalCastOwner;
+    double OptionalCastAt=0;
+    bool OptionalCastItem=false,OptionalCastJump=false,OptionalCastStarted=false;
+    void ConfigureCastMotion(const FACEClientPlugin& Plugin,const TSharedPtr<FJsonObject>& Intent,int32 Spell,bool Item);
     FString PendingSpellOwner, PendingSpellActivity;
     bool FastCastStarted = false;
     double FastCastStartedAt = 0;

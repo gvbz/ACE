@@ -21,6 +21,44 @@ bool FACEUCMBuffParityTest::RunTest(const FString&)
     auto Start=[&](FACEPluginVM& VM){TestTrue(TEXT("Buff policy loads"),VM.Load(Source,Error));};
     auto Enchant=[](auto S,double Remaining,int Power=100)
     {auto E=BuffJson(TEXT(R"({"id":10,"category":1,"power":100,"duration":1800})"));E->SetNumberField(TEXT("remaining"),Remaining);E->SetNumberField(TEXT("power"),Power);S->SetArrayField(TEXT("enchantments"),{MakeShared<FJsonValueObject>(E)});};
+    {
+        FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("item_mana"),true);
+        auto Items=S->GetArrayField(TEXT("inventory"));
+        Items.Add(MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":30,"name":"Mana Charge","type":524288,"identified":true,"usable":true,"mana":5000})"))));
+        Items.Add(MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":31,"name":"Jewel","type":8,"identified":true,"equipped":true,"mana":0,"max_mana":100})"))));S->SetArrayField(TEXT("inventory"),Items);
+        TestEqual(TEXT("Low suit receives mana before buffing"),Step(VM,S,P)->GetNumberField(TEXT("item")),30.);
+        S->SetBoolField(TEXT("busy"),true);S->SetNumberField(TEXT("time"),101);
+        TestFalse(TEXT("Native item-use animation still excludes casting"),Step(VM,S,P)->HasField(TEXT("action")));
+        S->SetBoolField(TEXT("busy"),false);S->SetNumberField(TEXT("time"),102);S->SetNumberField(TEXT("action_serial"),1);
+        TestEqual(TEXT("Delayed equipment appraisals do not block buffing after the use gate releases"),Step(VM,S,P)->GetNumberField(TEXT("spell")),10.);
+    }
+    for(bool Other:{false,true})for(int Case=0;Case<4;++Case)
+    {
+        FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();
+        S->SetArrayField(TEXT("action_events"),{});
+        if(Other)
+        {
+            P->SetBoolField(TEXT("auto_buffs"),false);P->SetBoolField(TEXT("buff_others"),true);
+            auto Spell=S->GetArrayField(TEXT("spells"))[0]->AsObject();Spell->SetBoolField(TEXT("self_buff"),false);Spell->SetBoolField(TEXT("caster_target"),false);
+            S->SetObjectField(TEXT("buff_request"),BuffJson(TEXT(R"({"id":1,"player":2,"name":"Visitor","present":true,"distance":5,"expires":1000,"started":true,"role":"mage"})")));
+        }
+        else S->SetNumberField(TEXT("force_buff_request"),1);
+        TestEqual(TEXT("Starts the requested buff"),Step(VM,S,P)->GetNumberField(TEXT("spell")),10.);
+        auto Receipt=BuffJson(TEXT(R"({"type":"cast","spell":10,"target":1,"requested_at":100,"action_serial":1,"error":0,"confirmed":true})"));
+        Receipt->SetNumberField(TEXT("target"),Other?2:1);
+        if(Case==1)Receipt->SetNumberField(TEXT("requested_at"),99);
+        if(Case==2)Receipt->SetNumberField(TEXT("target"),999);
+        if(Case==3)Receipt->SetNumberField(TEXT("spell"),999);
+        auto Later=BuffJson(TEXT(R"({"type":"use","source":40,"requested_at":101,"action_serial":2,"error":1024})"));
+        S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Receipt),MakeShared<FJsonValueObject>(Later)});
+        S->SetNumberField(TEXT("time"),102);S->SetNumberField(TEXT("action_serial"),2);S->SetNumberField(TEXT("action_error"),1024);
+        // Deliberately misleading legacy fields: only the matching receipt may
+        // complete the family, even if a later action overwrote last_spell.
+        S->SetNumberField(TEXT("last_spell"),Case==0?0:10);S->SetBoolField(TEXT("last_spell_confirmed"),Case!=0);
+        auto I=Step(VM,S,P);
+        if(Case==0)TestEqual(TEXT("Completed buff survives a subsequent unrelated failure"),I->GetStringField(TEXT("action")),FString(Other?TEXT("buff_request_done"):TEXT("force_buff_done")));
+        else TestFalse(TEXT("Old attempt, wrong target and other spell cannot complete a buff"),I->HasField(TEXT("action")));
+    }
     // A fresh VM represents both restarting UCM and loading after login.
     for(double Remaining:{1800.,301.,61.,60.,59.,1.,0.})
     {
@@ -111,6 +149,29 @@ bool FACEUCMBuffParityTest::RunTest(const FString&)
         TestFalse(TEXT("Confirmed all-armor cast does not separately buff the next piece"),Step(VM,S,P)->HasField(TEXT("spell")));
     }
     // Consumable maintenance must use the same capped window as NeedBuff.
+    for(int Case=0;Case<4;++Case)
+    {
+        FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("auto_buffs"),false);
+        P->SetArrayField(TEXT("buff_items"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"name":"First gem","spell":10})"))),MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"name":"Second gem","spell":10})")))});
+        auto Items=S->GetArrayField(TEXT("inventory"));
+        Items.Add(MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":50,"name":"First gem","usable":true,"count":10,"int_properties":{"280":213}})"))));
+        Items.Add(MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":51,"name":"Second gem","usable":true,"count":10})"))));S->SetArrayField(TEXT("inventory"),Items);
+        if(Case==1)S->SetObjectField(TEXT("cooldowns"),BuffJson(TEXT(R"({"213":30})")));
+        else
+        {
+            TestEqual(TEXT("First available buff consumable is attempted"),Step(VM,S,P)->GetNumberField(TEXT("item")),50.);
+            auto Receipt=BuffJson(TEXT(R"({"type":"use","source":50,"requested_at":100,"action_serial":1,"error":1})"));
+            if(Case==2)Receipt->SetNumberField(TEXT("source"),99);
+            if(Case==3)Receipt->SetNumberField(TEXT("requested_at"),90);
+            S->SetNumberField(TEXT("time"),101);S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Receipt)});
+            if(Case>=2)
+            {
+                TestFalse(TEXT("Unrelated/old failure cannot cancel a consumable awaiting its enchantment"),Step(VM,S,P)->HasField(TEXT("action")));
+                S->SetNumberField(TEXT("time"),113);
+            }
+        }
+        TestEqual(TEXT("Rejected, timed-out or cooling-down gem yields to the next configured buff item"),Step(VM,S,P)->GetNumberField(TEXT("item")),51.);
+    }
     {
         FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("auto_buffs"),false);P->SetNumberField(TEXT("refresh_seconds"),300);
         P->SetArrayField(TEXT("buff_items"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"name":"Buff gem","spell":10})")))});

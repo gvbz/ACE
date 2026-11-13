@@ -4,6 +4,26 @@
 
 namespace ACEPluginEquipment
 {
+// VT ga.c checks activation separately from wield requirements. An equipped
+// implement can still fail lore/skill/rank/heritage checks when used.
+inline bool CanActivate(const FACEAppraisalInfo& Appraisal,const FACEPlayerVitals& Vitals)
+{
+    auto Skill=[&](int32 Id){for(const auto& S:Vitals.Skills)if(S.SkillId==Id)return S.Current;return 0;};
+    const auto& Q=Appraisal.IntProperties;
+    if(!Appraisal.bSuccess || Skill(14)<Q.FindRef(109))return false;
+    if(Q.FindRef(176) && Skill(Q.FindRef(176))<Q.FindRef(115))return false;
+    const int32 Rank=Vitals.EffectiveAllegianceRank>=0?Vitals.EffectiveAllegianceRank:Vitals.StatQualityInts.FindRef(30);
+    if(Q.FindRef(110)>Rank)return false;
+    if(Q.FindRef(188) && Q.FindRef(188)!=Vitals.HeritageGroup)return false;
+    if(Q.FindRef(257) && Vitals.GetAttributeCurrent(Q.FindRef(257))<Q.FindRef(258))return false;
+    const int32 Vital=Q.FindRef(259);
+    if(Vital && (Vital==1?Vitals.MaxHealth:Vital==3?Vitals.MaxStamina:Vital==5?Vitals.MaxMana:0)<Q.FindRef(260))return false;
+    auto Training=[&](int32 Id){for(const auto& S:Vitals.Skills)if(S.SkillId==Id)return S.AdvancementClass;return 0;};
+    if(Q.FindRef(366) && (Training(Q.FindRef(366))<2||Skill(Q.FindRef(366))<Q.FindRef(367)))return false;
+    if(Q.FindRef(368) && (Training(Q.FindRef(368))<3||Skill(Q.FindRef(368))<Q.FindRef(367)))return false;
+    if(Vitals.Level<Q.FindRef(369))return false;
+    return true;
+}
 // The same four requirement triplets are checked by ACE Player.CheckWieldRequirement,
 // including ILT's Int64Stat extension (13), keyed by PropertyInt64 rather than Int.
 // Return the failed check so a custom item never disappears behind a generic

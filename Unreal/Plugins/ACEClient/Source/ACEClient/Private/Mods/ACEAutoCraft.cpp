@@ -134,6 +134,25 @@ bool FCatalog::Parse(const TSharedPtr<FJsonObject>& Json)
     }
     Categories.Sort();return !Recipes.IsEmpty();
 }
+bool FCatalog::Merge(const FCatalog& Extra)
+{
+    if(!Error.IsEmpty()||!Extra.Error.IsEmpty()||Extra.Recipes.IsEmpty())return false;
+    FCatalog Combined=*this;
+    for(const auto& Pair:Extra.Items)Combined.Items.Add(Pair.Key,Pair.Value);
+    for(const auto& R:Extra.Recipes)
+    {
+        if(const auto* Index=Combined.ById.Find(R.Id))Combined.Recipes[*Index]=R;
+        else {Combined.ById.Add(R.Id,Combined.Recipes.Num());Combined.Recipes.Add(R);}
+    }
+    if(Combined.Items.Num()>30000||Combined.Recipes.Num()>30000)return false;
+    Combined.ByOutput.Reset();Combined.ByName.Reset();Combined.Categories.Reset();
+    for(int32 I=0;I<Combined.Recipes.Num();++I)
+    {
+        const auto& R=Combined.Recipes[I];Combined.ByOutput.FindOrAdd(R.Output).Add(I);
+        Combined.ByName.FindOrAdd(Combined.Name(R.Output)).Add(I);Combined.Categories.AddUnique(R.Category);
+    }
+    Combined.Categories.Sort();Combined.Version+=TEXT(" + ")+Extra.Version;*this=MoveTemp(Combined);return true;
+}
 FPlan Plan(const FCatalog& C,int32 Recipe,const FInventory& Inventory,int32 Units,bool Ingredients)
 {
     FPlan Invalid;if(!C.Recipes.IsValidIndex(Recipe)||Units<1||Units>MaxUnits){Invalid.Error=TEXT("Choose a recipe and a quantity from 1 to 100,000.");return Invalid;}

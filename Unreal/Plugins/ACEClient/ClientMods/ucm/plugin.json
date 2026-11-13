@@ -4,7 +4,7 @@
   "name": "Unattended Combat Manager",
   "short_name": "UCM",
   "version": "0.7.0",
-  "description": "UCM: automatic buffs, inventory-aware combat, vital recovery, recorded routes, loot profiles and activity states.",
+  "description": "UCM: automatic buffs, inventory-aware combat, vital recovery, automatic crafting, fellowship management, recorded routes and loot profiles.",
   "permissions": [
     "cast",
     "combat",
@@ -16,6 +16,8 @@
     "confirm"
   ],
   "settings": [
+    {"key":"auto_fellowship","label":"Manage fellowship recruitment and waiting list","type":"bool"},
+    {"key":"auto_craft","label":"Craft configured supplies automatically","type":"bool"},
     {"key":"refill_summons","label":"Refill summon essences with Encapsulated Spirit","type":"bool"},
     {"key":"summon_refill_charges","label":"Refill summons at or below remaining charges","type":"number","min":0,"max":50},
     {"key":"item_mana","label":"Recharge equipped gear with filled mana stones","type":"bool"},

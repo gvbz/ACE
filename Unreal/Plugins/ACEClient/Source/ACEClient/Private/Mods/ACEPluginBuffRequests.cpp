@@ -49,6 +49,7 @@ void UACEPluginSubsystem::NotifyBuffQueuePositions()
 
 void UACEPluginSubsystem::ObservePlayerTell(const FString& Text,const FString& Sender,int32 SenderId)
 {
+    QueueFellowshipTell(Text,Sender,SenderId);
     auto P=PolicyPlugin();auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
     bool Enabled=false,Buffing=true;
     if(!P||!P->Enabled||!P->Running||C->GetSessionState()!=EACESessionState::InWorld)return;
@@ -73,4 +74,23 @@ void UACEPluginSubsystem::ObservePlayerTell(const FString& Text,const FString& S
     O->SetNumberField(TEXT("expires"),Now+900);BuffRequests.Add(MakeShared<FJsonValueObject>(O));LastBuffRequest.Add(SenderId,Now);
     BuffRequestStatus=FString::Printf(TEXT("Queued %s buffs for %s (%d waiting)"),*Role,*Sender,BuffRequests.Num());
     ReplyBuffRequest(SenderId,Sender,FString::Printf(TEXT("UCM: %s buffs queued at #%d (%d ahead of you). I will tell you when it is your turn."),*Role,BuffRequests.Num(),BuffRequests.Num()-1));
+}
+
+void UACEPluginSubsystem::QueueFellowshipTell(const FString& Text,const FString& Sender,int32 SenderId,bool Local)
+{
+    auto P=PolicyPlugin();auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();bool Enabled=false;
+    if(!P||!P->Enabled||!P->Running||C->GetSessionState()!=EACESessionState::InWorld)return;
+    (UCMServicesProfile?UCMServicesProfile:P->Profile)->TryGetBoolField(TEXT("auto_fellowship"),Enabled);
+    if(!Enabled||!P->Permissions.Contains(TEXT("fellowship"))||!P->Permissions.Contains(TEXT("say"))||!SenderId||Sender.IsEmpty()||Sender.Len()>128||Text.Len()>256)return;
+    if(uint32(SenderId)<0x50000001u||uint32(SenderId)>0x6fffffffu||(!Local&&SenderId==C->GetPlayerGuid()))return;
+    const FString Command=Text.TrimStartAndEnd().ToLower();
+    if(!TArray<FString>{TEXT("xp"),TEXT("remove"),TEXT("line"),TEXT("list"),TEXT("status"),TEXT("leader"),TEXT("location"),TEXT("help")}.Contains(Command)
+        &&!Command.StartsWith(TEXT("help "))&&!Command.StartsWith(TEXT("startvote "))&&!Command.StartsWith(TEXT("vote "))
+        &&!(Local&&(Command==TEXT("clear")||Command.StartsWith(TEXT("unban ")))))return;
+    const double Now=FPlatformTime::Seconds();
+    FellowshipTells.RemoveAll([&](const auto& V){return Now-V->AsObject()->GetNumberField(TEXT("time"))>180;});
+    if(FellowshipTells.Num()>=64)FellowshipTells.RemoveAt(0);
+    auto E=MakeShared<FJsonObject>();E->SetNumberField(TEXT("serial"),++FellowshipTellSerial);E->SetNumberField(TEXT("time"),Now);
+    E->SetNumberField(TEXT("id"),uint32(SenderId));E->SetStringField(TEXT("name"),Sender);E->SetStringField(TEXT("text"),Text.TrimStartAndEnd());E->SetBoolField(TEXT("local"),Local);
+    FellowshipTells.Add(MakeShared<FJsonValueObject>(E));ScheduleDecisionWake(Now);
 }

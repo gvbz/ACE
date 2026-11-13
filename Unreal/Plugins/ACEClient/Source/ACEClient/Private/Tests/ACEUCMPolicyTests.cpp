@@ -1518,6 +1518,9 @@ bool FACEUCMStackCombiningTest::RunTest(const FString&)
         TestEqual(TEXT("Full stack between partial stacks is skipped"),I->GetNumberField(TEXT("item")),12.);
         TestEqual(TEXT("Destination is the earlier partial stack"),I->GetNumberField(TEXT("target")),10.);
         S->SetNumberField(TEXT("time"),101);TestTrue(TEXT("Lag does not repeat the merge"),Action(Step(VM,S,P)).IsEmpty());
+        S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("action_error"),3);
+        S->SetNumberField(TEXT("inventory_failure_serial"),1);S->SetNumberField(TEXT("inventory_failure_item"),999);
+        TestTrue(TEXT("Unrelated action and inventory failures cannot reject the merge"),Action(Step(VM,S,P)).IsEmpty());
         A->SetNumberField(TEXT("count"),50);S->SetNumberField(TEXT("time"),102);
         TestTrue(TEXT("Target update alone does not release the pending merge"),Action(Step(VM,S,P)).IsEmpty());
         S->SetArrayField(TEXT("inventory"),{MakeShared<FJsonValueObject>(A),MakeShared<FJsonValueObject>(Full)});

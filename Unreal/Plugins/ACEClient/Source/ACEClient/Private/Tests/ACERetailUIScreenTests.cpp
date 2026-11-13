@@ -77,6 +77,22 @@
 #include "Framework/Application/SlateApplication.h"
 
 // Kept separate from the large screenshot suite to stay within MSVC optimizer limits.
+static FORCENOINLINE void CheckVendorFundsUI(FAutomationTestBase& Test,TMap<int32,int32>& Qualities,
+    const TArray<TObjectPtr<UTextBlock>>& Notices,const TObjectPtr<UTextBlock>& PurseLabel,
+    TFunctionRef<void()> ClickBuy,TFunctionRef<void()> Refresh,TFunctionRef<bool(uint32)> HasAction)
+{
+    Qualities.Add(20,0);ClickBuy();
+    Test.TestFalse(TEXT("Custom pyreal stock cannot spend bank funds through normal Buy"),HasAction(ACEGameAction::Buy));
+    Test.TestTrue(TEXT("Normal Buy displays the retail insufficient funds warning"),
+        Notices.ContainsByPredicate([](const auto& Line)
+            {return Line && Line->GetText().ToString()==TEXT("You don't have enough money");}));
+    Qualities.Add(20,1000000);Refresh();
+    Test.TestTrue(TEXT("CoinValue update refreshes the vendor purse caption"),
+        PurseLabel && PurseLabel->GetText().ToString().Contains(TEXT("1,000,000p")));
+    ClickBuy();
+    Test.TestTrue(TEXT("Custom pyreal stock Buy button sends a retail Buy action"),HasAction(ACEGameAction::Buy));
+}
+
 static FORCENOINLINE void CheckTradeAcceptance(FAutomationTestBase& Test,UACEClientSubsystem* Client,UACEUIElementManager* Manager,
     TFunctionRef<void(uint32,uint32)> Receive,TFunctionRef<void(const TCHAR*)> Click,
     TFunctionRef<void()> ResetPackets,TFunctionRef<bool(uint32)> HasAction)
@@ -670,6 +686,361 @@ struct FACEContractUIFixture
         CheckContractProgress(Test,Dat,Manager,Contracts,Gameplay->QuestRowIds,Gameplay->QuestStatusRows,
             [&](){Gameplay->RefreshQuestOverlays();},[&](const FString& Name,float Scale){CaptureScreen(Name,Scale);},
             [&](){Gameplay->ScrollQuestList(-1.f);return Gameplay->QuestScrollOffset;});
+    }
+};
+
+struct FACERetailVendorUIFixture
+{
+    static FORCENOINLINE void CheckAll(FAutomationTestBase& Test,FACESession& Session,
+        UACEClientSubsystem* Client,UACEUIGameplayBinder* Gameplay,UACEUICanvasWidget* Canvas,
+        UACEUIElementManager* Manager,UACEUIResourceResolver* Resources,const FACEWorldObject& Player,
+        const FACEWorldObject& Comp,int32 ComponentWcid,const TMap<int32,int32>& SavedDesired,
+        TFunctionRef<void(const FString&,float)> Capture,TFunctionRef<void(const TCHAR*)> NativeClick,
+        TFunctionRef<bool(uint32)> HasAction)
+    {
+        auto CaptureScreen=[&](const FString& Name,float Scale=1.f){Capture(Name,Scale);};
+        Session.DesiredComponents[ComponentWcid]=100;
+        const auto SavedStock=Session.VendorMerchandise;
+        const int32 SavedVendor=Gameplay->OpenVendorGuid;
+        const auto SavedCart=Gameplay->VendorBuyCart;
+        const float SavedRate=Session.VendorSellRate;
+        FACEWorldObject Stock=Comp;Stock.Guid=99121;Stock.ContainerId=99122;Stock.StackSize=1;Stock.Value=10;
+        Stock.VendorQuantityAvailable=-1;Session.VendorMerchandise={Stock};Session.WorldObjects.Add(Stock.Guid,Stock);
+        Session.VendorSellRate=1;Gameplay->OpenVendorGuid=99122;Gameplay->VendorBuyCart={{10,Stock.Guid}};
+        {
+            const auto SavedSelection=Gameplay->LastSelection;
+            const auto SavedClientSelection=Session.SelectedObject;
+            const int32 SavedSelectedVendor=Gameplay->VendorSelectedGuid;
+            const int32 SavedSessionVendor=Session.OpenVendorGuid;
+            Session.OpenVendorGuid=99122;
+            FACEWorldObject Helmet=Stock;Helmet.Guid=99123;Helmet.ItemType=ACEItemType::Armor;Helmet.MaxStackSize=0;
+            Session.VendorMerchandise.Add(Helmet);Session.WorldObjects.Add(Helmet.Guid,Helmet);
+            FACESelectedObject Pick;Pick.bValid=true;Pick.Guid=Helmet.Guid;
+            Session.SelectedObject=Pick;Gameplay->VendorSelectedGuid=Helmet.Guid;Gameplay->HandleSelectionChanged(Pick);
+            Test.TestEqual(TEXT("Unlimited helmets have no stack quantity slider"),Gameplay->SelectedStackMax,1);
+            Gameplay->SelectedStackAmount=100;Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
+            Test.TestEqual(TEXT("A helmet can only be added as one item"),Gameplay->VendorBuyCart[0].Key,1);
+            Gameplay->AddSelectedVendorItemToBuyCart();
+            Test.TestEqual(TEXT("Repeated add does not turn helmets into a stack"),Gameplay->VendorBuyCart[0].Key,1);
+            Gameplay->SetVendorPage(0);
+            Session.VendorMerchandise[0].MaxStackSize=250;Session.VendorMerchandise[0].VendorQuantityAvailable=17;
+            Pick.Guid=Stock.Guid;Session.SelectedObject=Pick;Gameplay->VendorSelectedGuid=Stock.Guid;Gameplay->HandleSelectionChanged(Pick);
+            Test.TestEqual(TEXT("Quantity follows current vendor stock, not the stale object cache"),Gameplay->SelectedStackMax,17);
+            Test.TestEqual(TEXT("Retail consumable stock starts at one unit"),Gameplay->SelectedStackAmount,1);
+            const FString SavedCurrency=Session.VendorCurrencyName;
+            const int32 SavedCurrencyCount=Session.VendorCurrencyCount;
+            const uint32 SavedCurrencyWeenie=Session.VendorCurrencyWeenie;
+            Session.VendorCurrencyWeenie=76542;Session.VendorCurrencyName=TEXT("Stipends");Session.VendorCurrencyCount=10;
+            FACEWorldObject Stipends;Stipends.Guid=99225;Stipends.WeenieClassId=76542;Stipends.ContainerId=Session.PlayerGuid;
+            Stipends.StackSize=10;Stipends.MaxStackSize=100;Session.UpsertWorldObject(Stipends);
+            Gameplay->HandleVendorOpened(99122);
+            if(Test.TestNotNull(TEXT("Vendor currency caption exists"),Gameplay->VendorItemCostLabel.Get()))
+            {
+                Test.TestTrue(TEXT("Vendor displays its alternate currency"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("Stipends. You have 10")));
+                Session.VendorCurrencyCount=9;
+                FACEBinaryWriter Balance;Balance.WriteUInt8(1);Balance.WriteUInt32(Stipends.Guid);Balance.WriteUInt32(9);Balance.WriteUInt32(9);
+                FACEBinaryReader BalanceUpdate(Balance.GetData());Session.HandleSetStackSize(BalanceUpdate);Gameplay->HandleVendorOpened(99122);
+                Test.TestTrue(TEXT("A balance-only vendor reply refreshes the caption"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("Stipends. You have 9")));
+            }
+            Session.WorldObjects.Remove(Stipends.Guid);++Session.InventoryDataRevision;
+            Session.VendorCurrencyWeenie=76543;Session.VendorCurrencyName=TEXT("Grisly Meats");
+            Session.VendorCurrencyCount=9;
+            FACEWorldObject Currency;Currency.Guid=99224;Currency.WeenieClassId=76543;
+            Currency.ContainerId=Session.PlayerGuid;Currency.StackSize=9;Currency.MaxStackSize=100;
+            Session.WorldObjects.Add(Currency.Guid,Currency);++Session.InventoryDataRevision;
+            Gameplay->RefreshVendorOverlays();
+            Test.TestTrue(TEXT("Trophy vendor displays owned currency"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("You have 9")));
+            FACEBinaryWriter Spent;Spent.WriteUInt8(1);Spent.WriteUInt32(Currency.Guid);Spent.WriteUInt32(5);Spent.WriteUInt32(5);
+            FACEBinaryReader SpentReader(Spent.GetData());Session.HandleSetStackSize(SpentReader);
+            Gameplay->RefreshVendorOverlays();
+            Test.TestTrue(TEXT("Purchase stack update refreshes count without another trade"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("You have 5")));
+            Test.TestEqual(TEXT("Stale ApproachVendor count cannot restore spent currency"),Session.GetVendorCurrencyCount(),5);
+            Session.WorldObjects.Remove(Currency.Guid);++Session.InventoryDataRevision;
+            Test.TestEqual(TEXT("Final currency removal reports zero"),Session.GetVendorCurrencyCount(),0);
+            Session.VendorCurrencyWeenie=SavedCurrencyWeenie;
+            Session.VendorCurrencyName=SavedCurrency;Session.VendorCurrencyCount=SavedCurrencyCount;
+            Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
+            Test.TestEqual(TEXT("Vendor Add transfers the default one unit"),Gameplay->VendorBuyCart[0].Key,1);
+            Gameplay->SetVendorPage(0);
+            Gameplay->SelectedStackAmount=5;Gameplay->HandleSelectionChanged(Pick);
+            Test.TestEqual(TEXT("Selection refresh preserves an explicitly split quantity"),Gameplay->SelectedStackAmount,5);
+            Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
+            Test.TestEqual(TEXT("Vendor Add respects the user's quantity adjustment"),Gameplay->VendorBuyCart[0].Key,5);
+            Gameplay->SetVendorPage(0);
+            Session.VendorMerchandise[0].VendorQuantityAvailable=-1;Gameplay->HandleVendorOpened(99122);
+            Test.TestEqual(TEXT("Unlimited ammunition is limited to its real stack size"),Gameplay->SelectedStackMax,250);
+            FACERetailVendorUIFixture::Check(Test,Session,Gameplay,Canvas,Stock,Pick,
+                [&](const TCHAR* Name){CaptureScreen(Name);},[&](const TCHAR* Name){NativeClick(Name);},HasAction);
+            Session.VendorMerchandise[0].VendorQuantityAvailable=0;Gameplay->HandleVendorOpened(99122);
+            Test.TestEqual(TEXT("Sold-out stack hides quantity control"),Gameplay->SelectedStackMax,0);
+            Session.CachedC2SPackets.Reset();Gameplay->BuySelectedVendorItem();
+            Session.SendBuyItems(99122,{{100,Stock.Guid}});
+            Test.TestFalse(TEXT("Stale cart cannot buy exhausted vendor stock"),HasAction(ACEGameAction::Buy));
+            // Retail trade notes use fixed rates and a one-unit initial split,
+            // even where the vendor's ordinary markup is much higher.
+            FACEWorldObject Note=Stock;Note.Name=TEXT("Trade Note (250,000)");Note.PluralName=TEXT("Trade Notes (250,000)");
+            Note.ItemType=ACEItemType::PromissoryNote;Note.Value=250000;Note.StackSize=1;Note.MaxStackSize=250;
+            Session.VendorMerchandise={Note};Session.WorldObjects[Note.Guid]=Note;Session.VendorSellRate=1.55f;
+            Session.VendorCurrencyName.Empty();Gameplay->LastSelection={};
+            Gameplay->HandleVendorOpened(99122);Gameplay->HandleSelectionChanged(Pick);Gameplay->SetVendorPage(0);
+            Test.TestEqual(TEXT("Trade notes start at one, not the 250-unit stock limit"),Gameplay->SelectedStackAmount,1);
+            Test.TestEqual(TEXT("Toolbar describes stock independently of the chosen split"),Gameplay->SelectionText->GetText().ToString(),FString(TEXT("250 Trade Notes (250,000)")));
+            Test.TestEqual(TEXT("Vendor uses the singular stock name without a quantity prefix"),Gameplay->VendorItemNameLabel->GetText().ToString(),Note.Name);
+            Test.TestTrue(TEXT("Trade note purchase uses retail fixed 15-percent markup"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("287,500p")));
+            Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
+            Gameplay->SetVendorPage(1);
+            Test.TestTrue(TEXT("Buy cart uses the same trade note price"),Gameplay->VendorBuyCostLabel->GetText().ToString().Contains(TEXT("287,500")));
+            Gameplay->VendorSellCart={{1,Note.Guid}};Gameplay->SetVendorPage(2);
+            Test.TestTrue(TEXT("Trade note sells for its full face value"),Gameplay->VendorSellCostLabel->GetText().ToString().Contains(TEXT("250,000p")));
+            {
+                const uint32 Before=Session.NextGameActionSequence;
+                Gameplay->InvDragGuid=Note.Guid;Gameplay->bInvDragPending=true;Gameplay->bInvDragActive=true;
+                Gameplay->bInvDragFromVendorSell=true;
+                Gameplay->TryFinishInventoryDrag(FVector2D(-1000,-1000));
+                Test.TestTrue(TEXT("Dragging a sell row out removes that offer"),Gameplay->VendorSellCart.IsEmpty());
+                Test.TestEqual(TEXT("Removing a sell offer does not drop or move the actual item"),Session.NextGameActionSequence,Before);
+                auto OtherNote=Note;OtherNote.Guid=99129;Session.WorldObjects.Add(OtherNote.Guid,OtherNote);
+                Gameplay->VendorSellCart={{1,Note.Guid},{1,OtherNote.Guid}};
+                Gameplay->InvDragGuid=Note.Guid;Gameplay->bInvDragPending=true;Gameplay->bInvDoubleClickPending=true;
+                Gameplay->bInvDragFromVendorSell=true;
+                Gameplay->TryFinishInventoryDrag(FVector2D(-1000,-1000));
+                Test.TestEqual(TEXT("Double-click removes only the selected sell offer"),Gameplay->VendorSellCart.Num(),1);
+                if(Gameplay->VendorSellCart.Num()==1)Test.TestEqual(TEXT("Other sell offers remain in place"),Gameplay->VendorSellCart[0].Value,OtherNote.Guid);
+                Session.WorldObjects.Remove(OtherNote.Guid);
+                Gameplay->VendorSellCart={{1,Note.Guid}};
+            }
+            FACEWorldObject Ammo=Stock;Ammo.ItemType=ACEItemType::MissileWeapon;Ammo.MaxStackSize=250;Ammo.VendorQuantityAvailable=17;
+            Session.VendorMerchandise={Ammo};Session.WorldObjects[Ammo.Guid]=Ammo;Gameplay->LastSelection={};
+            Gameplay->HandleVendorOpened(99122);Gameplay->HandleSelectionChanged(Pick);Gameplay->SetVendorPage(0);
+            Test.TestEqual(TEXT("Retail ammunition selects the available stack instead"),Gameplay->SelectedStackAmount,17);
+            Gameplay->SelectedStackAmount=5;Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
+            Test.TestEqual(TEXT("Ammo Add honors an explicit split"),Gameplay->VendorBuyCart[0].Key,5);
+            Gameplay->VendorSellCart.Reset();Session.VendorSellRate=1;
+            Session.VendorCurrencyName=SavedCurrency;Session.WorldObjects[Stock.Guid]=Stock;
+            Session.VendorMerchandise={Stock};Session.WorldObjects.Remove(Helmet.Guid);
+            Gameplay->VendorBuyCart={{10,Stock.Guid}};Gameplay->VendorSelectedGuid=SavedSelectedVendor;
+            Session.SelectedObject=SavedClientSelection;Gameplay->HandleSelectionChanged(SavedSelection);Session.OpenVendorGuid=SavedSessionVendor;
+        }
+        {
+            FACEWorldObject Pack;Pack.Guid=99130;Pack.ContainerId=Player.Guid;Pack.ItemType=ACEItemType::Container;Pack.ItemsCapacity=24;Pack.Attuned=1;
+            FACEWorldObject Bread;Bread.Guid=99131;Bread.ContainerId=Pack.Guid;Bread.ItemType=ACEItemType::Food;Bread.StackSize=12;Bread.Value=120;
+            FACEWorldObject Retained=Bread;Retained.Guid=99132;Retained.ObjectDescriptionFlags=ACEObjectDescFlag::Retained;
+            FACEWorldObject Bound=Bread;Bound.Guid=99133;Bound.Attuned=1;
+            for(const auto& Object:{Pack,Bread,Retained,Bound})Session.WorldObjects.Add(Object.Guid,Object);
+            Gameplay->VendorSellCart={{2,Bread.Guid}};
+            Session.CachedC2SPackets.Reset();Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
+            Test.TestEqual(TEXT("Pack drop adds only sellable contents, never the pack"),Gameplay->VendorSellCart.Num(),1);
+            Test.TestEqual(TEXT("Pack drop restores full stack quantity"),Gameplay->VendorSellCart[0].Key,12);
+            Test.TestEqual(TEXT("Pack contents open the Sell tab"),Gameplay->ActiveVendorPage,2);
+            Test.TestFalse(TEXT("Pack drop stages contents without selling them"),HasAction(ACEGameAction::Sell));
+            Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
+            Test.TestEqual(TEXT("Repeated pack drops do not duplicate sale entries"),Gameplay->VendorSellCart.Num(),1);
+            Gameplay->ShowVendorPanel(99122);CaptureScreen(TEXT("GameplayBulkVendor"));
+            TFunction<void()> VerifyVendorDropFeedback = [&]()
+            {
+                const FVector2D SavedCursor=FSlateApplication::Get().GetCursorPos();
+                ON_SCOPE_EXIT { FSlateApplication::Get().SetCursorPos(SavedCursor); };
+                for (float Scale : {1.f, 1.5f})
+                {
+                    CaptureScreen(TEXT("VendorDragLayout"),Scale);
+                    auto Preview = [&](int32 Guid, bool Accept, int32 CellIndex)
+                    {
+                        auto* Cell=Gameplay->VendorItemSlotBgs[CellIndex].Get();
+                        const auto& Geo=Cell->GetCachedGeometry();
+                        const FVector2D Point=Canvas->GetCachedGeometry().AbsoluteToLocal(Geo.LocalToAbsolute(Geo.GetLocalSize()*.5));
+                        FSlateApplication::Get().SetCursorPos(Geo.LocalToAbsolute(Geo.GetLocalSize()*.5));
+                        Gameplay->InvDragGuid=Guid;Gameplay->bInvDragPending=true;Gameplay->bInvDragActive=true;
+                        Gameplay->InvDragIconDid=0x06004CF7u;
+                        Gameplay->UpdateInventoryDrag(Point);
+                        auto* Marker=Gameplay->PaperDollDragTargetIcon.Get();
+                        if (!Test.TestNotNull(TEXT("Vendor cell has drag feedback"),Marker)) return;
+                        Test.TestTrue(TEXT("Vendor feedback is visible"),Marker->IsVisible());
+                        Test.TestTrue(TEXT("Vendor drag uses the retail green circle or red blocked artwork"),
+                            Marker->Background.GetResourceObject()==Resources->ResolveIconTexture(Accept?0x060011F9:0x060011F8));
+                        auto* MarkerSlot=Cast<UCanvasPanelSlot>(Marker->Slot);
+                        auto* CellSlot=Cast<UCanvasPanelSlot>(Cell->Slot);
+                        Test.TestEqual(TEXT("Vendor marker snaps to hovered cell"),MarkerSlot->GetPosition(),CellSlot->GetPosition());
+                        Test.TestEqual(TEXT("Vendor marker matches scaled cell size"),MarkerSlot->GetSize(),CellSlot->GetSize());
+                    };
+                    Preview(Player.Guid,true,0);
+                    Preview(Pack.Guid,true,1); // empty cells are also drop targets
+                    Preview(Bread.Guid,true,0);
+                    CaptureScreen(TEXT("VendorAcceptDrop"),Scale);
+                    Preview(Retained.Guid,false,1);
+                    CaptureScreen(TEXT("VendorRejectDrop"),Scale);
+                    Preview(Bound.Guid,false,0);
+                    const int32 Count=Gameplay->VendorSellCart.Num();
+                    Gameplay->AddInventoryGuidToVendorSellCart(Retained.Guid);
+                    Test.TestEqual(TEXT("Blocked item cannot be staged on drop"),Gameplay->VendorSellCart.Num(),Count);
+                    const uint32 Types=Session.VendorItemTypes;
+                    Session.VendorItemTypes=ACEItemType::Armor; Preview(Bread.Guid,false,0);
+                    Session.VendorItemTypes=Types;
+                    Gameplay->UpdateInventoryDrag(FVector2D(500,200));
+                    Test.TestFalse(TEXT("Leaving vendor cells hides drag feedback"),Gameplay->PaperDollDragTargetIcon->IsVisible());
+                    Preview(Player.Guid,true,0);
+                    Gameplay->CancelInventoryDrag();
+                    Test.TestFalse(TEXT("Canceling drag clears vendor feedback"),Gameplay->PaperDollDragTargetIcon->IsVisible());
+                }
+                CaptureScreen(TEXT("GameplayBulkVendor"));
+            };
+            VerifyVendorDropFeedback();
+            const auto SellList=Manager->FindElementUnder(TEXT("VendorSellPage"),TEXT("VendorSellList"));
+            if(Test.TestTrue(TEXT("Vendor sell list is a real drop target"),SellList.IsValid()))
+            {
+                auto DropPack=[&](int32 Guid)
+                {
+                    Gameplay->InvDragGuid=Guid;Gameplay->InvDragSourcePack=Player.Guid;
+                    Gameplay->bInvDragPending=true;Gameplay->bInvDragActive=true;
+                    Gameplay->TryFinishInventoryDrag(FVector2D(SellList->GetScreenOrigin())+FVector2D(15,15));
+                };
+                Gameplay->VendorSellCart.Reset();DropPack(Pack.Guid);
+                Test.TestTrue(TEXT("Native pack drop reaches the sell cart"),Gameplay->VendorSellCart.ContainsByPredicate([&](auto& P){return P.Value==Bread.Guid;}));
+                Session.WorldObjects[Bread.Guid].ContainerId=Player.Guid;
+                const auto SavedSelf=Session.WorldObjects[Player.Guid];
+                Session.WorldObjects[Player.Guid].ItemsCapacity=0;
+                Session.WorldObjects[Player.Guid].ItemType=ACEItemType::Creature;
+                Gameplay->VendorSellCart.Reset();DropPack(Player.Guid);
+                Test.TestTrue(TEXT("Main backpack bulk drop works without container metadata on the player"),Gameplay->VendorSellCart.ContainsByPredicate([&](auto& P){return P.Value==Bread.Guid;}));
+                Test.TestFalse(TEXT("Main pack bulk drop never offers the player"),Gameplay->VendorSellCart.ContainsByPredicate([&](auto& P){return P.Value==Player.Guid;}));
+                Session.WorldObjects[Player.Guid]=SavedSelf;
+                Session.WorldObjects[Bread.Guid].ContainerId=Pack.Guid;
+            }
+            const uint32 SavedTypes=Session.VendorItemTypes;
+            Session.VendorItemTypes=ACEItemType::Armor;Gameplay->VendorSellCart.Reset();
+            Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
+            Test.TestTrue(TEXT("Bulk sale skips item types the vendor does not buy"),Gameplay->VendorSellCart.IsEmpty());
+            Session.VendorItemTypes=SavedTypes;
+            Session.VendorMaxValue=9;Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
+            Test.TestTrue(TEXT("Bulk sale respects vendor per-unit value limits"),Gameplay->VendorSellCart.IsEmpty());
+            Session.VendorMaxValue=-1;
+            Client->SelectObject(0);
+            Gameplay->HandleEscape();
+            Test.TestEqual(TEXT("Escape dismisses an open vendor"),Gameplay->OpenVendorGuid,0);
+            for(const auto& Object:{Pack,Bread,Retained,Bound})Session.WorldObjects.Remove(Object.Guid);
+            Gameplay->OpenVendorGuid=99122;Gameplay->VendorBuyCart={{10,Stock.Guid}};
+        }
+        Session.CachedC2SPackets.Reset();Gameplay->TryDispatchChatCommand(TEXT("/fillcomps"));
+        Test.TestEqual(TEXT("Refill subtracts carried and already-cart quantities"),Gameplay->VendorBuyCart[0].Key,60);
+        Test.TestFalse(TEXT("Refill never purchases without the Buy button"),HasAction(ACEGameAction::Buy));
+        Gameplay->TryDispatchChatCommand(TEXT("@fillcomps"));
+        Test.TestEqual(TEXT("Repeated refill does not overbuy"),Gameplay->VendorBuyCart[0].Key,60);
+        Gameplay->VendorBuyCart.Reset();Gameplay->TryDispatchChatCommand(TEXT("/fillcomps 599"));
+        Test.TestTrue(TEXT("Price cap preserves whole-component refill limit"),Gameplay->VendorBuyCart.IsEmpty());
+        Session.VendorMerchandise[0].VendorQuantityAvailable=20;Gameplay->TryDispatchChatCommand(TEXT("/fillcomps"));
+        Test.TestEqual(TEXT("Finite vendor supply caps cart quantity"),Gameplay->VendorBuyCart[0].Key,20);
+        Gameplay->TryDispatchChatCommand(TEXT("/fillcomps clear"));
+        Test.TestTrue(TEXT("Clear removes saved refill quantities"),Session.DesiredComponents.IsEmpty());
+        Session.DesiredComponents=SavedDesired;Session.VendorMerchandise=SavedStock;Session.VendorSellRate=SavedRate;
+        Gameplay->OpenVendorGuid=SavedVendor;Gameplay->VendorBuyCart=SavedCart;
+        Session.WorldObjects.Remove(Comp.Guid);Session.WorldObjects.Remove(Stock.Guid);
+    }
+
+    static FORCENOINLINE void Check(FAutomationTestBase& Test,FACESession& Session,
+        UACEUIGameplayBinder* Gameplay,UACEUICanvasWidget* Canvas,const FACEWorldObject& Stock,
+        const FACESelectedObject& Pick,TFunctionRef<void(const TCHAR*)> CaptureScreen,
+        TFunctionRef<void(const TCHAR*)> NativeClick,TFunctionRef<bool(uint32)> HasAction)
+    {
+        TGuardValue<TMap<int32,int32>> SavedVendorQualities(Session.PlayerVitals.StatQualityInts,Session.PlayerVitals.StatQualityInts);
+        // Custom weenies use the same server stock and pyreal purchase path.
+        // Exercise actual pointer routing, not only the binder methods.
+        [&]()
+        {
+        Session.VendorMerchandise[0].WeenieClassId=1050067;
+        Session.VendorCurrencyName.Empty();
+        Gameplay->VendorBuyCart.Reset();Gameplay->SetVendorPage(0);Gameplay->HandleVendorOpened(99122);
+        Gameplay->SetVendorItemTypeFilter(10); // retail Spell Components category
+        CaptureScreen(TEXT("GameplayCustomPyrealVendor"));
+        {
+            const auto& Geo=Gameplay->VendorItemSlots[0]->GetCachedGeometry();
+            const FVector2D Point=Geo.GetAbsolutePosition()+Geo.GetAbsoluteSize()*.5;
+            Canvas->NativeOnMouseButtonDown(Canvas->GetCachedGeometry(),FPointerEvent(0,Point,Point,{EKeys::LeftMouseButton},EKeys::LeftMouseButton,0,FModifierKeysState()));
+            Canvas->NativeOnMouseButtonUp(Canvas->GetCachedGeometry(),FPointerEvent(0,Point,Point,{},EKeys::LeftMouseButton,0,FModifierKeysState()));
+        }
+        CheckVendorFundsUI(Test,Session.PlayerVitals.StatQualityInts,Gameplay->TransientInfoLines,
+            Gameplay->VendorItemCostLabel,[&](){Session.CachedC2SPackets.Reset();NativeClick(TEXT("VendorItemBuy_Button"));},
+            [&](){Gameplay->RefreshVendorOverlays();},HasAction);
+        Gameplay->SelectedStackAmount=1;Session.CachedC2SPackets.Reset();
+        for(int32 Count=1;Count<=10;++Count)
+        {
+            NativeClick(TEXT("VendorItemAdd_Button"));
+            CaptureScreen(TEXT("GameplayRepeatedVendorAdd"));
+            Test.TestEqual(TEXT("Add to List keeps the retail Items page open"),Gameplay->ActiveVendorPage,0);
+            Test.TestEqual(TEXT("Add to List keeps the item selected"),Gameplay->VendorSelectedGuid,Stock.Guid);
+            Test.TestTrue(TEXT("Repeated Add to List accumulates one unit per click"),
+                Gameplay->VendorBuyCart.ContainsByPredicate([&](const auto& P){return P.Value==Stock.Guid&&P.Key==Count;}));
+        }
+        Test.TestFalse(TEXT("Staging a cart does not purchase stock"),HasAction(ACEGameAction::Buy));
+        NativeClick(TEXT("VendorBuyTab"));
+        Test.TestEqual(TEXT("Buying tab still explicitly opens the staged cart"),Gameplay->ActiveVendorPage,1);
+        Gameplay->VendorBuyCart.Reset();Gameplay->SetVendorPage(0);
+        }();
+        // Shrine of Knowledge (43370020) advertises each gem with a zero
+        // create-list quantity and charges MMDs. Replay the server packet:
+        // retail BuySingleItem still buys one, rather than treating it as sold out.
+        [&]()
+        {
+            const auto PreviousStock=Session.VendorMerchandise;
+            const auto PreviousContents=Session.ContainerContents.FindRef(99122);
+            TGuardValue<uint32> CurrencyWeenieGuard(Session.VendorCurrencyWeenie,20630u);
+            TGuardValue<FString> CurrencyNameGuard(Session.VendorCurrencyName,TEXT("Trade Notes (250,000)"));
+            TGuardValue<int32> CurrencyCountGuard(Session.VendorCurrencyCount,10);
+            FACEWorldObject Notes;Notes.Guid=99226;Notes.WeenieClassId=20630;
+            Notes.ContainerId=Session.PlayerGuid;Notes.StackSize=10;Notes.MaxStackSize=250;
+            Session.UpsertWorldObject(Notes);
+            ON_SCOPE_EXIT { Session.WorldObjects.Remove(Notes.Guid);++Session.InventoryDataRevision; };
+            TGuardValue<float> BuyRateGuard(Session.VendorBuyRate,.9f);
+            TGuardValue<uint32> ItemTypesGuard(Session.VendorItemTypes,4481568u);
+            TGuardValue<int32> MinValueGuard(Session.VendorMinValue,0);
+            TGuardValue<int32> MaxValueGuard(Session.VendorMaxValue,100000);
+            auto ReceiveStock=[&](uint32 Supply,uint16 MaxStackSize)
+            {
+                FACEBinaryWriter Wire;
+                Wire.WriteUInt32(99122);Wire.WriteUInt32(4481568);
+                Wire.WriteUInt32(0);Wire.WriteUInt32(100000);Wire.WriteUInt32(1);
+                Wire.WriteFloat(.9f);Wire.WriteFloat(1.f);Wire.WriteUInt32(20630);
+                Wire.WriteUInt32(10);Wire.WriteString16L(TEXT("Trade Notes (250,000)"));
+                Wire.WriteUInt32(1);Wire.WriteUInt32(0xFF000000u|(Supply&0xFFFFFFu));
+                Wire.WriteUInt32(Stock.Guid);Wire.WriteUInt32(0x00003008u); // value, stack, max stack
+                Wire.WriteString16L(TEXT("Gem of Raising Strength"));
+                Wire.WriteUInt16(22948);Wire.WriteUInt16(0x10E8);
+                Wire.WriteUInt32(ACEItemType::Gem);Wire.WriteUInt32(0);Wire.Align();
+                Wire.WriteUInt32(1);Wire.WriteUInt16(1);Wire.WriteUInt16(MaxStackSize);Wire.Align();
+                FACEBinaryReader Reader(Wire.GetData());Session.HandleApproachVendor(Reader);
+                Test.TestEqual(TEXT("Custom vendor packet retains its catalog entry"),Session.VendorMerchandise.Num(),1);
+                Gameplay->VendorBuyCart.Reset();Gameplay->VendorSelectedGuid=Stock.Guid;
+                Gameplay->LastSelection={};Session.SelectedObject=Pick;
+                Gameplay->HandleVendorOpened(99122);Gameplay->HandleSelectionChanged(Pick);Gameplay->SetVendorPage(0);
+            };
+            ReceiveStock(0,0);
+            Test.TestEqual(TEXT("Zero-quantity custom gem permits one retail purchase"),Gameplay->SelectedStackMax,1);
+            CaptureScreen(TEXT("GameplayCustomZeroQuantityVendor"));
+            Session.CachedC2SPackets.Reset();NativeClick(TEXT("VendorItemBuy_Button"));
+            Test.TestTrue(TEXT("Zero-quantity vendor Buy button sends a purchase"),HasAction(ACEGameAction::Buy));
+            for(const auto& Packet:Session.CachedC2SPackets)
+            {
+                FACEBinaryReader Wire(Packet.Value.Payload);Wire.Skip(16);
+                if(Wire.ReadUInt32()!=ACEOpcode::GameAction)continue;
+                Wire.ReadUInt32();if(Wire.ReadUInt32()!=ACEGameAction::Buy)continue;
+                Test.TestEqual(TEXT("Gem purchase addresses the open shrine"),Wire.ReadUInt32(),99122u);
+                Test.TestEqual(TEXT("Gem purchase contains one line"),Wire.ReadUInt32(),1u);
+                Test.TestEqual(TEXT("Gem purchase requests one unit"),Wire.ReadInt32(),1);
+                Test.TestEqual(TEXT("Gem purchase uses server stock GUID"),Wire.ReadUInt32(),uint32(Stock.Guid));
+            }
+            NativeClick(TEXT("VendorItemAdd_Button"));
+            Test.TestTrue(TEXT("Zero-quantity vendor Add to List stages one gem"),
+                Gameplay->VendorBuyCart.ContainsByPredicate([&](const auto& P){return P.Value==Stock.Guid&&P.Key==1;}));
+            Session.CachedC2SPackets.Reset();Gameplay->HandleNamedClick(TEXT("VendorBuyBuyAll_Button"));
+            Test.TestTrue(TEXT("Zero-quantity vendor cart sends a purchase"),HasAction(ACEGameAction::Buy));
+            ReceiveStock(0,250);
+            Test.TestEqual(TEXT("Zero supply permits one, not an unlimited stack"),Gameplay->SelectedStackMax,1);
+            ReceiveStock(17,250);
+            Test.TestEqual(TEXT("Positive wire supply preserves its finite limit"),Gameplay->SelectedStackMax,17);
+            ReceiveStock(0xFFFFFFu,250);
+            Test.TestEqual(TEXT("Unlimited wire supply preserves its stack limit"),Gameplay->SelectedStackMax,250);
+            Session.VendorMerchandise=PreviousStock;Session.WorldObjects[Stock.Guid]=Stock;
+            Session.ContainerContents.FindOrAdd(99122)=PreviousContents;
+            Gameplay->VendorBuyCart.Reset();
+        }();
     }
 };
 
@@ -4927,333 +5298,9 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
             Gameplay->VendorSellCart=OldSellCart;Session.SelectedObject=OldSelection;Gameplay->HandleSelectionChanged(OldSelection);
             for(int32 Guid:{99301,99302,99303,99304,99305})Session.WorldObjects.Remove(Guid);
         }();
-        Session.DesiredComponents[Component.Wcid]=100;
-        const auto SavedStock=Session.VendorMerchandise;
-        const int32 SavedVendor=Gameplay->OpenVendorGuid;
-        const auto SavedCart=Gameplay->VendorBuyCart;
-        const float SavedRate=Session.VendorSellRate;
-        FACEWorldObject Stock=Comp;Stock.Guid=99121;Stock.ContainerId=99122;Stock.StackSize=1;Stock.Value=10;
-        Stock.VendorQuantityAvailable=-1;Session.VendorMerchandise={Stock};Session.WorldObjects.Add(Stock.Guid,Stock);
-        Session.VendorSellRate=1;Gameplay->OpenVendorGuid=99122;Gameplay->VendorBuyCart={{10,Stock.Guid}};
-        {
-            const auto SavedSelection=Gameplay->LastSelection;
-            const auto SavedClientSelection=Session.SelectedObject;
-            const int32 SavedSelectedVendor=Gameplay->VendorSelectedGuid;
-            const int32 SavedSessionVendor=Session.OpenVendorGuid;
-            Session.OpenVendorGuid=99122;
-            FACEWorldObject Helmet=Stock;Helmet.Guid=99123;Helmet.ItemType=ACEItemType::Armor;Helmet.MaxStackSize=0;
-            Session.VendorMerchandise.Add(Helmet);Session.WorldObjects.Add(Helmet.Guid,Helmet);
-            FACESelectedObject Pick;Pick.bValid=true;Pick.Guid=Helmet.Guid;
-            Session.SelectedObject=Pick;Gameplay->VendorSelectedGuid=Helmet.Guid;Gameplay->HandleSelectionChanged(Pick);
-            TestEqual(TEXT("Unlimited helmets have no stack quantity slider"),Gameplay->SelectedStackMax,1);
-            Gameplay->SelectedStackAmount=100;Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
-            TestEqual(TEXT("A helmet can only be added as one item"),Gameplay->VendorBuyCart[0].Key,1);
-            Gameplay->AddSelectedVendorItemToBuyCart();
-            TestEqual(TEXT("Repeated add does not turn helmets into a stack"),Gameplay->VendorBuyCart[0].Key,1);
-            Gameplay->SetVendorPage(0);
-            Session.VendorMerchandise[0].MaxStackSize=250;Session.VendorMerchandise[0].VendorQuantityAvailable=17;
-            Pick.Guid=Stock.Guid;Session.SelectedObject=Pick;Gameplay->VendorSelectedGuid=Stock.Guid;Gameplay->HandleSelectionChanged(Pick);
-            TestEqual(TEXT("Quantity follows current vendor stock, not the stale object cache"),Gameplay->SelectedStackMax,17);
-            TestEqual(TEXT("Retail consumable stock starts at one unit"),Gameplay->SelectedStackAmount,1);
-            const FString SavedCurrency=Session.VendorCurrencyName;
-            const int32 SavedCurrencyCount=Session.VendorCurrencyCount;
-            const uint32 SavedCurrencyWeenie=Session.VendorCurrencyWeenie;
-            Session.VendorCurrencyWeenie=76542;Session.VendorCurrencyName=TEXT("Stipends");Session.VendorCurrencyCount=10;
-            FACEWorldObject Stipends;Stipends.Guid=99225;Stipends.WeenieClassId=76542;Stipends.ContainerId=Session.PlayerGuid;
-            Stipends.StackSize=10;Stipends.MaxStackSize=100;Session.UpsertWorldObject(Stipends);
-            Gameplay->HandleVendorOpened(99122);
-            if(TestNotNull(TEXT("Vendor currency caption exists"),Gameplay->VendorItemCostLabel.Get()))
-            {
-                TestTrue(TEXT("Vendor displays its alternate currency"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("Stipends. You have 10")));
-                Session.VendorCurrencyCount=9;
-                FACEBinaryWriter Balance;Balance.WriteUInt8(1);Balance.WriteUInt32(Stipends.Guid);Balance.WriteUInt32(9);Balance.WriteUInt32(9);
-                FACEBinaryReader BalanceUpdate(Balance.GetData());Session.HandleSetStackSize(BalanceUpdate);Gameplay->HandleVendorOpened(99122);
-                TestTrue(TEXT("A balance-only vendor reply refreshes the caption"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("Stipends. You have 9")));
-            }
-            Session.WorldObjects.Remove(Stipends.Guid);++Session.InventoryDataRevision;
-            Session.VendorCurrencyWeenie=76543;Session.VendorCurrencyName=TEXT("Grisly Meats");
-            Session.VendorCurrencyCount=9;
-            FACEWorldObject Currency;Currency.Guid=99224;Currency.WeenieClassId=76543;
-            Currency.ContainerId=Session.PlayerGuid;Currency.StackSize=9;Currency.MaxStackSize=100;
-            Session.WorldObjects.Add(Currency.Guid,Currency);++Session.InventoryDataRevision;
-            Gameplay->RefreshVendorOverlays();
-            TestTrue(TEXT("Trophy vendor displays owned currency"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("You have 9")));
-            FACEBinaryWriter Spent;Spent.WriteUInt8(1);Spent.WriteUInt32(Currency.Guid);Spent.WriteUInt32(5);Spent.WriteUInt32(5);
-            FACEBinaryReader SpentReader(Spent.GetData());Session.HandleSetStackSize(SpentReader);
-            Gameplay->RefreshVendorOverlays();
-            TestTrue(TEXT("Purchase stack update refreshes count without another trade"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("You have 5")));
-            TestEqual(TEXT("Stale ApproachVendor count cannot restore spent currency"),Session.GetVendorCurrencyCount(),5);
-            Session.WorldObjects.Remove(Currency.Guid);++Session.InventoryDataRevision;
-            TestEqual(TEXT("Final currency removal reports zero"),Session.GetVendorCurrencyCount(),0);
-            Session.VendorCurrencyWeenie=SavedCurrencyWeenie;
-            Session.VendorCurrencyName=SavedCurrency;Session.VendorCurrencyCount=SavedCurrencyCount;
-            Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
-            TestEqual(TEXT("Vendor Add transfers the default one unit"),Gameplay->VendorBuyCart[0].Key,1);
-            Gameplay->SetVendorPage(0);
-            Gameplay->SelectedStackAmount=5;Gameplay->HandleSelectionChanged(Pick);
-            TestEqual(TEXT("Selection refresh preserves an explicitly split quantity"),Gameplay->SelectedStackAmount,5);
-            Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
-            TestEqual(TEXT("Vendor Add respects the user's quantity adjustment"),Gameplay->VendorBuyCart[0].Key,5);
-            Gameplay->SetVendorPage(0);
-            Session.VendorMerchandise[0].VendorQuantityAvailable=-1;Gameplay->HandleVendorOpened(99122);
-            TestEqual(TEXT("Unlimited ammunition is limited to its real stack size"),Gameplay->SelectedStackMax,250);
-            // Custom weenies use the same server stock and pyreal purchase path.
-            // Exercise actual pointer routing, not only the binder methods.
-            [&]()
-            {
-            Session.VendorMerchandise[0].WeenieClassId=1050067;
-            Session.VendorCurrencyName.Empty();
-            Gameplay->VendorBuyCart.Reset();Gameplay->SetVendorPage(0);Gameplay->HandleVendorOpened(99122);
-            Gameplay->SetVendorItemTypeFilter(10); // retail Spell Components category
-            CaptureScreen(TEXT("GameplayCustomPyrealVendor"));
-            {
-                const auto& Geo=Gameplay->VendorItemSlots[0]->GetCachedGeometry();
-                const FVector2D Point=Geo.GetAbsolutePosition()+Geo.GetAbsoluteSize()*.5;
-                Canvas->NativeOnMouseButtonDown(Canvas->GetCachedGeometry(),FPointerEvent(0,Point,Point,{EKeys::LeftMouseButton},EKeys::LeftMouseButton,0,FModifierKeysState()));
-                Canvas->NativeOnMouseButtonUp(Canvas->GetCachedGeometry(),FPointerEvent(0,Point,Point,{},EKeys::LeftMouseButton,0,FModifierKeysState()));
-            }
-            Session.CachedC2SPackets.Reset();NativeClick(TEXT("VendorItemBuy_Button"));
-            TestTrue(TEXT("Custom pyreal stock Buy button sends a retail Buy action"),HasAction(ACEGameAction::Buy));
-            Gameplay->SelectedStackAmount=1;Session.CachedC2SPackets.Reset();
-            for(int32 Count=1;Count<=10;++Count)
-            {
-                NativeClick(TEXT("VendorItemAdd_Button"));
-                CaptureScreen(TEXT("GameplayRepeatedVendorAdd"));
-                TestEqual(TEXT("Add to List keeps the retail Items page open"),Gameplay->ActiveVendorPage,0);
-                TestEqual(TEXT("Add to List keeps the item selected"),Gameplay->VendorSelectedGuid,Stock.Guid);
-                TestTrue(TEXT("Repeated Add to List accumulates one unit per click"),
-                    Gameplay->VendorBuyCart.ContainsByPredicate([&](const auto& P){return P.Value==Stock.Guid&&P.Key==Count;}));
-            }
-            TestFalse(TEXT("Staging a cart does not purchase stock"),HasAction(ACEGameAction::Buy));
-            NativeClick(TEXT("VendorBuyTab"));
-            TestEqual(TEXT("Buying tab still explicitly opens the staged cart"),Gameplay->ActiveVendorPage,1);
-            Gameplay->VendorBuyCart.Reset();Gameplay->SetVendorPage(0);
-            }();
-            // Shrine of Knowledge (43370020) advertises each gem with a zero
-            // create-list quantity and charges MMDs. Replay the server packet:
-            // retail BuySingleItem still buys one, rather than treating it as sold out.
-            [&]()
-            {
-                const auto PreviousStock=Session.VendorMerchandise;
-                const auto PreviousContents=Session.ContainerContents.FindRef(99122);
-                TGuardValue<uint32> CurrencyWeenieGuard(Session.VendorCurrencyWeenie,20630u);
-                TGuardValue<FString> CurrencyNameGuard(Session.VendorCurrencyName,TEXT("Trade Notes (250,000)"));
-                TGuardValue<int32> CurrencyCountGuard(Session.VendorCurrencyCount,10);
-                TGuardValue<float> BuyRateGuard(Session.VendorBuyRate,.9f);
-                TGuardValue<uint32> ItemTypesGuard(Session.VendorItemTypes,4481568u);
-                TGuardValue<int32> MinValueGuard(Session.VendorMinValue,0);
-                TGuardValue<int32> MaxValueGuard(Session.VendorMaxValue,100000);
-                auto ReceiveStock=[&](uint32 Supply,uint16 MaxStackSize)
-                {
-                    FACEBinaryWriter Wire;
-                    Wire.WriteUInt32(99122);Wire.WriteUInt32(4481568);
-                    Wire.WriteUInt32(0);Wire.WriteUInt32(100000);Wire.WriteUInt32(1);
-                    Wire.WriteFloat(.9f);Wire.WriteFloat(1.f);Wire.WriteUInt32(20630);
-                    Wire.WriteUInt32(10);Wire.WriteString16L(TEXT("Trade Notes (250,000)"));
-                    Wire.WriteUInt32(1);Wire.WriteUInt32(0xFF000000u|(Supply&0xFFFFFFu));
-                    Wire.WriteUInt32(Stock.Guid);Wire.WriteUInt32(0x00003008u); // value, stack, max stack
-                    Wire.WriteString16L(TEXT("Gem of Raising Strength"));
-                    Wire.WriteUInt16(22948);Wire.WriteUInt16(0x10E8);
-                    Wire.WriteUInt32(ACEItemType::Gem);Wire.WriteUInt32(0);Wire.Align();
-                    Wire.WriteUInt32(1);Wire.WriteUInt16(1);Wire.WriteUInt16(MaxStackSize);Wire.Align();
-                    FACEBinaryReader Reader(Wire.GetData());Session.HandleApproachVendor(Reader);
-                    TestEqual(TEXT("Custom vendor packet retains its catalog entry"),Session.VendorMerchandise.Num(),1);
-                    Gameplay->VendorBuyCart.Reset();Gameplay->VendorSelectedGuid=Stock.Guid;
-                    Gameplay->LastSelection={};Session.SelectedObject=Pick;
-                    Gameplay->HandleVendorOpened(99122);Gameplay->HandleSelectionChanged(Pick);Gameplay->SetVendorPage(0);
-                };
-                ReceiveStock(0,0);
-                TestEqual(TEXT("Zero-quantity custom gem permits one retail purchase"),Gameplay->SelectedStackMax,1);
-                CaptureScreen(TEXT("GameplayCustomZeroQuantityVendor"));
-                Session.CachedC2SPackets.Reset();NativeClick(TEXT("VendorItemBuy_Button"));
-                TestTrue(TEXT("Zero-quantity vendor Buy button sends a purchase"),HasAction(ACEGameAction::Buy));
-                for(const auto& Packet:Session.CachedC2SPackets)
-                {
-                    FACEBinaryReader Wire(Packet.Value.Payload);Wire.Skip(16);
-                    if(Wire.ReadUInt32()!=ACEOpcode::GameAction)continue;
-                    Wire.ReadUInt32();if(Wire.ReadUInt32()!=ACEGameAction::Buy)continue;
-                    TestEqual(TEXT("Gem purchase addresses the open shrine"),Wire.ReadUInt32(),99122u);
-                    TestEqual(TEXT("Gem purchase contains one line"),Wire.ReadUInt32(),1u);
-                    TestEqual(TEXT("Gem purchase requests one unit"),Wire.ReadInt32(),1);
-                    TestEqual(TEXT("Gem purchase uses server stock GUID"),Wire.ReadUInt32(),uint32(Stock.Guid));
-                }
-                NativeClick(TEXT("VendorItemAdd_Button"));
-                TestTrue(TEXT("Zero-quantity vendor Add to List stages one gem"),
-                    Gameplay->VendorBuyCart.ContainsByPredicate([&](const auto& P){return P.Value==Stock.Guid&&P.Key==1;}));
-                Session.CachedC2SPackets.Reset();Gameplay->HandleNamedClick(TEXT("VendorBuyBuyAll_Button"));
-                TestTrue(TEXT("Zero-quantity vendor cart sends a purchase"),HasAction(ACEGameAction::Buy));
-                ReceiveStock(0,250);
-                TestEqual(TEXT("Zero supply permits one, not an unlimited stack"),Gameplay->SelectedStackMax,1);
-                ReceiveStock(17,250);
-                TestEqual(TEXT("Positive wire supply preserves its finite limit"),Gameplay->SelectedStackMax,17);
-                ReceiveStock(0xFFFFFFu,250);
-                TestEqual(TEXT("Unlimited wire supply preserves its stack limit"),Gameplay->SelectedStackMax,250);
-                Session.VendorMerchandise=PreviousStock;Session.WorldObjects[Stock.Guid]=Stock;
-                Session.ContainerContents.FindOrAdd(99122)=PreviousContents;
-                Gameplay->VendorBuyCart.Reset();
-            }();
-            Session.VendorMerchandise[0].VendorQuantityAvailable=0;Gameplay->HandleVendorOpened(99122);
-            TestEqual(TEXT("Sold-out stack hides quantity control"),Gameplay->SelectedStackMax,0);
-            Session.CachedC2SPackets.Reset();Gameplay->BuySelectedVendorItem();
-            Session.SendBuyItems(99122,{{100,Stock.Guid}});
-            TestFalse(TEXT("Stale cart cannot buy exhausted vendor stock"),HasAction(ACEGameAction::Buy));
-            // Retail trade notes use fixed rates and a one-unit initial split,
-            // even where the vendor's ordinary markup is much higher.
-            FACEWorldObject Note=Stock;Note.Name=TEXT("Trade Note (250,000)");Note.PluralName=TEXT("Trade Notes (250,000)");
-            Note.ItemType=ACEItemType::PromissoryNote;Note.Value=250000;Note.StackSize=1;Note.MaxStackSize=250;
-            Session.VendorMerchandise={Note};Session.WorldObjects[Note.Guid]=Note;Session.VendorSellRate=1.55f;
-            Session.VendorCurrencyName.Empty();Gameplay->LastSelection={};
-            Gameplay->HandleVendorOpened(99122);Gameplay->HandleSelectionChanged(Pick);Gameplay->SetVendorPage(0);
-            TestEqual(TEXT("Trade notes start at one, not the 250-unit stock limit"),Gameplay->SelectedStackAmount,1);
-            TestEqual(TEXT("Toolbar describes stock independently of the chosen split"),Gameplay->SelectionText->GetText().ToString(),FString(TEXT("250 Trade Notes (250,000)")));
-            TestEqual(TEXT("Vendor uses the singular stock name without a quantity prefix"),Gameplay->VendorItemNameLabel->GetText().ToString(),Note.Name);
-            TestTrue(TEXT("Trade note purchase uses retail fixed 15-percent markup"),Gameplay->VendorItemCostLabel->GetText().ToString().Contains(TEXT("287,500p")));
-            Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
-            Gameplay->SetVendorPage(1);
-            TestTrue(TEXT("Buy cart uses the same trade note price"),Gameplay->VendorBuyCostLabel->GetText().ToString().Contains(TEXT("287,500")));
-            Gameplay->VendorSellCart={{1,Note.Guid}};Gameplay->SetVendorPage(2);
-            TestTrue(TEXT("Trade note sells for its full face value"),Gameplay->VendorSellCostLabel->GetText().ToString().Contains(TEXT("250,000p")));
-            {
-                const uint32 Before=Session.NextGameActionSequence;
-                Gameplay->InvDragGuid=Note.Guid;Gameplay->bInvDragPending=true;Gameplay->bInvDragActive=true;
-                Gameplay->bInvDragFromVendorSell=true;
-                Gameplay->TryFinishInventoryDrag(FVector2D(-1000,-1000));
-                TestTrue(TEXT("Dragging a sell row out removes that offer"),Gameplay->VendorSellCart.IsEmpty());
-                TestEqual(TEXT("Removing a sell offer does not drop or move the actual item"),Session.NextGameActionSequence,Before);
-                auto OtherNote=Note;OtherNote.Guid=99129;Session.WorldObjects.Add(OtherNote.Guid,OtherNote);
-                Gameplay->VendorSellCart={{1,Note.Guid},{1,OtherNote.Guid}};
-                Gameplay->InvDragGuid=Note.Guid;Gameplay->bInvDragPending=true;Gameplay->bInvDoubleClickPending=true;
-                Gameplay->bInvDragFromVendorSell=true;
-                Gameplay->TryFinishInventoryDrag(FVector2D(-1000,-1000));
-                TestEqual(TEXT("Double-click removes only the selected sell offer"),Gameplay->VendorSellCart.Num(),1);
-                if(Gameplay->VendorSellCart.Num()==1)TestEqual(TEXT("Other sell offers remain in place"),Gameplay->VendorSellCart[0].Value,OtherNote.Guid);
-                Session.WorldObjects.Remove(OtherNote.Guid);
-                Gameplay->VendorSellCart={{1,Note.Guid}};
-            }
-            FACEWorldObject Ammo=Stock;Ammo.ItemType=ACEItemType::MissileWeapon;Ammo.MaxStackSize=250;Ammo.VendorQuantityAvailable=17;
-            Session.VendorMerchandise={Ammo};Session.WorldObjects[Ammo.Guid]=Ammo;Gameplay->LastSelection={};
-            Gameplay->HandleVendorOpened(99122);Gameplay->HandleSelectionChanged(Pick);Gameplay->SetVendorPage(0);
-            TestEqual(TEXT("Retail ammunition selects the available stack instead"),Gameplay->SelectedStackAmount,17);
-            Gameplay->SelectedStackAmount=5;Gameplay->VendorBuyCart.Reset();Gameplay->AddSelectedVendorItemToBuyCart();
-            TestEqual(TEXT("Ammo Add honors an explicit split"),Gameplay->VendorBuyCart[0].Key,5);
-            Gameplay->VendorSellCart.Reset();Session.VendorSellRate=1;
-            Session.VendorCurrencyName=SavedCurrency;Session.WorldObjects[Stock.Guid]=Stock;
-            Session.VendorMerchandise={Stock};Session.WorldObjects.Remove(Helmet.Guid);
-            Gameplay->VendorBuyCart={{10,Stock.Guid}};Gameplay->VendorSelectedGuid=SavedSelectedVendor;
-            Session.SelectedObject=SavedClientSelection;Gameplay->HandleSelectionChanged(SavedSelection);Session.OpenVendorGuid=SavedSessionVendor;
-        }
-        {
-            FACEWorldObject Pack;Pack.Guid=99130;Pack.ContainerId=Player.Guid;Pack.ItemType=ACEItemType::Container;Pack.ItemsCapacity=24;Pack.Attuned=1;
-            FACEWorldObject Bread;Bread.Guid=99131;Bread.ContainerId=Pack.Guid;Bread.ItemType=ACEItemType::Food;Bread.StackSize=12;Bread.Value=120;
-            FACEWorldObject Retained=Bread;Retained.Guid=99132;Retained.ObjectDescriptionFlags=ACEObjectDescFlag::Retained;
-            FACEWorldObject Bound=Bread;Bound.Guid=99133;Bound.Attuned=1;
-            for(const auto& Object:{Pack,Bread,Retained,Bound})Session.WorldObjects.Add(Object.Guid,Object);
-            Gameplay->VendorSellCart={{2,Bread.Guid}};
-            Session.CachedC2SPackets.Reset();Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
-            TestEqual(TEXT("Pack drop adds only sellable contents, never the pack"),Gameplay->VendorSellCart.Num(),1);
-            TestEqual(TEXT("Pack drop restores full stack quantity"),Gameplay->VendorSellCart[0].Key,12);
-            TestEqual(TEXT("Pack contents open the Sell tab"),Gameplay->ActiveVendorPage,2);
-            TestFalse(TEXT("Pack drop stages contents without selling them"),HasAction(ACEGameAction::Sell));
-            Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
-            TestEqual(TEXT("Repeated pack drops do not duplicate sale entries"),Gameplay->VendorSellCart.Num(),1);
-            Gameplay->ShowVendorPanel(99122);CaptureScreen(TEXT("GameplayBulkVendor"));
-            TFunction<void()> VerifyVendorDropFeedback = [&]()
-            {
-                const FVector2D SavedCursor=FSlateApplication::Get().GetCursorPos();
-                ON_SCOPE_EXIT { FSlateApplication::Get().SetCursorPos(SavedCursor); };
-                for (float Scale : {1.f, 1.5f})
-                {
-                    CaptureScreen(TEXT("VendorDragLayout"),Scale);
-                    auto Preview = [&](int32 Guid, bool Accept, int32 CellIndex)
-                    {
-                        auto* Cell=Gameplay->VendorItemSlotBgs[CellIndex].Get();
-                        const auto& Geo=Cell->GetCachedGeometry();
-                        const FVector2D Point=Canvas->GetCachedGeometry().AbsoluteToLocal(Geo.LocalToAbsolute(Geo.GetLocalSize()*.5));
-                        FSlateApplication::Get().SetCursorPos(Geo.LocalToAbsolute(Geo.GetLocalSize()*.5));
-                        Gameplay->InvDragGuid=Guid;Gameplay->bInvDragPending=true;Gameplay->bInvDragActive=true;
-                        Gameplay->InvDragIconDid=0x06004CF7u;
-                        Gameplay->UpdateInventoryDrag(Point);
-                        auto* Marker=Gameplay->PaperDollDragTargetIcon.Get();
-                        if (!TestNotNull(TEXT("Vendor cell has drag feedback"),Marker)) return;
-                        TestTrue(TEXT("Vendor feedback is visible"),Marker->IsVisible());
-                        TestTrue(TEXT("Vendor drag uses the retail green circle or red blocked artwork"),
-                            Marker->Background.GetResourceObject()==Resources->ResolveIconTexture(Accept?0x060011F9:0x060011F8));
-                        auto* MarkerSlot=Cast<UCanvasPanelSlot>(Marker->Slot);
-                        auto* CellSlot=Cast<UCanvasPanelSlot>(Cell->Slot);
-                        TestEqual(TEXT("Vendor marker snaps to hovered cell"),MarkerSlot->GetPosition(),CellSlot->GetPosition());
-                        TestEqual(TEXT("Vendor marker matches scaled cell size"),MarkerSlot->GetSize(),CellSlot->GetSize());
-                    };
-                    Preview(Player.Guid,true,0);
-                    Preview(Pack.Guid,true,1); // empty cells are also drop targets
-                    Preview(Bread.Guid,true,0);
-                    CaptureScreen(TEXT("VendorAcceptDrop"),Scale);
-                    Preview(Retained.Guid,false,1);
-                    CaptureScreen(TEXT("VendorRejectDrop"),Scale);
-                    Preview(Bound.Guid,false,0);
-                    const int32 Count=Gameplay->VendorSellCart.Num();
-                    Gameplay->AddInventoryGuidToVendorSellCart(Retained.Guid);
-                    TestEqual(TEXT("Blocked item cannot be staged on drop"),Gameplay->VendorSellCart.Num(),Count);
-                    const uint32 Types=Session.VendorItemTypes;
-                    Session.VendorItemTypes=ACEItemType::Armor; Preview(Bread.Guid,false,0);
-                    Session.VendorItemTypes=Types;
-                    Gameplay->UpdateInventoryDrag(FVector2D(500,200));
-                    TestFalse(TEXT("Leaving vendor cells hides drag feedback"),Gameplay->PaperDollDragTargetIcon->IsVisible());
-                    Preview(Player.Guid,true,0);
-                    Gameplay->CancelInventoryDrag();
-                    TestFalse(TEXT("Canceling drag clears vendor feedback"),Gameplay->PaperDollDragTargetIcon->IsVisible());
-                }
-                CaptureScreen(TEXT("GameplayBulkVendor"));
-            };
-            VerifyVendorDropFeedback();
-            const auto SellList=Manager->FindElementUnder(TEXT("VendorSellPage"),TEXT("VendorSellList"));
-            if(TestTrue(TEXT("Vendor sell list is a real drop target"),SellList.IsValid()))
-            {
-                auto DropPack=[&](int32 Guid)
-                {
-                    Gameplay->InvDragGuid=Guid;Gameplay->InvDragSourcePack=Player.Guid;
-                    Gameplay->bInvDragPending=true;Gameplay->bInvDragActive=true;
-                    Gameplay->TryFinishInventoryDrag(FVector2D(SellList->GetScreenOrigin())+FVector2D(15,15));
-                };
-                Gameplay->VendorSellCart.Reset();DropPack(Pack.Guid);
-                TestTrue(TEXT("Native pack drop reaches the sell cart"),Gameplay->VendorSellCart.ContainsByPredicate([&](auto& P){return P.Value==Bread.Guid;}));
-                Session.WorldObjects[Bread.Guid].ContainerId=Player.Guid;
-                const auto SavedSelf=Session.WorldObjects[Player.Guid];
-                Session.WorldObjects[Player.Guid].ItemsCapacity=0;
-                Session.WorldObjects[Player.Guid].ItemType=ACEItemType::Creature;
-                Gameplay->VendorSellCart.Reset();DropPack(Player.Guid);
-                TestTrue(TEXT("Main backpack bulk drop works without container metadata on the player"),Gameplay->VendorSellCart.ContainsByPredicate([&](auto& P){return P.Value==Bread.Guid;}));
-                TestFalse(TEXT("Main pack bulk drop never offers the player"),Gameplay->VendorSellCart.ContainsByPredicate([&](auto& P){return P.Value==Player.Guid;}));
-                Session.WorldObjects[Player.Guid]=SavedSelf;
-                Session.WorldObjects[Bread.Guid].ContainerId=Pack.Guid;
-            }
-            const uint32 SavedTypes=Session.VendorItemTypes;
-            Session.VendorItemTypes=ACEItemType::Armor;Gameplay->VendorSellCart.Reset();
-            Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
-            TestTrue(TEXT("Bulk sale skips item types the vendor does not buy"),Gameplay->VendorSellCart.IsEmpty());
-            Session.VendorItemTypes=SavedTypes;
-            Session.VendorMaxValue=9;Gameplay->AddInventoryGuidToVendorSellCart(Pack.Guid);
-            TestTrue(TEXT("Bulk sale respects vendor per-unit value limits"),Gameplay->VendorSellCart.IsEmpty());
-            Session.VendorMaxValue=-1;
-            Client->SelectObject(0);
-            Gameplay->HandleEscape();
-            TestEqual(TEXT("Escape dismisses an open vendor"),Gameplay->OpenVendorGuid,0);
-            for(const auto& Object:{Pack,Bread,Retained,Bound})Session.WorldObjects.Remove(Object.Guid);
-            Gameplay->OpenVendorGuid=99122;Gameplay->VendorBuyCart={{10,Stock.Guid}};
-        }
-        Session.CachedC2SPackets.Reset();Gameplay->TryDispatchChatCommand(TEXT("/fillcomps"));
-        TestEqual(TEXT("Refill subtracts carried and already-cart quantities"),Gameplay->VendorBuyCart[0].Key,60);
-        TestFalse(TEXT("Refill never purchases without the Buy button"),HasAction(ACEGameAction::Buy));
-        Gameplay->TryDispatchChatCommand(TEXT("@fillcomps"));
-        TestEqual(TEXT("Repeated refill does not overbuy"),Gameplay->VendorBuyCart[0].Key,60);
-        Gameplay->VendorBuyCart.Reset();Gameplay->TryDispatchChatCommand(TEXT("/fillcomps 599"));
-        TestTrue(TEXT("Price cap preserves whole-component refill limit"),Gameplay->VendorBuyCart.IsEmpty());
-        Session.VendorMerchandise[0].VendorQuantityAvailable=20;Gameplay->TryDispatchChatCommand(TEXT("/fillcomps"));
-        TestEqual(TEXT("Finite vendor supply caps cart quantity"),Gameplay->VendorBuyCart[0].Key,20);
-        Gameplay->TryDispatchChatCommand(TEXT("/fillcomps clear"));
-        TestTrue(TEXT("Clear removes saved refill quantities"),Session.DesiredComponents.IsEmpty());
-        Session.DesiredComponents=SavedDesired;Session.VendorMerchandise=SavedStock;Session.VendorSellRate=SavedRate;
-        Gameplay->OpenVendorGuid=SavedVendor;Gameplay->VendorBuyCart=SavedCart;
-        Session.WorldObjects.Remove(Comp.Guid);Session.WorldObjects.Remove(Stock.Guid);
+        FACERetailVendorUIFixture::CheckAll(*this,Session,Client,Gameplay,Canvas,Manager,Resources,Player,
+            Comp,Component.Wcid,SavedDesired,[&](const FString& Name,float Scale){CaptureScreen(Name,Scale);},
+            [&](const TCHAR* Name){NativeClick(Name);},HasAction);
         for (const auto& Command : TArray<TPair<FString,uint32>>{{TEXT("/age"),ACEGameAction::QueryAge},{TEXT("@birth"),ACEGameAction::QueryBirth},{TEXT("/pkl"),ACEGameAction::EnterPkLite},{TEXT("/pklite"),ACEGameAction::EnterPkLite}})
         {
             Session.CachedC2SPackets.Reset();Gameplay->TryDispatchChatCommand(Command.Key);

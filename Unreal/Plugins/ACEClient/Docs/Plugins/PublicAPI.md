@@ -434,6 +434,32 @@ appearance fields default to zero. The native compositor applies the type
 background, underlay, icon, overlay, and enchantment effects in inventory order.
 Returning new values updates the retained icon rather than rebuilding its row.
 
+Assessed casting implements expose `innate_spell` with
+`id,name,power,category,level,caster_target,beneficial,duration,flags,school,skill`,
+plus `innate_spell_available`. `skill` is the item's reported spellcraft.
+These describe the item's spell independently of learned spells and components.
+Availability checks known activation requirements, ownership/trade state and
+item mana; it does not promise a successful cast or a valid target.
+For backward compatibility, beneficial instant self spells also expose the same
+metadata as `innate_recovery` and `innate_recovery_available`.
+Policies may equip an eligible implement and submit `cast_item` below.
+
+Assessed physical weapons can expose `proc_debuff` with
+`id,name,power,category,school,flags,duration,skill`, and `proc_debuff_available`.
+This represents the first appraised spell only, when it is an offensive timed
+non-War/non-Item spell. It is a potential on-hit effect, **not** an activatable
+item spell. Availability checks activation requirements, ownership/trade state
+and item mana; callers must also check `can_wield` and ammunition. UCM uses normal
+physical attacks and waits for an actual effect confirmation. Its internal
+`debuff_spell` attack field is restricted to UCM and revalidated against the
+currently equipped source; third-party plugins cannot invent proc spell IDs.
+
+Route-door rows in `route_objects` include `door_open` (live passage state) and
+`door_identified`. An assessed door adds `door_locked` and `lock_difficulty`.
+Unknown appraisal is not evidence of an unlocked door. Lockpick inventory rows
+provide `lockpick_available`; retained picks remain usable, but traded, equipped
+or exhausted picks do not. `structure` reports remaining uses.
+
 ## Reuse or replace the built-in policies
 
 Optionally add `"policy":"ucm"` or `"policy":"itemtools"` to an automation
@@ -509,8 +535,19 @@ inside the same quota as the plugin; they do not grant game-action permissions.
 - `regextest(text, pattern)` returns a boolean; `regexmatch(text, pattern)` returns
   a capture object or nil. Capture keys are strings, including `"0"` for the whole
   match. Text/pattern limits are 16,384/8,192 UTF-8 bytes. Use the supported bounded
-  [VT regex subset](VirindiCompatibility.md); invalid expressions and exceeding
-  the cumulative 20 ms regex allowance raise an error and stop the plugin.
+  [VT regex subset](VirindiCompatibility.md), including scoped `x`/`n` options,
+  named captures, .NET-numbered backreferences, capture/assertion conditionals
+  and balancing groups. Matching is case-sensitive unless the pattern opts into
+  case folding, such as `(?i)`. Cache keys and capture names always preserve
+  case. Repeated captures return the most recent capture still on the group's
+  stack; a completely balanced-away group is absent. Both numeric and named
+  aliases are returned. Invalid expressions or work-limit failures raise an
+  error and stop the plugin; they are not cached as ordinary nonmatches.
+  Engine bounds are 4,096 input characters, 2,048 pattern characters, 32 capture
+  groups, 2 ms per match and 64 KiB of backtracking storage, within the existing
+  cumulative 20 ms callback allowance. Conditional/balancing patterns additionally
+  allow up to 32 repetition constructs, 64 nested groups/assertions, capture slot
+  numbers through 32 and 64 KiB of capture history.
 - `ucmcommand(text)` compiles up to 4,096 UTF-8 bytes into a policy command record;
   `vtcommand` is the compatibility alias. It does not execute the command.
   Unsupported commands raise an error. The [policy service](#services-and-profiles)
@@ -633,6 +670,17 @@ This remains true for a retained Ust: retention protects it from destruction,
 but does not prevent using the tool. `resource_available` keeps the stricter
 retention check for items being salvaged, sold or otherwise consumed.
 
+`mana_supply_available` identifies an owned ManaStone-category supply that is
+unequipped and outside trade, including its containing pack. Retention does not
+exclude it; the flag does not authorize consuming a retained donor to fill an
+empty stone. Also check `identified`, `usable`, `mana`, count and the shared
+`cooldowns` map before using a supply. Availability is rechecked when executing
+the action. Inventory `mana`, `max_mana`, `mana_empty` and integer properties
+107/108 incorporate live server resource updates as well as appraisals; a zero
+or removal clears a previous reading. A use receipt alone does not confirm a
+refill: wait for the corresponding resource change while allowing other work
+once the native busy gate releases.
+
 API 2 adds `api`, `unix_time`, `server`, `state`, `events`, `error`, `capabilities`,
 `plugins`, `automation_owner`, `profile_name`, `waiting_action`, `log`, and the
 lightweight nearby `objects` list. `chat_events` has independent per-plugin
@@ -670,6 +718,16 @@ request time before acknowledging a pending operation. A new session clears the
 history; overflow evicts the oldest entries, so retain bounded local pending state
 and timeouts rather than treating absence as a success.
 
+`inventory_failure_serial`, `inventory_failure_item` and
+`inventory_failure_error` describe the latest inventory failure in this session.
+They also support lightweight selective snapshots with `data` permission. Compare
+the serial with the value before your request and match the unsigned item GUID;
+an unrelated failure cannot reject that request. This is a last-result record,
+not a durable event log. Giving items on ACE/GDLE is confirmed by the source's
+inventory removal or reduced stack count, not a generic completed-use event.
+Do not infer removal from a capped snapshot; keep a bounded timeout for missing
+or overwritten evidence.
+
 `combat_events` entries have `serial`, `target`, `hit`, `unhittable` and `time`.
 Correlated single-target spell hits additionally carry `spell` and, when supplied
 by the damage result, positive `damage`. Neither UseDone nor spell words count as
@@ -697,6 +755,21 @@ cover:
 
 - `cast` with spell/target and optional `fast_cast`; attack (`mode` 2 melee or 4
   missile, `height` 1-3, `power` 0-1), `cancel_attack`, `combat_mode`, `attack_bar`.
+- `cast_item` with `item,spell,target` requires both `cast` and `inventory`.
+  The owned, equipped implement must expose that eligible innate spell.
+  Supported targets are the player for beneficial instant self recovery, or a
+  living, attackable non-player/non-pet for a harmful timed debuff with clear
+  projectile sight. It sends item use with target in magic mode, never a
+  learned-spell cast. Completion is a `use` receipt with the implement as source;
+  confirm the recovered vital or the actual debuff separately. A successful use
+  receipt alone is not proof the spell landed.
+- `cast` and `cast_item` optionally accept `cast_jiggle` (backward movement with
+  alternating strafes); `cast_item` also accepts `jump_out_wand` (a brief jump
+  request after use). Both default to false, require `navigation`, use ordinary
+  movement/collision and are cancelled by manual movement, stop, session change,
+  completion or failure. UI-blocked or stale requests are discarded. The client
+  does not change normal casting restrictions or promise server-side animation
+  cancellation. `fast_cast` remains the separate fast self-buff tap behavior.
 - `move` with AC `cell,x,y,z`, metre `arrival_radius`, optional pursuit `target`;
   `face`, `jump`, `recall`, `use_world`, `close_vendor` (current vendor GUID),
   `select`, `logout`.
@@ -711,8 +784,30 @@ cover:
   both must be owned, unequipped, unoffered, non-retained stacks of the same WCID,
   with enough source units and destination space. Wait for both stack updates
   before issuing another merge; `UseDone` alone does not confirm it.
+- `say` accepts `text` (up to 500 characters), optional `recipient` (up to
+  128 characters) for a private tell, or `channel=2048` for fellowship chat.
+  Without either it sends local talk. Embedded line breaks are rejected.
 - `say`, `fellowship`, `confirm` (current `type,context,accept`). Recall destinations
   are marketplace, lifestone, allegiance, house and mansion; spell recalls use cast.
+  `fellowship` requires the `fellowship` capability and `operation`: `create`
+  (`name`, shares XP), `quit`, `disband`, `open`, `close`, `recruit`, `dismiss`, or
+  `leader`. The last three use `target` (unsigned player GUID). Dismiss/leader
+  require another current member and leader authority; an open fellowship also
+  permits recruiting by members. A locked fellowship cannot change openness.
+  These actions send requests, not predicted results: wait for `fellowship`
+  snapshot changes (`valid`, `name`, `open`, `leader`, `members`) before dependent
+  actions. `action_events`/`UseDone` do not acknowledge fellowship management.
+  UCM meta sequences wait up to 30 seconds, yield to recovery, and hold navigation
+  until the matching fellowship state arrives. They do not resend an unanswered
+  invitation. UCM also has an optional automatic tell-based fellowship manager
+  under Buff others; its private command queue is not exposed in other plugins'
+  data snapshots. Use the public chat subscription API for your own chat handling.
+
+UCM's integrated crafting uses the existing native Auto Craft recipe/receipt
+engine. Its internal `craft`, `crafting`, `services_profile` and
+`fellowship_tells` fields are UCM implementation details, not general plugin API
+contracts. Other plugins should use the documented inventory/use/confirmation
+APIs and correlate `action_events` with actual inventory updates.
 - `profile_load` for validated imported dependencies (`kind`: nav/utl/met/usd),
   `plugin_command`, `buff_request_start`, `buff_request_done`, `force_buff_done`,
   `pause_navigation`, `pause_loot_approach`, `activity_failed`, `notice`, `stop`.
@@ -1045,3 +1140,52 @@ Lua cannot set an arbitrary root. Other platforms use the default
 editor/file-manager availability depends on the platform. The local content root
 is separate from the server's `content_folder`; remote-server import/export still
 requires transferring files through the administrator's normal workflow.
+
+
+## Server crafting catalogs
+
+Auto Craft accepts a local `.json` file while logged into its intended server.
+Use **Import for this server** to replace that server's custom overlay, or
+**Use bundled recipes** to remove it. Both Auto Craft and UCM automatic crafting
+use the merged catalog. Import does not execute a job. Recipe IDs override
+matching bundled IDs; new IDs add recipes. Each import is a complete overlay,
+not an incremental patch to the previous overlay. Catalogs persist beneath the
+user data directory's `Crafting/` folder, keyed by server identity.
+
+Use the same schema as `ClientMods/autocraft/catalog.json`:
+
+```json
+{
+  "schema": 1,
+  "version": "server-author-version",
+  "items": [
+    {"id": 700001, "name": "Example tool", "max_stack": 1, "icon": 0, "type": 0},
+    {"id": 700002, "name": "Example ingredient", "max_stack": 100, "icon": 0, "type": 0},
+    {"id": 700003, "name": "Example output", "max_stack": 100, "icon": 0, "type": 0}
+  ],
+  "recipes": [{
+    "id": "example-recipe", "category": "Custom", "source": 700001,
+    "target": 700002, "output": 700003, "yield_count": 1,
+    "skill": 0, "difficulty": 0, "source_count": 0, "target_count": 1,
+    "fail_source": 0, "fail_target": 0, "fail_output": 0, "fail_yield": 0,
+    "chain": false
+  }]
+}
+```
+
+These IDs are illustrative, not a usable server recipe. Supply verified WCIDs,
+source/target direction, consumption, failure behavior, skill and output from the
+server's actual recipe data. Include every referenced source, target and output
+item in the overlay. `source_count:0` represents a non-consumed operand, not a
+missing operand. Optional recipe flags are `conditional`, `modified`,
+`optional_source`, `optional_target`, `optional_fail_source`,
+`optional_fail_target`, and optional text `fail_message`; consult bundled entries
+with matching semantics. `chain:true` permits the planner to produce missing
+intermediates; modified/self-output recipes are never chained.
+
+Files are limited to 16 MiB and merged catalogs to 30,000 items and recipes each.
+Malformed catalogs preserve the previous installed overlay. A corrupt stored
+catalog blocks crafting until corrected or removed. An active standalone or UCM
+craft job blocks import/removal. Protection for traded/equipped/retained inputs,
+ordinary server requests and inventory-confirmed completion apply equally to
+custom recipes. Plugins cannot install recipes through an automation intent.

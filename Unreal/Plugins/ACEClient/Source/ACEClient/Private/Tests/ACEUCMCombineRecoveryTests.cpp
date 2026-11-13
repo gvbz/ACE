@@ -31,7 +31,14 @@ bool FACEUCMCombineRecoveryTest::RunTest(const FString&)
         TestEqual(TEXT("Eligible combination starts"), Action(Step(VM, S, P)), FString(Bag ? TEXT("combine_salvage") : TEXT("merge")));
         S->SetNumberField(TEXT("time"), 101);
         TestTrue(TEXT("Pending operation is not duplicated"), Action(Step(VM, S, P)).IsEmpty());
-        if (Failure == 0) { S->SetNumberField(TEXT("action_serial"), 1); S->SetNumberField(TEXT("action_error"), 5); }
+        if (Failure == 0)
+        {
+            S->SetNumberField(TEXT("action_serial"), 1); S->SetNumberField(TEXT("action_error"), 5);
+            TestTrue(TEXT("An unrelated use error cannot reject the combination"), Action(Step(VM, S, P)).IsEmpty());
+            S->SetNumberField(TEXT("inventory_failure_serial"), 1); S->SetNumberField(TEXT("inventory_failure_item"), 99);
+            TestTrue(TEXT("An unrelated inventory error cannot reject the combination"), Action(Step(VM, S, P)).IsEmpty());
+            S->SetNumberField(TEXT("inventory_failure_serial"), 2); S->SetNumberField(TEXT("inventory_failure_item"), 10);
+        }
         else if (Failure == 1) S->SetNumberField(TEXT("time"), 116);
         else if (Failure == 2)
         {

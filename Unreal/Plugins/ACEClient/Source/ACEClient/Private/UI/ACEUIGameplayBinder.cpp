@@ -1785,12 +1785,7 @@ bool UACEUIGameplayBinder::HandleNamedClick(const FString& Name)
 	}
 	if (Name == TEXT("VendorBuyBuyAll_Button"))
 	{
-		if (Client && OpenVendorGuid != 0 && VendorBuyCart.Num() > 0)
-		{
-			Client->SendBuyItems(OpenVendorGuid, VendorBuyCart);
-			VendorBuyCart.Reset();
-			RefreshVendorOverlays();
-		}
+		BuyVendorCart();
 		return true;
 	}
 	if (Name == TEXT("VendorSellSellItem_Button") || Name == TEXT("VendorSellButton")
@@ -12818,7 +12813,8 @@ uint64 UACEUIGameplayBinder::HashVendorOverlayState() const
 	const auto Session = Client->GetSession();
 	if (Session)
 	{
-		H = HashCombine(H, GetTypeHash(Session->GetVendorCurrencyCount()));
+		H = HashCombine(H, GetTypeHash(Session->GetVendorPurchaseFunds()));
+		H = HashCombine(H, GetTypeHash(Session->VendorUsesPyreals()));
 		H = HashCombine(H, GetTypeHash(Session->GetVendorCurrencyName()));
 	}
 	const TConstArrayView<FACEWorldObject> Merch = Session
@@ -14826,7 +14822,7 @@ void UACEUIGameplayBinder::BuySelectedVendorItem()
 	const int32 Limit=GetVendorPurchaseLimit(VendorSelectedGuid);
 	if (Limit<=0) return;
 	One.Emplace(LastSelection.Guid==VendorSelectedGuid ? FMath::Clamp(SelectedStackAmount,1,Limit) : 1, VendorSelectedGuid);
-	Client->SendBuyItems(OpenVendorGuid, One);
+	SubmitVendorPurchase(One);
 }
 
 void UACEUIGameplayBinder::AddSelectedVendorItemToBuyCart()
@@ -14882,7 +14878,7 @@ void UACEUIGameplayBinder::BuyVendorCartItem()
 	if (Limit<=0 || Amt<=0) return;
 	const int32 Quantity=FMath::Clamp(LastSelection.Guid==Guid?SelectedStackAmount:Amt,1,FMath::Min(Amt,Limit));
 	One.Emplace(Quantity, Guid);
-	Client->SendBuyItems(OpenVendorGuid, One);
+	if (!SubmitVendorPurchase(One)) return;
 	for(auto& P:VendorBuyCart)if(P.Value==Guid)P.Key-=Quantity;
 	VendorBuyCart.RemoveAll([](const auto& P){return P.Key<=0;});
 	RefreshVendorOverlays();
@@ -14890,27 +14886,9 @@ void UACEUIGameplayBinder::BuyVendorCartItem()
 
 int32 UACEUIGameplayBinder::CountPlayerPyreals() const
 {
-	if (!Client)
-	{
-		return 0;
-	}
-	int32 Total = 0;
-	auto AddPack = [&](int32 PackGuid)
-	{
-		for (const FACEWorldObject& Obj : Client->GetPackItems(PackGuid))
-		{
-			if (Obj.WeenieClassId == 273 || Obj.Name.Contains(TEXT("Pyreal")))
-			{
-				Total += Obj.StackSize > 0 ? Obj.StackSize : 1;
-			}
-		}
-	};
-	AddPack(Client->GetPlayerGuid());
-	for (const FACEWorldObject& Pack : Client->GetPlayerPacks())
-	{
-		AddPack(Pack.Guid);
-	}
-	return Total;
+	const auto Session = Client ? Client->GetSession() : nullptr;
+	// gmVendorUI::UpdateTotalValue reads the player's CoinValue quality (20).
+	return Session ? FMath::Max(0, Session->GetPlayerVitals().StatQualityInts.FindRef(20)) : 0;
 }
 
 void UACEUIGameplayBinder::HideVendorTextOverlays()
@@ -14958,9 +14936,10 @@ void UACEUIGameplayBinder::RefreshVendorInfoTexts()
 	auto Hide = [](UTextBlock* T) { if (T) { T->SetVisibility(ESlateVisibility::Collapsed); } };
 
 	const auto VendorSession = Client->GetSession();
-	const FString Currency = VendorSession ? VendorSession->GetVendorCurrencyName() : FString();
-	const bool AlternateCurrency = !Currency.IsEmpty();
-	const int32 Purse = AlternateCurrency ? VendorSession->GetVendorCurrencyCount() : CountPlayerPyreals();
+	const bool AlternateCurrency = VendorSession && !VendorSession->VendorUsesPyreals();
+	const FString Currency = VendorSession && !VendorSession->GetVendorCurrencyName().IsEmpty()
+		? VendorSession->GetVendorCurrencyName() : TEXT("currency");
+	const int32 Purse = VendorSession ? VendorSession->GetVendorPurchaseFunds() : 0;
 	const float SellRate = Client->GetVendorSellRate();
 	const float BuyRate = Client->GetVendorBuyRate();
 
@@ -15003,19 +14982,19 @@ void UACEUIGameplayBinder::RefreshVendorInfoTexts()
 	}
 	else if (ActiveVendorPage == 1)
 	{
-		int32 ItemCount = 0;
-		int32 Worth = 0;
+		int64 ItemCount = 0;
+		int64 Worth = 0;
 		for (const TPair<int32, int32>& P : VendorBuyCart)
 		{
 			ItemCount += P.Key;
 			FACEWorldObject Obj;
 			if (Client->GetWorldObject(P.Value, Obj))
 			{
-				Worth += static_cast<int32>(VendorSellCost(Obj, P.Key, SellRate));
+				Worth += VendorSellCost(Obj, P.Key, SellRate);
 			}
 		}
 		PlaceTextOnElement(EnsureLabel(VendorBuyCostLabel), TEXT("VendorBuyCost_Text"),
-			FString::Printf(TEXT("Buying %d items worth %s %s"), ItemCount, *FormatXpNumber(Worth), AlternateCurrency ? *Currency : TEXT("pyreals")),
+			FString::Printf(TEXT("Buying %lld items worth %s %s"), ItemCount, *FormatXpNumber(Worth), AlternateCurrency ? *Currency : TEXT("pyreals")),
 			8, TextWhite, 10040);
 		PlaceTextOnElement(EnsureLabel(VendorBuyPurseLabel), TEXT("VendorBuyPurse_Text"),
 			FString::Printf(TEXT("You have %s %s"), *FormatXpNumber(Purse), AlternateCurrency ? *Currency : TEXT("pyreals")),

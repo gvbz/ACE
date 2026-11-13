@@ -5,6 +5,8 @@
 #include "Engine/GameInstance.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "HAL/FileManager.h"
 #include "Serialization/JsonSerializer.h"
 
 namespace
@@ -144,13 +146,63 @@ FString Describe(const FCatalog& C,int32 Selected,const FPlan& P,const FInventor
 }
 }
 
+void UACEPluginSubsystem::LoadAutoCraftCatalog(FACEAutoCraftState& A)
+{
+    A.Loaded=true;A.CatalogServer=GetGameInstance()->GetSubsystem<UACEClientSubsystem>()->GetServerName();
+    if(auto Tool=Find(TEXT("autocraft")))A.Catalog.Load(Tool->Directory/TEXT("catalog.json"));
+    else {A.Catalog.Error=TEXT("Bundled crafting catalog is unavailable.");return;}
+    if(!A.CatalogServer.IsEmpty())
+    {
+        const FString Path=UserDirectory()/TEXT("Crafting")/(FMD5::HashAnsiString(*A.CatalogServer)+TEXT(".json"));
+        if(IFileManager::Get().FileExists(*Path))
+        {
+            ACEAutoCraft::FCatalog Custom;
+            if(!Custom.Load(Path)||!A.Catalog.Merge(Custom))
+                A.Catalog.Error=TEXT("The server recipe catalog is invalid. Import a corrected catalog or remove it in Auto Craft.");
+        }
+    }
+    A.SupplyRecipes.Reset();for(const auto& Pair:A.Catalog.ByName)A.SupplyRecipes.FindOrAdd(Pair.Key.ToLower()).Append(Pair.Value);
+}
+
+bool UACEPluginSubsystem::ImportAutoCraftCatalog(const FString& Path)
+{
+    auto Tool=Find(TEXT("autocraft"));if(!Tool)return false;
+    auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
+    auto Fail=[&](const FString& Message){Tool->Status=Message;return false;};
+    if(C->GetSessionState()!=EACESessionState::InWorld||C->GetServerName().IsEmpty())return Fail(TEXT("Log into the server this recipe catalog belongs to first."));
+    if(Tool->Running||(UCMCraft&&UCMCraft->Selected!=INDEX_NONE))return Fail(TEXT("Finish or stop the active crafting job before changing recipes."));
+    FString Text;ACEAutoCraft::FCatalog Custom,Combined;TSharedPtr<FJsonObject> Json;
+    const int64 Size=IFileManager::Get().FileSize(*Path);
+    if(Size<1||Size>16*1024*1024||!FFileHelper::LoadFileToString(Text,*Path)
+        ||Text.Len()>16*1024*1024||!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text),Json)
+        ||!Custom.Parse(Json)||!Combined.Load(Tool->Directory/TEXT("catalog.json"))||!Combined.Merge(Custom))
+        return Fail(TEXT("Invalid or oversized recipe catalog; existing recipes were kept."));
+    const FString Destination=UserDirectory()/TEXT("Crafting")/(FMD5::HashAnsiString(*C->GetServerName())+TEXT(".json"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Destination),true);
+    if(!FFileHelper::SaveStringToFile(Text,*(Destination+TEXT(".tmp")),FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
+        ||!IFileManager::Get().Move(*Destination,*(Destination+TEXT(".tmp")),true,true))return Fail(TEXT("Could not save server recipes; existing recipes were kept."));
+    AutoCraft.Reset();UCMCraft.Reset();RefreshAutoCraft(true);
+    Tool->Status=FString::Printf(TEXT("Imported %d recipes for %s. Available in Auto Craft and UCM."),Custom.Recipes.Num(),*C->GetServerName());return true;
+}
+
+bool UACEPluginSubsystem::RemoveAutoCraftCatalog()
+{
+    auto Tool=Find(TEXT("autocraft"));if(!Tool)return false;
+    auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
+    if(C->GetSessionState()!=EACESessionState::InWorld||C->GetServerName().IsEmpty()||Tool->Running||(UCMCraft&&UCMCraft->Selected!=INDEX_NONE))
+    {Tool->Status=TEXT("Log in and finish or stop active crafting before removing server recipes.");return false;}
+    const FString Path=UserDirectory()/TEXT("Crafting")/(FMD5::HashAnsiString(*C->GetServerName())+TEXT(".json"));
+    if(!IFileManager::Get().Delete(*Path,false,true)){Tool->Status=TEXT("Could not remove server recipes.");return false;}
+    AutoCraft.Reset();UCMCraft.Reset();RefreshAutoCraft(true);Tool->Status=TEXT("Using bundled recipes for this server.");return true;
+}
+
 void UACEPluginSubsystem::RefreshAutoCraft(bool Force)
 {
     using namespace ACEAutoCraft;
     auto P=Find(TEXT("autocraft"));if(!P)return;
     if(!AutoCraft)AutoCraft=MakeShared<FACEAutoCraftState>();auto& A=*AutoCraft;
-    if(!A.Loaded){A.Loaded=true;A.Catalog.Load(P->Directory/TEXT("catalog.json"));}
     auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto S=C->GetSession();
+    if(!A.Loaded||A.CatalogServer!=C->GetServerName()){LoadAutoCraftCatalog(A);Force=true;}
     const FString Character=C->GetSessionState()==EACESessionState::InWorld?FString::Printf(TEXT("Character_%08X_%08X"),uint32(C->GetPlayerGuid()),FCrc::StrCrc32(*C->GetServerName())):FString();
     if(A.Character!=Character)
     {
@@ -186,11 +238,12 @@ bool UACEPluginSubsystem::StartAutoCraft()
     if(!P->Enabled||!P->Permissions.Contains(TEXT("inventory")))return Fail(TEXT("Enable Auto Craft in Plugin Manager first."));
     if(!S||C->GetSessionState()!=EACESessionState::InWorld||!C->GetPlayerVitalsView().bValid||C->GetPlayerVitalsView().Health<=0)return Fail(TEXT("Log into a living character first."));
     if(C->IsUseBusy()||PendingSpell||ConfirmedBuffAckAt||InventoryInteractionPending()||!S->GetConfirmations().IsEmpty())return Fail(TEXT("Finish the current action or confirmation before starting crafting."));
+    if(UCMCraft&&UCMCraft->Selected!=INDEX_NONE)return Fail(TEXT("Finish or stop the UCM crafting job first."));
     if(!A.Preview.Valid)return Fail(A.InventorySummary);
     const double Quantity=ACEItemTools::Number(P->Profile,TEXT("quantity"),1),Delay=ACEItemTools::Number(P->Profile,TEXT("delay_ms"),250);
     if(Quantity<1||Quantity>MaxUnits||FMath::FloorToDouble(Quantity)!=Quantity||Delay<100||Delay>5000)return Fail(TEXT("Invalid crafting quantity or delay."));
     for(const auto& Other:Plugins)if(Other->Running&&!Other->LocalService&&!Other->Companion&&Other->Id!=TEXT("ucm"))Stop(Other->Id,TEXT("Auto Craft started"));
-    MovementOwner.Empty();MoveExpires=0;FastCastOwner.Empty();FaceHeading.Reset();DeferredBuffIntent.Reset();DeferredBuffOwner.Empty();
+    MovementOwner.Empty();MoveExpires=0;FastCastOwner.Empty();OptionalCastOwner.Empty();FaceHeading.Reset();DeferredBuffIntent.Reset();DeferredBuffOwner.Empty();
     if(auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController())){PC->EndUseApproach();PC->CancelPluginJump();}
     UseApproachOwner.Empty();S->SendCancelAttack();PhysicalAttackOwner.Empty();PhysicalAttackTarget=0;
     A.Goal=A.Preview.Units;A.Completed=0;A.Attempts=0;A.Failures=0;A.Paused=false;A.Pending=false;A.Preparation.Empty();A.NextAction=0;A.Deadline=FPlatformTime::Seconds()+30;
@@ -203,12 +256,103 @@ void UACEPluginSubsystem::PauseAutoCraft()
     {AutoCraft->Paused=!AutoCraft->Paused;P->Status=AutoCraft->Paused?TEXT("Paused; the current craft may finish"):TEXT("Resuming crafting");}
 }
 
-void UACEPluginSubsystem::TickAutoCraft()
+void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& Out)
 {
     using namespace ACEAutoCraft;
-    auto P=Find(TEXT("autocraft"));if(!P||!P->Running||!AutoCraft)return;
-    auto& A=*AutoCraft;auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto S=C->GetSession();const double Now=FPlatformTime::Seconds();
-    auto Finish=[&](const FString& Message){A.Pending=false;A.Paused=false;Stop(P->Id,Message);A.Revision=MAX_uint64;};
+    auto P=PolicyPlugin();auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto S=C->GetSession();
+    if(!P||!P->Running||!S)return;
+    const auto Config=UCMServicesProfile?UCMServicesProfile:P->Profile;
+    if(!Option(Config,TEXT("auto_craft"))){UCMCraft.Reset();return;}
+    if(!UCMCraft)UCMCraft=MakeShared<FACEAutoCraftState>();auto& A=*UCMCraft;
+    const FString Character=FString::Printf(TEXT("%s/%08X"),*C->GetServerName(),uint32(C->GetPlayerGuid()));
+    if(A.Character!=Character){A=FACEAutoCraftState();A.Character=Character;}
+    if(!A.Loaded)
+    {
+        LoadAutoCraftCatalog(A);
+    }
+    auto View=MakeShared<FJsonObject>();View->SetBoolField(TEXT("pending"),A.Selected!=INDEX_NONE);
+    if(A.Selected!=INDEX_NONE){View->SetStringField(TEXT("name"),A.Catalog.Name(A.Catalog.Recipes[A.Selected].Output));Out->SetObjectField(TEXT("crafting"),View);return;}
+    const double Now=FPlatformTime::Seconds();
+    // Keep catalog/planner work out of the per-frame policy loop. Requests are
+    // checked against fresh inventory again immediately before execution.
+    if(Now>=A.NextRefresh&&A.Catalog.Error.IsEmpty())
+    {
+        A.NextRefresh=Now+1;A.Inventory=Inventory(C);A.Candidates.Reset();
+        struct FSupply{FString Name;int32 Type,Minimum;};TArray<FSupply> Supplies;TMap<FString,int32> SupplyIndex;
+        static const TCHAR* Idle[]={TEXT("craft_health_kits"),TEXT("craft_health_food"),TEXT("craft_stamina_kits"),TEXT("craft_stamina_food"),TEXT("craft_mana_kits"),TEXT("craft_mana_food")};
+        for(const TCHAR* Key:{TEXT("assist_items"),TEXT("buff_items"),TEXT("craft_targets")})
+        {
+            const TArray<TSharedPtr<FJsonValue>>* Rows=nullptr;if(!Config->TryGetArrayField(Key,Rows))continue;
+            for(const auto& V:*Rows)
+            {
+                const auto O=V->AsObject();if(!O)continue;
+                const FString Name=ACEItemTools::String(O,TEXT("name"));const int32 Type=FString(Key)==TEXT("assist_items")?int32(ACEItemTools::Number(O,TEXT("type"),-1)):6;
+                if(Name.IsEmpty()||Type<0||Type==9||Name.StartsWith(TEXT("[")))continue;
+                const int32 Minimum=Type<6?FMath::Clamp(int32(ACEItemTools::Number(Config,Idle[Type],0)),0,10000):FMath::Clamp(int32(ACEItemTools::Number(O,TEXT("count"),1)),1,10000);
+                const FString KeyName=Name.ToLower();
+                if(auto* Existing=SupplyIndex.Find(KeyName))
+                {Supplies[*Existing].Minimum=FMath::Max(Supplies[*Existing].Minimum,Minimum);Supplies[*Existing].Type=FMath::Min(Supplies[*Existing].Type,Type);}
+                else {SupplyIndex.Add(KeyName,Supplies.Num());Supplies.Add({Name,Type,Minimum});}
+            }
+        }
+        for(const auto& Supply:Supplies)
+        {
+            if(A.Candidates.Num()>=64)break;
+            const FString Key=Supply.Name.ToLower();if(A.BlockedSupplies.Contains(Key))continue;
+            const auto* Named=A.SupplyRecipes.Find(Key);if(!Named)continue;
+            // Different WCIDs can share a name. Count the whole named supply,
+            // rather than crafting an alternate variant beside existing stock.
+            TSet<int32> Outputs;int64 Count=0;
+            for(int32 Index:*Named){const int32 Output=A.Catalog.Recipes[Index].Output;if(!Outputs.Contains(Output)){Outputs.Add(Output);Count+=A.Inventory.Receipt(Output);}}
+            if(Count>=FMath::Max(1,Supply.Minimum))continue;
+            for(int32 Index:*Named)
+            {
+                const auto& R=A.Catalog.Recipes[Index];const auto Preview=Plan(A.Catalog,Index,A.Inventory,R.Yield,true);if(!Preview.Valid)continue;
+                bool Trained=true;for(const auto& Step:Preview.Steps)
+                {
+                    const auto& Recipe=A.Catalog.Recipes[Step.Recipe];
+                    if(TArray<int32>{18,28,29,30,37,38,39,48}.Contains(Recipe.Skill)&&Recipe.Difficulty)
+                    {const auto* Skill=C->GetPlayerVitalsView().Skills.FindByPredicate([&](const auto& V){return V.SkillId==Recipe.Skill;});if(!Skill||Skill->AdvancementClass<2)Trained=false;}
+                }
+                if(!Trained)continue;
+                auto Candidate=MakeShared<FJsonObject>();Candidate->SetStringField(TEXT("recipe"),R.Id);Candidate->SetStringField(TEXT("name"),Supply.Name);
+                Candidate->SetStringField(TEXT("phase"),Count>0?TEXT("idle"):Supply.Type<6?TEXT("critical"):TEXT("normal"));
+                Candidate->SetNumberField(TEXT("count"),Count);Candidate->SetNumberField(TEXT("minimum"),FMath::Max(1,Supply.Minimum));A.Candidates.Add(MakeShared<FJsonValueObject>(Candidate));break;
+            }
+        }
+    }
+    View->SetArrayField(TEXT("candidates"),A.Candidates);View->SetStringField(TEXT("error"),A.Catalog.Error);Out->SetObjectField(TEXT("crafting"),View);
+}
+
+void UACEPluginSubsystem::ExecuteUCMCraft(FACEClientPlugin& P,const TSharedPtr<FJsonObject>& I)
+{
+    if(P.Id!=TEXT("ucm")||!Option(UCMServicesProfile?UCMServicesProfile:P.Profile,TEXT("auto_craft"))||!P.Permissions.Contains(TEXT("inventory")))return;
+    if(auto Tool=Find(TEXT("autocraft"));Tool&&Tool->Running)return;
+    if(UCMCraft&&UCMCraft->Selected==INDEX_NONE)UCMCraft->NextRefresh=0;
+    auto Snapshot=MakeShared<FJsonObject>();ExtendUCMCraftSnapshot(Snapshot);if(!UCMCraft)return;auto& A=*UCMCraft;
+    if(A.Selected==INDEX_NONE)
+    {
+        const FString Id=ACEItemTools::String(I,TEXT("recipe"));
+        if(!A.Candidates.ContainsByPredicate([&](const auto& V){return ACEItemTools::String(V->AsObject(),TEXT("recipe"))==Id;}))return;
+        const auto* Index=A.Catalog.ById.Find(Id);if(!Index)return;
+        auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();if(C->IsUseBusy()||!C->GetSession()->GetConfirmations().IsEmpty())return;
+        A.Selected=*Index;A.Goal=A.Catalog.Recipes[*Index].Yield;A.Completed=0;A.Attempts=0;A.Failures=0;A.Pending=false;A.Preparation.Empty();A.NextAction=0;A.Deadline=FPlatformTime::Seconds()+30;
+    }
+    TickAutoCraft(&P);
+}
+
+void UACEPluginSubsystem::TickAutoCraft(FACEClientPlugin* Policy)
+{
+    using namespace ACEAutoCraft;
+    auto Standalone=Find(TEXT("autocraft"));auto* P=Policy?Policy:Standalone.Get();auto State=Policy?UCMCraft:AutoCraft;
+    if(!P||!P->Running||!State)return;
+    auto& A=*State;auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto S=C->GetSession();const double Now=FPlatformTime::Seconds();
+    auto Finish=[&](const FString& Message){
+        if(Policy&&A.Completed<A.Goal&&A.Catalog.Recipes.IsValidIndex(A.Selected))A.BlockedSupplies.Add(A.Catalog.Name(A.Catalog.Recipes[A.Selected].Output).ToLower());
+        A.Pending=false;A.Paused=false;if(Policy)A.Selected=INDEX_NONE;A.Revision=MAX_uint64;A.NextRefresh=0;
+        if(!Policy)Stop(P->Id,Message);
+        else if(A.Completed>=A.Goal)P->Status=Message;
+        else {auto I=MakeShared<FJsonObject>();I->SetStringField(TEXT("activity"),TEXT("crafting"));ReportActivityFailure(*P,I,Message+TEXT(" This supply is skipped until UCM restarts or automatic crafting is toggled."));}};
     if(!S||C->GetSessionState()!=EACESessionState::InWorld||C->GetPlayerGuid()!=P->Player||C->GetServerName()!=P->Server||C->GetPlayerVitalsView().Health<=0)
     {Finish(TEXT("Stopped: character died, changed, or left the world."));return;}
     if(A.Pending)
@@ -216,7 +360,8 @@ void UACEPluginSubsystem::TickAutoCraft()
         const auto& Recipe=A.Catalog.Recipes[A.PendingRecipe];
         if(!A.Preparation.IsEmpty())
         {
-            if(S->GetInventoryFailureSerial()!=A.InventoryFailureSerial)
+            if(S->GetInventoryFailureSerial()!=A.InventoryFailureSerial
+                &&(S->GetInventoryFailureItem()==A.SourceGuid||(A.TargetGuid&&S->GetInventoryFailureItem()==A.TargetGuid)))
             {Finish(TEXT("Server rejected ingredient stack preparation. No further actions sent."));return;}
             FACEWorldObject Source,Target;
             const int32 SourceCount=C->GetWorldObject(A.SourceGuid,Source)&&Eligible(C,Source,false)?FMath::Max(1,Source.StackSize):0;
@@ -242,14 +387,26 @@ void UACEPluginSubsystem::TickAutoCraft()
             // single crafting prompt arriving for this outstanding use qualifies.
             if(Confirmations.Num()!=1||Confirmations[0].Type!=5){Finish(TEXT("Another confirmation interrupted crafting."));return;}
             P->Status=TEXT("Waiting for crafting confirmation");
-            if(!A.Confirmed&&!A.Paused&&Option(P->Profile,TEXT("confirm"),true)&&P->Permissions.Contains(TEXT("confirm")))
+            if(!A.Confirmed&&!A.Paused&&Option(Policy&&UCMServicesProfile?UCMServicesProfile:P->Profile,Policy?TEXT("craft_confirm"):TEXT("confirm"),true)&&P->Permissions.Contains(TEXT("confirm")))
             {
                 A.Confirmed=true;A.Serial=ActionSerial;A.Deadline=Now+60;
                 S->RespondToConfirmation(Confirmations[0].Type,Confirmations[0].Context,true);
             }
             if(Now>=A.Deadline)Finish(TEXT("Craft confirmation timed out; no further attempts sent."));return;
         }
-        if(ActionSerial!=A.Serial&&LastActionError){Finish(FString::Printf(TEXT("Server rejected the craft (error %u). No further attempts sent."),LastActionError));return;}
+        // UseDone is shared with manual actions and other plugins. Only a
+        // receipt for this request and these two ingredients can reject it.
+        // A successful receipt still needs the inventory result below.
+        for(const auto& Value:ActionOutcomes)
+        {
+            const auto Event=Value->AsObject();FString Type;
+            if(!Event||!Event->TryGetStringField(TEXT("type"),Type)||Type!=TEXT("use"))continue;
+            const auto Number=[&](const TCHAR* Key){return ACEItemTools::Number(Event,Key,0);};
+            if(Number(TEXT("source"))!=uint32(A.SourceGuid)||Number(TEXT("target"))!=uint32(A.TargetGuid)
+                ||Number(TEXT("requested_at"))<A.RequestedAt||uint32(Number(TEXT("action_serial")))==A.Serial)continue;
+            const uint32 Error=uint32(Number(TEXT("error")));
+            if(Error){Finish(FString::Printf(TEXT("Server rejected the craft (error %u). No further attempts sent."),Error));return;}
+        }
         const auto Current=Inventory(C);auto Result=Outcome(Recipe,A.Before,Current);
         if(A.FailureMessage&&Result==EOutcome::Waiting&&(!Recipe.FailSource||Recipe.OptionalFailSource)&&(!Recipe.FailTarget||Recipe.OptionalFailTarget)&&(!Recipe.FailOutput||!Recipe.FailYield))Result=EOutcome::Failure;
         // An ingredient decrement can arrive seconds before the output create.
@@ -270,7 +427,7 @@ void UACEPluginSubsystem::TickAutoCraft()
             {if(Now>=A.Deadline)Finish(TEXT("Craft result arrived, but the action did not finish. Stopped without sending another craft."));return;}
             ++A.Attempts;A.Pending=false;A.Inventory=Current;A.Revision=MAX_uint64;
             if(Result==EOutcome::Success){if(A.PendingRecipe==A.Selected)A.Completed+=Recipe.Yield;}
-            else {++A.Failures;if(Option(P->Profile,TEXT("stop_on_failure"))){Finish(TEXT("Stopped after a failed crafting attempt."));return;}}
+            else {++A.Failures;if(Policy||Option(P->Profile,TEXT("stop_on_failure"))){Finish(TEXT("Stopped after a failed crafting attempt."));return;}}
             A.NextAction=Now+FMath::Clamp(ACEItemTools::Number(P->Profile,TEXT("delay_ms"),250),100.,5000.)/1000.;
             P->Status=FString::Printf(TEXT("Crafted %d / %d items  |  %d attempts  |  %d failures"),A.Completed,A.Goal,A.Attempts,A.Failures);
             if(A.Completed>=A.Goal){Finish(FString::Printf(TEXT("Complete: %d items crafted (%d attempts, %d failures)."),A.Completed,A.Attempts,A.Failures));return;}
@@ -289,12 +446,12 @@ void UACEPluginSubsystem::TickAutoCraft()
         if(Now>=A.Deadline){Finish(TEXT("Could not enter peace mode."));return;}
         S->SendChangeCombatMode(1);A.NextAction=Now+1;P->Status=TEXT("Entering peace mode");return;
     }
-    A.Inventory=Inventory(C);auto PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Goal-A.Completed,Option(P->Profile,TEXT("ingredients"),true));
+    A.Inventory=Inventory(C);auto PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Goal-A.Completed,Policy||Option(P->Profile,TEXT("ingredients"),true));
     if(!PlanNow.Valid)
     {
         // Failed attempts can reduce an initial maximum estimate. Continue with
         // one attainable batch, rather than requiring the original full job.
-        PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Catalog.Recipes[A.Selected].Yield,Option(P->Profile,TEXT("ingredients"),true));
+        PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Catalog.Recipes[A.Selected].Yield,Policy||Option(P->Profile,TEXT("ingredients"),true));
         if(!PlanNow.Valid){Finish(FString::Printf(TEXT("Stopped at %d / %d items. %s"),A.Completed,A.Goal,*PlanNow.Error));return;}
     }
     const int32 Index=PlanNow.Steps[0].Recipe;const auto& R=A.Catalog.Recipes[Index];
@@ -351,7 +508,7 @@ void UACEPluginSubsystem::TickAutoCraft()
     if(!OutputFits(C,A.Catalog,R,Source,Target,true)||!OutputFits(C,A.Catalog,R,Source,Target,false))
     {Finish(TEXT("Free an inventory slot for the crafting result before continuing."));return;}
     // Send the exact cookbook direction; never switch source and target by name.
-    A.Before=A.Inventory;A.SourceGuid=Source;A.TargetGuid=Target;A.PendingRecipe=Index;A.Pending=true;A.Preparation.Empty();A.Confirmed=false;A.ResultSeen=false;A.FailureMessage=false;A.Serial=ActionSerial;A.Deadline=Now+60;
+    A.Before=A.Inventory;A.SourceGuid=Source;A.TargetGuid=Target;A.PendingRecipe=Index;A.Pending=true;A.Preparation.Empty();A.Confirmed=false;A.ResultSeen=false;A.FailureMessage=false;A.Serial=ActionSerial;A.RequestedAt=Now;A.Deadline=Now+60;
     P->Status=FString::Printf(TEXT("Making %s  |  %d / %d finished items"),*A.Catalog.Name(R.Output),A.Completed,A.Goal);
     C->SendUseWithTarget(Source,Target);
 }

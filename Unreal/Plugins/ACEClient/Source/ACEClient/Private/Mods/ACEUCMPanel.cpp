@@ -676,6 +676,16 @@ namespace ACEUCMPanelPrivate
                 Add(SNew(SACEPluginText).AutoWrapText(true).ColorAndOpacity(Accent).Text_Lambda([H=Host](){return FText::FromString(H.IsValid()?FString::Printf(TEXT("%d queued  •  %s"),H->QueuedBuffRequests(),*H->BuffRequestStatus):FString());}));
                 Add(Button(TEXT("Clear request queue"),[this](){Host->ClearBuffRequests();}));
                 Add(SNew(SACEPluginText).AutoWrapText(true).ColorAndOpacity(Ink).Text_Lambda([H=Host](){return FText::FromString(H.IsValid()?H->BuffQueueSummary():FString());}));
+                Heading(TEXT("Idle helper buffs"),TEXT("Occasionally cast a random protection, armor, endurance, regeneration or rejuvenation buff on a visible player within 18 metres. Runs after recovery, combat, looting and navigation."));
+                Add(Toggle(TEXT("random_helper_buffs"),TEXT("Random helper buffs"),TEXT("Uses eligible learned spells and components. Does not require fellowship membership or assume the recipient needs the buff.")));
+                Slider(TEXT("random_helper_interval"),TEXT("Minimum interval"),1,300,5,Accent,TEXT(" s"));
+                Heading(TEXT("Automatic fellowship management"),TEXT("Manage an existing fellowship while UCM runs. Tell xp to join, line/list/status for the queue, remove to leave the queue, leader for its leader, or location for members. Recruitment requires a nearby player and a server-confirmed invitation."));
+                Add(Toggle(TEXT("auto_fellowship"),TEXT("Manage fellowship automatically"),TEXT("Enable tell recruitment and a FIFO waiting list. Leader changes clear reservations and votes.")));
+                Add(Toggle(TEXT("fellowship_open"),TEXT("Keep fellowship open when no one is waiting"),TEXT("The leader closes recruitment while reserving free spots for the waiting list."),true));
+                Add(Toggle(TEXT("fellowship_votes"),TEXT("Allow member votes"),TEXT("Members can propose kick, ban, giveleader or setopen. A majority of votes cast wins after two minutes; no quorum is required."),true));
+                Slider(TEXT("fellowship_capacity"),TEXT("Server fellowship capacity"),2,100,9,Accent,TEXT(" members"));
+                Add(SNew(SACEPluginText).AutoWrapText(true).ColorAndOpacity(Accent).Text_Lambda([H=Host](){return FText::FromString(H.IsValid()?H->FellowshipManagerStatus:FString());}));
+                Add(Text(TEXT("A reserved spot lasts five minutes; return nearby and tell xp to claim it. Members: startvote kick/ban/giveleader NAME or startvote setopen true/false, then vote ID yes/no. Leader chat: /ucm fellow vote ID yes/no/abort, /ucm fellow clear, /ucm fellow unban NAME."),14,Muted));
                 Heading(TEXT("Tell keywords"),TEXT("Edit a role's tell keyword and press Enter to save."));
                 const auto Commands=Host->BuffCommands();
                 for(int32 I=0;I<Commands.Num();++I)
@@ -731,6 +741,10 @@ namespace ACEUCMPanelPrivate
                 const TCHAR* DebuffNames[]={TEXT(""),TEXT("Debuff one target"),TEXT("Debuff same-priority targets first"),TEXT("Debuff all targets first")};
                 Add(LiveButton([this,DebuffNames](){return FString(DebuffNames[FMath::Clamp(int(Num(P(),TEXT("debuff_each_first"),1)),1,3)]);},[this](){P()->SetNumberField(TEXT("debuff_each_first"),int(Num(P(),TEXT("debuff_each_first"),1))%3+1);Save();}));
                 Add(Toggle(TEXT("debuff_fallback"),TEXT("Allow debuff fallback"),TEXT("Continue attacking if a required debuff is unavailable or fails three times.")));
+                Add(LiveButton([this](){return Num(P(),TEXT("debuff_selection"),2)==1?TEXT("Debuff choice: spell strength first"):TEXT("Debuff choice: casting skill first");},[this](){P()->SetNumberField(TEXT("debuff_selection"),Num(P(),TEXT("debuff_selection"),2)==1?2:1);Save();}));
+                Add(Text(TEXT("Compares learned spells, debuff wands, physical proc weapons and imported grenade supplies. Equal strength and skill prefer the learned spell. Grenades require their gameinfodb.ugd definition."),14,Muted));
+                Add(Toggle(TEXT("cast_jiggle"),TEXT("Casting dodge movement"),TEXT("Optional VT-style backward movement with alternating strafes during casts. Uses normal collision; manual movement cancels it. Off preserves ordinary casting movement.")));
+                Add(Toggle(TEXT("jump_out_wand"),TEXT("Jump after activating a wand spell"),TEXT("Optional short jump 0.2 seconds after an innate wand spell begins. Overrides dodge movement for item casts; server cast timers still apply.")));
                 AttackSpellControls();
                 Heading(TEXT("Summoned pets"),TEXT("Add essences to the equipment list below. Uses server requirements, remaining charges and cooldowns."));
                 Add(Text(TEXT("For pets only, use Mode: No attacks and Pet: Auto in the Mobs chart. Enable the Summoning activity in Overview / Micro."),15,Accent));
@@ -795,6 +809,33 @@ namespace ACEUCMPanelPrivate
                 Slider(TEXT("item_mana_threshold"),TEXT("Equipment mana threshold"),0,99,20,FLinearColor(.2f,.55f,1),TEXT("%"));
                 Add(Toggle(TEXT("fill_mana_stones"),TEXT("Automatically fill empty mana stones"),TEXT("While looting, pick up unwanted magical items to fill empty stones. Loot rules take precedence. Tinkered, inscribed, retained and equipped items are excluded; existing inventory is left alone.")));
                 Slider(TEXT("mana_tank_minimum"),TEXT("Minimum mana in source loot"),0,10000,1000,Accent,TEXT(""));
+                Heading(TEXT("Automatic crafting"),TEXT("Replenish supplies from the bundled recipe catalog using owned, unprotected ingredients. Imported assist and buff items are included. Recovery has priority between crafting actions; each craft waits for its inventory result."));
+                Add(Toggle(TEXT("auto_craft"),TEXT("Craft supplies automatically"),TEXT("Make one batch when a configured supply runs out; top up to its minimum while idle.")));
+                Add(Toggle(TEXT("craft_confirm"),TEXT("Accept crafting confirmations"),TEXT("Only accepts the crafting prompt for the active recipe. Turn off to answer prompts manually."),true));
+                const TCHAR* CraftKeys[]={TEXT("craft_health_kits"),TEXT("craft_stamina_kits"),TEXT("craft_mana_kits"),TEXT("craft_health_food"),TEXT("craft_stamina_food"),TEXT("craft_mana_food")};
+                const TCHAR* CraftLabels[]={TEXT("Idle health kits"),TEXT("Idle stamina kits"),TEXT("Idle mana kits"),TEXT("Idle health food"),TEXT("Idle stamina food"),TEXT("Idle mana food")};
+                for(int32 I=0;I<6;++I)Slider(CraftKeys[I],CraftLabels[I],0,10000,0,Accent,TEXT(" items"));
+                Add(Text(TEXT("Idle counts apply to imported assist item categories. Add other supplies below by selecting an inventory item. A zero idle count still replaces a missing supply. Unknown recipes or missing ingredients are skipped. After a failed or uncertain craft, that supply stays skipped until UCM restarts or automatic crafting is toggled."),14,Muted));
+                Add(Button(TEXT("+ Maintain selected inventory item"),[this]()
+                {
+                    auto* C=Host->GetGameInstance()->GetSubsystem<UACEClientSubsystem>();FACEWorldObject Item;
+                    if(!C->GetWorldObject(C->GetSelectedObject().Guid,Item)||Item.Name.IsEmpty()||!C->IsOwnedInventoryItem(Item)){Host->Notice=TEXT("Select an item in your inventory first.");return;}
+                    const TArray<TSharedPtr<FJsonValue>>* Existing=nullptr;TArray<TSharedPtr<FJsonValue>> Rows;
+                    if(P()->TryGetArrayField(TEXT("craft_targets"),Existing))Rows=*Existing;
+                    for(const auto& V:Rows)if(Str(V->AsObject(),TEXT("name")).Equals(Item.Name,ESearchCase::IgnoreCase)){Host->Notice=TEXT("That supply is already listed.");return;}
+                    if(Rows.Num()>=64){Host->Notice=TEXT("Up to 64 crafting supplies are supported.");return;}
+                    auto Row=MakeShared<FJsonObject>();Row->SetStringField(TEXT("name"),Item.Name);Row->SetNumberField(TEXT("count"),1);Rows.Add(MakeShared<FJsonValueObject>(Row));P()->SetArrayField(TEXT("craft_targets"),Rows);Save();Rebuild();
+                }));
+                const TArray<TSharedPtr<FJsonValue>>* CraftRows=nullptr;
+                if(P()->TryGetArrayField(TEXT("craft_targets"),CraftRows))for(int32 I=0;I<CraftRows->Num();++I)
+                {
+                    const auto Row=(*CraftRows)[I]->AsObject();if(!Row)continue;
+                    Add(SNew(SHorizontalBox)+SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)[Text(Str(Row,TEXT("name")))]
+                        +SHorizontalBox::Slot().AutoWidth().Padding(8,0)[SNew(SBox).WidthOverride(90)[SNew(SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit)
+                            .ToolTipText(FText::FromString(TEXT("Minimum stock while idle (1-10000)"))).Text(FText::FromString(LexToString(int32(Num(Row,TEXT("count"),1)))))
+                            .OnTextCommitted_Lambda([this,I](const FText& T,ETextCommit::Type){const FString V=T.ToString();if(!V.IsNumeric())return;const TArray<TSharedPtr<FJsonValue>>* Rows=nullptr;if(P()->TryGetArrayField(TEXT("craft_targets"),Rows)&&Rows->IsValidIndex(I)){(*Rows)[I]->AsObject()->SetNumberField(TEXT("count"),FMath::Clamp(FCString::Atoi(*V),1,10000));Save();}})]]
+                        +SHorizontalBox::Slot().AutoWidth()[Button(TEXT("Remove"),[this,I](){const TArray<TSharedPtr<FJsonValue>>* Rows=nullptr;if(P()->TryGetArrayField(TEXT("craft_targets"),Rows)&&Rows->IsValidIndex(I)){auto Copy=*Rows;Copy.RemoveAt(I);P()->SetArrayField(TEXT("craft_targets"),Copy);Save();Rebuild();}})]);
+                }
                 Inventory(true);
             }
             else if(Page==TEXT("Route"))

@@ -131,7 +131,13 @@ bool FACEVTMetaTest::RunTest(const FString&)
         QuerySnap->SetArrayField(TEXT("route_objects"),{MakeShared<FJsonValueObject>(JSONMeta(TEXT(R"({"id":10,"name":"Collector East","object_class":37,"distance":9})"))),MakeShared<FJsonValueObject>(JSONMeta(TEXT(R"({"id":11,"name":"Collector West","object_class":37,"distance":2})"))),MakeShared<FJsonValueObject>(JSONMeta(TEXT(R"({"id":12,"name":"Collector Door","object_class":26,"distance":1})")))});
         FACEPluginVM LookupVM;LookupVM.Load(Script,Error);TestTrue(TEXT("World lookup executes"),LookupVM.Step(QuerySnap,Lookup,Intent,Error));
         if(Intent)TestEqual(TEXT("Nearest matching name and class selected"),Intent->GetNumberField(TEXT("item")),11.);
-        ACEVTProfile::CompileCommand(TEXT("/ucm mexec wobjectfindnearestbynameandobjectclass[37,`(?x)name`]"),Issues);TestTrue(TEXT("Unsupported literal object-name regex blocked during import"),Issues.Num()>0);
+        ACEVTProfile::CompileCommand(TEXT("/ucm mexec wobjectfindnearestbynameandobjectclass[37,`(?x)name`]"),Issues);TestEqual(TEXT("Extended-mode literal object-name regex imports"),Issues.Num(),0);
+        ACEVTProfile::CompileCommand(TEXT("/ucm mexec wobjectfindnearestbynameandobjectclass[37,`(?<open>a)(?<-open>b)`]"),Issues);TestEqual(TEXT("Balancing object-name regex imports"),Issues.Num(),0);
+        auto HistoryLookup=Base(ACEVTProfile::Convert(MetaDocument({RuleMeta(1,7,NumMeta(0),PropsMeta(JSONMeta(TEXT(R"({"e":"actiontryuseitem[wobjectfindnearestbynameandobjectclass[37,`^(?<open>a)+(?<-open>b)+(?(open)(?!))$`]]"})"))),TEXT("Default"))}),Issues));
+        TestEqual(TEXT("Capture-history world lookup imports"),Issues.Num(),0);
+        QuerySnap->SetArrayField(TEXT("route_objects"),{MakeShared<FJsonValueObject>(JSONMeta(TEXT(R"({"id":20,"name":"aab","object_class":37,"distance":1})"))),MakeShared<FJsonValueObject>(JSONMeta(TEXT(R"({"id":21,"name":"aabb","object_class":37,"distance":3})")))});
+        FACEPluginVM HistoryVM;HistoryVM.Load(Script,Error);TestTrue(TEXT("Imported balancing and conditional lookup executes in Lua"),HistoryVM.Step(QuerySnap,HistoryLookup,Intent,Error));
+        if(TestTrue(TEXT("Balanced lookup requests an action"),Intent.IsValid()))TestEqual(TEXT("Unbalanced closer object is rejected"),Intent->GetNumberField(TEXT("item")),21.);
         auto DistanceOption=Base(ACEVTProfile::Convert(MetaDocument({RuleMeta(1,11,NumMeta(0),PropsMeta(JSONMeta(TEXT(R"({"o":"AttackDistance","v":"range"})"))),TEXT("Default"))}),Issues));
         TestEqual(TEXT("Option getter supports bounded map-unit distances"),Issues.Num(),0);
         TestEqual(TEXT("Option getter preserves meters-to-map ratio"),DistanceOption->GetArrayField(TEXT("vt_meta"))[0]->AsObject()->GetObjectField(TEXT("action"))->GetNumberField(TEXT("scale")),240.);
@@ -259,7 +265,10 @@ bool FACEVTMetaTest::RunTest(const FString&)
     Snap->SetArrayField(TEXT("route_objects"),{MakeShared<FJsonValueObject>(JSONMeta(TEXT(R"({"id":10,"name":"Door","distance":1})")))});
     FACEPluginVM UVM;UVM.Load(Script,Error);UVM.Step(Snap,Uses,Intent,Error);TestEqual(TEXT("Key applies to chosen door"),Intent->GetStringField(TEXT("action")),FString(TEXT("apply_item")));TestEqual(TEXT("Correct target"),Intent->GetNumberField(TEXT("target")),10.);
     UVM.Step(Snap,Uses,Intent,Error);TestFalse(TEXT("Next use waits for server response"),Intent->HasField(TEXT("action")));
+    auto Receipt=JSONMeta(TEXT(R"({"type":"use","source":9,"target":10,"action_serial":1,"error":0})"));
+    Receipt->SetNumberField(TEXT("requested_at"),Snap->GetNumberField(TEXT("time")));Snap->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Receipt)});
     Snap->SetNumberField(TEXT("action_serial"),1);UVM.Step(Snap,Uses,Intent,Error);TestEqual(TEXT("Next use follows completion"),Intent->GetStringField(TEXT("action")),FString(TEXT("use_world")));
+    Receipt->SetNumberField(TEXT("source"),10);Receipt->SetNumberField(TEXT("action_serial"),2);Receipt->SetNumberField(TEXT("error"),1);
     Snap->SetNumberField(TEXT("action_serial"),2);Snap->SetNumberField(TEXT("action_error"),1);UVM.Step(Snap,Uses,Intent,Error);TestEqual(TEXT("Failed interaction pauses meta"),Intent->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
     auto Edge=ACEVTProfile::Read(TEXT("uTank2 NAV 1.2\n4\n1\n0\n-101.950012143709\n18.0138335307439\n-0.474979146321615\n0\n"),TEXT("nav"),Error);
     auto EP=ACEVTProfile::Convert(Edge,Issues);TestEqual(TEXT("Dungeon point just beyond block zero imports"),Issues.Num(),0);TestTrue(TEXT("Negative local position is preserved"),EP->GetArrayField(TEXT("route"))[0]->AsObject()->GetNumberField(TEXT("x"))<0);

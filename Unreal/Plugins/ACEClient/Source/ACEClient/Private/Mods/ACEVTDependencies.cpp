@@ -13,7 +13,7 @@ TSharedPtr<FJsonObject> ConvertFile(const FString& Path,TArray<FString>& Issues)
     TSharedPtr<FJsonObject> CraftData;bool TriedCraftData=false;
     auto AttachPeaRecipes=[&](const TSharedPtr<FJsonObject>& Document)
     {
-        bool Needed=false,NeedMonsters=false;
+        bool Needed=false,NeedMonsters=false,NeedGrenades=false;
         const TArray<TSharedPtr<FJsonValue>>* Tables=nullptr;if(!Document->TryGetArrayField(TEXT("tables"),Tables))return;
         for(const auto& Table:*Tables)
         {
@@ -30,7 +30,7 @@ TSharedPtr<FJsonObject> ConvertFile(const FString& Path,TArray<FString>& Issues)
             const auto& Columns=T->GetArrayField(TEXT("columns"));int32 TypeColumn=INDEX_NONE;
             for(int32 I=0;I<Columns.Num();++I)if(Columns[I]->AsString()==TEXT("Type"))TypeColumn=I;
             if(TypeColumn!=INDEX_NONE)for(const auto& Row:T->GetArrayField(TEXT("rows")))if(Row->AsArray().IsValidIndex(TypeColumn))
-            {const auto V=Row->AsArray()[TypeColumn];if(V->Type==EJson::Number&&(V->AsNumber()==9||V->AsNumber()==11))Needed=true;}
+            {const auto V=Row->AsArray()[TypeColumn];if(V->Type==EJson::Number){if(V->AsNumber()==9||V->AsNumber()==11)Needed=true;if(V->AsNumber()==7){Needed=true;NeedGrenades=true;}}}
         }
         if(!Needed)return;
         if(!TriedCraftData)
@@ -42,13 +42,28 @@ TSharedPtr<FJsonObject> ConvertFile(const FString& Path,TArray<FString>& Issues)
             if(Bytes>0&&Bytes<=4*1024*1024&&TotalBytes<=8*1024*1024&&FFileHelper::LoadFileToString(Source,*Database))
                 CraftData=Read(Source,TEXT("usd"),Error); // UGD uses the same typed-table serialization.
         }
-        TArray<TSharedPtr<FJsonValue>> Recipes;auto Monsters=MakeShared<FJsonObject>();bool HasMonsters=false;
+        TArray<TSharedPtr<FJsonValue>> Recipes;auto Monsters=MakeShared<FJsonObject>(),Grenades=MakeShared<FJsonObject>();bool HasMonsters=false;
         if(CraftData)for(const auto& Table:CraftData->GetArrayField(TEXT("tables")))
         {
             const auto T=Table->AsObject();const FString TableName=T->GetStringField(TEXT("name"));
-            if(TableName!=TEXT("CraftInteractions")&&TableName!=TEXT("SpeciesMembers"))continue;
+            if(TableName!=TEXT("CraftInteractions")&&TableName!=TEXT("SpeciesMembers")&&TableName!=TEXT("GrenadeOptions"))continue;
             const auto& Columns=T->GetArrayField(TEXT("columns"));TMap<FString,int32> Index;
             for(int32 I=0;I<Columns.Num();++I)Index.Add(Columns[I]->AsString(),I);
+            if(TableName==TEXT("GrenadeOptions"))
+            {
+                const TCHAR* Fields[]={TEXT("WieldReqType"),TEXT("WieldReqAttribute"),TEXT("WieldReqValue"),TEXT("Spell"),TEXT("Spellcraft")};
+                bool Complete=Index.Contains(TEXT("GrenName"));for(const TCHAR* Field:Fields)Complete&=Index.Contains(Field);if(!Complete)continue;
+                for(const auto& Row:T->GetArrayField(TEXT("rows")))
+                {
+                    const auto& Cells=Row->AsArray();if(Cells.Num()!=Columns.Num())continue;
+                    const auto Name=Cells[Index[TEXT("GrenName")]];if(Name->Type!=EJson::String||Name->AsString().IsEmpty()||Name->AsString().Len()>256)continue;
+                    auto G=MakeShared<FJsonObject>();bool Valid=true;
+                    for(const TCHAR* Field:Fields)
+                    {const auto V=Cells[Index[Field]];if(V->Type!=EJson::Number||V->AsNumber()<0||V->AsNumber()>MAX_int32||V->AsNumber()!=FMath::FloorToDouble(V->AsNumber())){Valid=false;break;}G->SetNumberField(Field,V->AsNumber());}
+                    if(Valid&&Grenades->Values.Num()<512&&G->GetNumberField(TEXT("WieldReqType"))<=12&&G->GetNumberField(TEXT("Spell"))>0)Grenades->SetObjectField(Name->AsString(),G);
+                }
+                continue;
+            }
             if(TableName==TEXT("SpeciesMembers"))
             {
                 if(!Index.Contains(TEXT("Monster"))||!Index.Contains(TEXT("Species"))||!Index.Contains(TEXT("MaximumHealth")))continue;
@@ -78,6 +93,7 @@ TSharedPtr<FJsonObject> ConvertFile(const FString& Path,TArray<FString>& Issues)
         if(Recipes.Num()>512){Issues.Add(TEXT("Pea recipe catalog exceeds 512 recipes"));return;}
         Document->SetArrayField(TEXT("pea_recipes"),Recipes);
         if(NeedMonsters&&HasMonsters)Document->SetObjectField(TEXT("monster_catalog"),Monsters);
+        if(NeedGrenades)Document->SetObjectField(TEXT("grenade_catalog"),Grenades);
     };
     TFunction<TSharedPtr<FJsonObject>(const FString&)> Visit;
     Visit=[&](const FString& File)->TSharedPtr<FJsonObject>

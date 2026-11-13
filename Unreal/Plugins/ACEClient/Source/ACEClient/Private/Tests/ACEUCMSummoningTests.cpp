@@ -155,7 +155,11 @@ bool FACEUCMSummoningTest::RunTest(const FString&)
             TestEqual(TEXT("Native pet rejection is scoped"),Action(Step(VM,S,P)),FString(TEXT("activity_failed")));
             P->RemoveField(TEXT("ucm_activity_failure"));
         }
-        else {S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("action_error"),1);}
+        else
+        {
+            S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("action_error"),1);
+            S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(SummonJson(TEXT(R"({"type":"use","source":20,"action_serial":1,"requested_at":100,"error":1})")))});
+        }
         ExpectCast(Step(VM,S,P),TEXT("Rejected summon cannot hang casting"));
         S->SetNumberField(TEXT("time"),132);S->SetNumberField(TEXT("action_error"),0);
         TestEqual(TEXT("Summon resumes after rejection backoff"),Action(Step(VM,S,P)),FString(TEXT("use_item")));

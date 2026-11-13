@@ -27,6 +27,7 @@ struct FCatalog
     FString Version, Error;
     bool Load(const FString& Path);
     bool Parse(const TSharedPtr<FJsonObject>& Json);
+    bool Merge(const FCatalog& Extra);
     FString Name(int32 Id) const;
 };
 struct FInventory
@@ -64,7 +65,7 @@ struct FACEAutoCraftState
     ACEAutoCraft::FCatalog Catalog;
     ACEAutoCraft::FPlan Preview;
     ACEAutoCraft::FInventory Inventory, Before;
-    FString Character, ProfileSignature, Details, InventorySummary;
+    FString Character, CatalogServer, ProfileSignature, Details, InventorySummary;
     bool Loaded=false, Paused=false, Pending=false, Confirmed=false, ResultSeen=false, FailureMessage=false;
     FString Preparation;
     int32 PrepareAmount=0, SourceBefore=0, TargetBefore=0;
@@ -73,5 +74,8 @@ struct FACEAutoCraftState
     int32 Goal=0, Completed=0, Attempts=0, Failures=0;
     uint64 Revision=MAX_uint64;
     uint32 Serial=0, InventoryFailureSerial=0;
-    double NextRefresh=0, NextAction=0, Deadline=0, ResultAt=0;
+    double NextRefresh=0, NextAction=0, Deadline=0, ResultAt=0, RequestedAt=0;
+    TArray<TSharedPtr<FJsonValue>> Candidates;
+    TMap<FString,TArray<int32>> SupplyRecipes;
+    TSet<FString> BlockedSupplies;
 };

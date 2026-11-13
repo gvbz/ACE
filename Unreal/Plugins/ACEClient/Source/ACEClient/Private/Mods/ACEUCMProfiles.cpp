@@ -75,7 +75,7 @@ FString SectionFor(const FString& Key)
     // Run activity switches stay local to the setup; shared rules do not toggle
     // another hunt's activities when their settings are edited.
     static const TSet<FString> Run = {TEXT("buffing"), TEXT("combat"), TEXT("recovery"), TEXT("navigation"),
-        TEXT("looting"), TEXT("buff_others"), TEXT("vendor_restock"), TEXT("meta_enabled"), TEXT("idle_peace"),
+        TEXT("looting"), TEXT("auto_craft"), TEXT("auto_fellowship"), TEXT("buff_others"), TEXT("vendor_restock"), TEXT("meta_enabled"), TEXT("idle_peace"),
         TEXT("import_source"), TEXT("ucm_format_version"), TEXT("loot_revision"), TEXT("vt_revision"), TEXT("vt_loaded_kind")};
     if (Run.Contains(Key)) return TEXT("ucm");
     if (Key == TEXT("monsters") || Key == TEXT("monster_catalog") || Key == TEXT("monster_damage_version")) return TEXT("Monsters");
@@ -192,11 +192,19 @@ bool Save(const FString& Root, const FString& Name, TSharedPtr<FJsonObject>& Pro
     // belong to the candidate; cloning every loot condition again is unnecessary.
     TSharedPtr<FJsonObject> Resolved = MakeShared<FJsonObject>();
     Resolved->Values = Profile->Values;
+    // Native edits already use current retail damage bits. A replacement profile
+    // may omit metadata; persist it so the next read cannot migrate new values
+    // or look like an external edit. Legacy files are migrated by Load/ReadSection.
+    for (const TCHAR* Key : {TEXT("character_damage_version"), TEXT("monster_damage_version")})
+        if (!Resolved->HasField(Key)) Resolved->SetNumberField(Key, 2);
     TMap<FString, TSharedPtr<FJsonObject>> Writes, Previous;
     for (const auto& Section : Sections())
     {
         FString PartName; const bool Linked = NextLinks->TryGetStringField(Section, PartName);
-        auto Part = Extract(Profile, Section);
+        auto Part = Extract(Resolved, Section);
+        auto Before = Extract(Baseline, Section);
+        if (Baseline) for (const TCHAR* Key : {TEXT("character_damage_version"), TEXT("monster_damage_version")})
+            if (SectionFor(Key) == Section && !Before->HasField(Key)) Before->SetNumberField(Key, 2);
         if (!Linked)
         {
             PartName = UniqueName(Root, Section, Name);
@@ -207,9 +215,9 @@ bool Save(const FString& Root, const FString& Name, TSharedPtr<FJsonObject>& Pro
         if (Linked && !Disk) return false;
         // Only changed sections are written. A different setup may have updated
         // an unchanged shared section since this setup was loaded.
-        if (Linked && Baseline && Equal(Part, Extract(Baseline, Section)))
+        if (Linked && Baseline && Equal(Part, Before))
         { Replace(Resolved, Section, Disk); continue; }
-        if (Linked && Baseline && !Equal(Disk, Extract(Baseline, Section)) && !Equal(Disk, Part))
+        if (Linked && Baseline && !Equal(Disk, Before) && !Equal(Disk, Part))
         { Error = TEXT("Shared ") + Section + TEXT(" profile changed on disk. Reload linked profiles before editing."); return false; }
         const FString Target = Path(Root, Section, PartName);
         Writes.Add(Target, Part); Previous.Add(Target, Disk);

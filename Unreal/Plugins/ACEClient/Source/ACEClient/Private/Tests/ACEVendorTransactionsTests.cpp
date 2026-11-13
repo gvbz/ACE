@@ -2,6 +2,9 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
 #include "ACESession.h"
+#include "ACEClientSubsystem.h"
+#include "UI/ACEUIGameplayBinder.h"
+#include "Engine/GameInstance.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "Common/UdpSocketBuilder.h"
@@ -16,7 +19,12 @@ bool FACEVendorTransactionsTest::RunTest(const FString&)
     if (!TestNotNull(TEXT("Loopback receiver"), Receiver)) return false;
     auto Destination = Sockets->CreateInternetAddr();
     Destination->SetIp(0x7f000001); Destination->SetPort(Receiver->GetPortNo());
-    FACESession Session;
+    auto* Game = NewObject<UGameInstance>();
+    auto* Client = NewObject<UACEClientSubsystem>(Game);
+    Client->Session = MakeShared<FACESession>();
+    auto& Session = *Client->Session;
+    auto* UI = NewObject<UACEUIGameplayBinder>(Game);
+    UI->Client = Client;
     Session.SocketC2S = FUdpSocketBuilder(TEXT("Vendor transaction client")).AsNonBlocking().BoundToPort(0).Build();
     if (!TestNotNull(TEXT("Loopback sender"), Session.SocketC2S)) return false;
     Session.ServerC2SAddr = Destination; Session.IssacClient = MakeUnique<FACEIsaac>(123u);
@@ -86,6 +94,100 @@ bool FACEVendorTransactionsTest::RunTest(const FString&)
     Session.SendBuyItems(Vendor, {{0, Book.Guid}, {1, 999}});
     TestTrue(TEXT("Invalid or stale purchases send no request"), Session.CachedC2SPackets.IsEmpty());
     TestFalse(TEXT("Rejected purchase never starts an hourglass"), Session.IsCursorBusy());
+
+    // Normal retail vendor UI must stop an unaffordable request locally, even
+    // if a custom server would accept it against a separate bank balance.
+    UI->OpenVendorGuid = Vendor; UI->VendorSelectedGuid = Drink.Guid;
+    Session.VendorSellRate = 1.1f;
+    Book.Value = 10; Drink.Value = 10;
+    Session.VendorMerchandise = {Book, Drink};
+    Session.VendorCurrencyCount = MAX_int32;
+    Session.PlayerVitals.StatQualityInts.Add(9000, MAX_int32); // unrelated custom bank quality
+    FACEWorldObject Coins; Coins.Guid = 300; Coins.ContainerId = Session.PlayerGuid;
+    Coins.WeenieClassId = 273; Coins.ItemType = ACEItemType::Money;
+    Coins.Name = TEXT("Pyreal Bank Token"); Coins.StackSize = 10000; Coins.MaxStackSize = 10000;
+    Session.UpsertWorldObject(Coins);
+    auto NoPurchase = [&]()
+    {
+        TestTrue(TEXT("Unaffordable UI purchase sends no Buy packet"), Session.CachedC2SPackets.IsEmpty());
+        TestFalse(TEXT("Unaffordable UI purchase does not start an hourglass"), Session.IsCursorBusy());
+    };
+    for (int32 Balance : {0, -1, 10})
+    {
+        Session.ApplyPlayerIntQuality(20, Balance);
+        UI->BuySelectedVendorItem(); NoPurchase();
+    }
+    Session.PlayerVitals.StatQualityInts.Remove(20);
+    UI->BuySelectedVendorItem(); NoPurchase();
+    TestEqual(TEXT("Missing CoinValue does not fall back to inferred stacks or bank"), UI->CountPlayerPyreals(), 0);
+    Session.ApplyPlayerIntQuality(20, 11);
+    TestEqual(TEXT("Retail purse reads CoinValue rather than name-matched items"), UI->CountPlayerPyreals(), 11);
+    UI->BuySelectedVendorItem();
+    CheckWire(ACEGameAction::Buy, {{1, Drink.Guid}}, 0); Complete(0);
+
+    // Validate the entire cart, and keep it intact when only individual rows fit.
+    UI->VendorBuyCart = {{1, Book.Guid}, {1, Drink.Guid}};
+    UI->BuyVendorCart(); NoPurchase();
+    TestEqual(TEXT("Rejected Buy All retains the whole cart"), UI->VendorBuyCart.Num(), 2);
+    Session.ApplyPlayerIntQuality(20, 22);
+    UI->BuyVendorCart();
+    CheckWire(ACEGameAction::Buy, {{1, Book.Guid}, {1, Drink.Guid}}, 0); Complete(0);
+    TestTrue(TEXT("Affordable Buy All clears its submitted cart"), UI->VendorBuyCart.IsEmpty());
+
+    // A balance update after staging must apply immediately to single/cart buys.
+    UI->VendorBuyCart = {{2, Drink.Guid}};
+    Session.ApplyPlayerIntQuality(20, 21);
+    UI->BuyVendorCartItem(); NoPurchase();
+    TestEqual(TEXT("Rejected cart-row purchase retains its quantity"), UI->VendorBuyCart[0].Key, 2);
+    Session.ApplyPlayerIntQuality(20, 22);
+    UI->BuyVendorCartItem();
+    CheckWire(ACEGameAction::Buy, {{2, Drink.Guid}}, 0); Complete(0);
+    TestTrue(TEXT("Successful cart-row purchase removes only bought quantities"), UI->VendorBuyCart.IsEmpty());
+
+    // Price duplicate rows as one request, with the same rounding as the wire.
+    Session.VendorSellRate = 1.05f;
+    Session.ApplyPlayerIntQuality(20, 20);
+    TestFalse(TEXT("Combined quantity cannot bypass funds"), UI->SubmitVendorPurchase({{1, Drink.Guid}, {1, Drink.Guid}}));
+    NoPurchase();
+    Session.ApplyPlayerIntQuality(20, 21);
+    TestTrue(TEXT("Duplicate lines use the combined retail stack price"), UI->SubmitVendorPurchase({{1, Drink.Guid}, {1, Drink.Guid}}));
+    CheckWire(ACEGameAction::Buy, {{2, Drink.Guid}}, 0); Complete(0);
+
+    Session.VendorSellRate = 1.0f;
+    Session.VendorMerchandise[0].Value = MAX_int32;
+    Session.VendorMerchandise[1].Value = MAX_int32;
+    Session.ApplyPlayerIntQuality(20, MAX_int32);
+    UI->VendorBuyCart = {{1, Book.Guid}, {1, Drink.Guid}};
+    UI->BuyVendorCart(); NoPurchase();
+    TestEqual(TEXT("Large total cannot wrap into an affordable cart"), UI->VendorBuyCart.Num(), 2);
+
+    // Trade notes retain their fixed premium, independent of vendor markup.
+    Session.VendorMerchandise = {Book};
+    Session.VendorMerchandise[0].ItemType = ACEItemType::PromissoryNote;
+    Session.VendorMerchandise[0].Value = 100;
+    Session.VendorSellRate = 1.55f;
+    Session.ApplyPlayerIntQuality(20, 114);
+    TestFalse(TEXT("Note premium is included in affordability"), UI->SubmitVendorPurchase({{1, Book.Guid}}));
+    NoPurchase();
+    Session.ApplyPlayerIntQuality(20, 115);
+    TestTrue(TEXT("Exact note price is sufficient"), UI->SubmitVendorPurchase({{1, Book.Guid}}));
+    CheckWire(ACEGameAction::Buy, {{1, Book.Guid}}, 0); Complete(0);
+
+    // Alternate currency keeps its existing live inventory count and cannot
+    // spend pyreals, a stale opening balance or an unrelated bank property.
+    Session.VendorMerchandise = {Book}; Session.VendorSellRate = 1;
+    Session.VendorCurrencyWeenie = 500; Session.VendorCurrencyName.Empty();
+    Session.ApplyPlayerIntQuality(20, MAX_int32);
+    TestFalse(TEXT("Currency identity comes from WCID even without a display name"), Session.VendorUsesPyreals());
+    TestFalse(TEXT("Pyreals cannot fund a token purchase"), UI->SubmitVendorPurchase({{1, Book.Guid}})); NoPurchase();
+    Coins.WeenieClassId = 500; Coins.StackSize = 10; Session.UpsertWorldObject(Coins);
+    TestTrue(TEXT("Exact live alternate currency balance can buy"), UI->SubmitVendorPurchase({{1, Book.Guid}}));
+    CheckWire(ACEGameAction::Buy, {{1, Book.Guid}}, 500); Complete(0);
+    Coins.StackSize = 9; Session.UpsertWorldObject(Coins);
+    TestFalse(TEXT("Spent currency is rechecked on the next click"), UI->SubmitVendorPurchase({{1, Book.Guid}})); NoPurchase();
+    Session.VendorCurrencyWeenie = 0; Session.VendorCurrencyName = TEXT("Pyreals");
+    TestTrue(TEXT("Ordinary vendor remains pyreal-based with a nonempty label"), Session.VendorUsesPyreals());
+    TestFalse(TEXT("Stale stock is not partially purchased"), UI->SubmitVendorPurchase({{1, Book.Guid}, {1, 999}})); NoPurchase();
     return true;
 }
 #endif

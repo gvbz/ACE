@@ -60,7 +60,7 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
     TestEqual(TEXT("Prefix lookalike is not rewritten"),ACEVTProfile::NativeCommand(TEXT("/vtank jump")),FString(TEXT("/vtank jump")));
     TestEqual(TEXT("Case-insensitive command conversion"),ACEVTProfile::NativeCommand(TEXT(" /VT jump 90 false 1000 ")),FString(TEXT("/acueucm jump 90 false 1000")));
     TestEqual(TEXT("Native prefix lookalike is not rewritten"),ACEVTProfile::NativeCommand(TEXT("/acueucmfoo jump")),FString(TEXT("/acueucmfoo jump")));
-    TMap<FString,FString> Captures;
+    ACEVTRegex::FCaptures Captures;
     TestTrue(TEXT("Empty regex is a valid match-all filter"),ACEVTRegex::Match(TEXT(""),TEXT("A spell"),Captures,Error));
     TestTrue(TEXT("Named chat capture with escaped punctuation"),ACEVTRegex::Match(TEXT("^\\[Fellowship\\] (?<speaker>.+) says, \"!start\"$"),TEXT("[Fellowship] Test Player says, \"!start\""),Captures,Error));
     TestEqual(TEXT("Captured full sender"),Captures.FindRef(TEXT("speaker")),FString(TEXT("Test Player")));
@@ -69,6 +69,15 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
     TestEqual(TEXT("Dotnet named group numbered after unnamed"),Captures.FindRef(TEXT("2")),FString(TEXT("A")));
     TestTrue(TEXT("Dotnet apostrophe named captures translate"),ACEVTRegex::Match(TEXT("(?'speaker'A)(B)"),TEXT("AB"),Captures,Error));
     TestEqual(TEXT("Translated named capture preserves name"),Captures.FindRef(TEXT("speaker")),FString(TEXT("A")));
+    TestTrue(TEXT("Fixed positive lookbehind"),ACEVTRegex::Match(TEXT("(?<=Prefix )(word)\\1"),TEXT("Prefix wordword"),Captures,Error));
+    TestEqual(TEXT("Lookbehind does not add a capture"),Captures.FindRef(TEXT("1")),FString(TEXT("word")));
+    TestTrue(TEXT("Negative lookbehind"),ACEVTRegex::Test(TEXT("(?<!No )Loot"),TEXT("Yes Loot"),Error));
+    TestFalse(TEXT("Negative lookbehind rejects prohibited prefix"),ACEVTRegex::Test(TEXT("(?<!No )Loot"),TEXT("No Loot"),Error));
+    TestTrue(TEXT("Comments cannot change named capture numbering"),ACEVTRegex::Match(TEXT("(?# ignored (?<fake)(?'word'A)(B)\\k'word'"),TEXT("ABA"),Captures,Error));
+    TestEqual(TEXT("Named backreference retains .NET output numbering"),Captures.FindRef(TEXT("1")),FString(TEXT("B")));
+    TestEqual(TEXT("Comment excluded from named captures"),Captures.FindRef(TEXT("word")),FString(TEXT("A")));
+    TestFalse(TEXT("Unterminated comment rejected"),ACEVTRegex::Validate(TEXT("(?# broken"),Error));
+    TestFalse(TEXT("Unbounded lookbehind remains explicit error"),ACEVTRegex::Validate(TEXT("(?<=a*)b"),Error));
     for(int I=0;I<600;++I)
     {
         const FString Pattern=FString::Printf(TEXT("^(?<value>Item%d)$"),I);
@@ -84,7 +93,28 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
         TestFalse(TEXT("Invalid predicates never become cached no-match results"),ACEVTRegex::Test(TEXT("["),TEXT("Fire"),Error));
         TestFalse(TEXT("Invalid pattern keeps its diagnostic"),Error.IsEmpty());
     }
-    TestFalse(TEXT("Unsupported extended mode rejected during import"),ACEVTRegex::Validate(TEXT("(?x)a # comment ("),Error));
+    TestTrue(TEXT("Extended-mode comments excluded from parsing"),ACEVTRegex::Validate(TEXT("(?x)a # comment ("),Error));
+    TestTrue(TEXT("Extended mode preserves escaped and class whitespace"),ACEVTRegex::Match(TEXT("(?x) ^ (?<word>A) # fake (?<ignore>\n (B) [ #] \\# $"),TEXT("AB #"),Captures,Error));
+    TestEqual(TEXT("Extended mode keeps unnamed-first numbering"),Captures.FindRef(TEXT("1")),FString(TEXT("B")));
+    TestEqual(TEXT("Extended mode keeps named capture"),Captures.FindRef(TEXT("word")),FString(TEXT("A")));
+    TestTrue(TEXT("Scoped extended mode restores outer whitespace rules"),ACEVTRegex::Test(TEXT("^(?x:A B)(?-x: C )D$"),TEXT("AB C D"),Error));
+    TestFalse(TEXT("Disabled extended mode whitespace is mandatory"),ACEVTRegex::Test(TEXT("^(?x:A B)(?-x: C )D$"),TEXT("ABCD"),Error));
+    TestFalse(TEXT("Extended mode cannot repair invalid group names"),ACEVTRegex::Validate(TEXT("(?x)(?<na me>A)"),Error));
+    TestFalse(TEXT("Extended mode cannot repair invalid group prefixes"),ACEVTRegex::Validate(TEXT("(?x)(? <name>A)"),Error));
+    TestFalse(TEXT("Spaced braces are not converted into a quantifier"),ACEVTRegex::Test(TEXT("(?x)^a{1, 2}$"),TEXT("aa"),Error));
+    TestTrue(TEXT("Spaced braces retain dotnet literal semantics"),ACEVTRegex::Test(TEXT("(?x)^a{1, 2}$"),TEXT("a{1,2}"),Error));
+    TestTrue(TEXT("Unicode property escapes retain their braces"),ACEVTRegex::Test(TEXT("(?x)^\\p{Lu}\\P{Lu}$"),TEXT("Aa"),Error));
+    TestTrue(TEXT("Dotnet four digit hex escape stays one character"),ACEVTRegex::Test(TEXT("^\\x1234\\u0041$"),FString::Chr(TCHAR(0x1234))+TEXT("A"),Error));
+    TestFalse(TEXT("Extended whitespace cannot repair a malformed escape"),ACEVTRegex::Validate(TEXT("(?x)\\u00 41"),Error));
+    TestTrue(TEXT("Mixed numeric and named backreferences remap"),ACEVTRegex::Match(TEXT("^(?<name>A)(B)\\1\\2$"),TEXT("ABBA"),Captures,Error));
+    TestFalse(TEXT("ICU source-order references cannot leak through"),ACEVTRegex::Test(TEXT("^(?<name>A)(B)\\1\\2$"),TEXT("ABAB"),Error));
+    TestTrue(TEXT("Delimited numeric reference remains separate from next digit"),ACEVTRegex::Test(TEXT("^(?<name>A)(B)\\k<1>2$"),TEXT("ABB2"),Error));
+    TestTrue(TEXT("Explicit capture mode excludes ordinary groups"),ACEVTRegex::Match(TEXT("(?n)^(A)(?<word>B)(?-n:(C))\\1\\2$"),TEXT("ABCCB"),Captures,Error));
+    TestEqual(TEXT("Explicit capture mode result numbering"),Captures.FindRef(TEXT("1")),FString(TEXT("C")));
+    TestTrue(TEXT("Missing multidigit reference uses dotnet octal fallback"),ACEVTRegex::Test(TEXT("^(A)\\10$"),FString(TEXT("A"))+TCHAR(8),Error));
+    TestFalse(TEXT("Undefined single-digit reference is rejected"),ACEVTRegex::Validate(TEXT("(?<name>A)\\2"),Error));
+    TestTrue(TEXT("Balancing groups import with capture history"),ACEVTRegex::Validate(TEXT("(?<open>a)(?<-open>b)"),Error));
+    TestTrue(TEXT("Conditional groups import with capture participation"),ACEVTRegex::Validate(TEXT("(a)?(?(1)b|c)"),Error));
     TestFalse(TEXT("Capture limit enforced on import"),ACEVTRegex::Validate(FString::ChrN(33,'(')+FString::ChrN(33,')'),Error));
     const double Start=FPlatformTime::Seconds();
     TestFalse(TEXT("Pathological regex cannot hang the game thread"),ACEVTRegex::Match(TEXT("(a+)+$"),FString::ChrN(4000,'a')+TEXT("!"),Captures,Error));
@@ -118,7 +148,7 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
     TestTrue(TEXT("Give executes"),VM.Step(S,Give,Intent,Error));if(!Intent){AddError(Error);return false;}
     TestEqual(TEXT("Normal give intent"),Intent->GetStringField(TEXT("action")),FString(TEXT("give")));TestEqual(TEXT("Give one item"),Intent->GetNumberField(TEXT("amount")),1.);
     VM.Step(S,Give,Intent,Error);TestFalse(TEXT("Give not repeated while waiting"),Intent->HasField(TEXT("action")));
-    S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("action_error"),3);VM.Step(S,Give,Intent,Error);TestEqual(TEXT("Rejected give pauses the meta"),Intent->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
+    S->SetNumberField(TEXT("inventory_failure_serial"),1);S->SetNumberField(TEXT("inventory_failure_item"),9);S->SetNumberField(TEXT("inventory_failure_error"),3);VM.Step(S,Give,Intent,Error);TestEqual(TEXT("Rejected give pauses the meta"),Intent->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
     S->SetNumberField(TEXT("action_error"),0);
     auto Use=Compile(TEXT("/vt mexec actiontryuseitem[wobjectfindnearestbyobjectclass[37]]"));TestEqual(TEXT("World expression compiles"),Issues.Num(),0);
     FACEPluginVM U;U.Load(Script,Error);U.Step(S,Use,Intent,Error);TestEqual(TEXT("Expression resolves NPC and uses it"),Intent->GetNumberField(TEXT("item")),10.);
@@ -178,6 +208,10 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
         auto Step=[&](){TestTrue(TEXT("Scroll retry policy executes"),Reads.Step(Snap,Profile,Intent,Error));return Intent&&Intent->HasField(TEXT("action"))?Intent->GetStringField(TEXT("action")):FString();};
         TestEqual(TEXT("Restart recovers an unread carried scroll"),Step(),FString(TEXT("read")));
         Snap->SetNumberField(TEXT("action_serial"),1);Snap->SetNumberField(TEXT("action_error"),BusyError?0x3c:0);
+        auto Receipt=AdapterJSON(TEXT(R"({"type":"use","source":98,"action_serial":1,"requested_at":100,"error":0})"));Receipt->SetNumberField(TEXT("error"),BusyError?0x3c:0);
+        Snap->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Receipt)});Step();
+        Snap->SetNumberField(TEXT("time"),101);TestTrue(TEXT("Unrelated completion cannot finish scroll reading"),Step().IsEmpty());
+        Snap->SetNumberField(TEXT("time"),100);Receipt->SetNumberField(TEXT("source"),99);
         TestTrue(TEXT("A use completion cannot discard an unlearned scroll"),Step().IsEmpty());
         Snap->SetNumberField(TEXT("time"),101);Step();
         Snap->SetNumberField(TEXT("time"),104);
@@ -192,6 +226,7 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
             Snap->SetNumberField(TEXT("time"),200+Attempt*10);Bounded.Step(Snap,Profile,Intent,Error);
             TestEqual(TEXT("Bounded retry sends a read"),Intent->GetStringField(TEXT("action")),FString(TEXT("read")));
             Snap->SetNumberField(TEXT("action_serial"),Attempt);Snap->SetNumberField(TEXT("action_error"),0x3c);
+            Receipt->SetNumberField(TEXT("action_serial"),Attempt);Receipt->SetNumberField(TEXT("requested_at"),200+Attempt*10);Receipt->SetNumberField(TEXT("error"),0x3c);
             Bounded.Step(Snap,Profile,Intent,Error);
         }
         TestEqual(TEXT("Third failure is reported without stopping UCM"),Intent->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
@@ -215,6 +250,7 @@ bool FACEVTAdaptersTest::RunTest(const FString&)
         auto Profile=AdapterJSON(TEXT(R"({"buffing":false,"recovery":false,"combat":"off","looting":true,"loot_rules":[{"action":"keep"}]})"));
         Profile->GetArrayField(TEXT("loot_rules"))[0]->AsObject()->SetStringField(TEXT("action"),Action);
         Snap->GetArrayField(TEXT("contents"))[0]->AsObject()->SetNumberField(TEXT("material"),59);
+        Snap->GetArrayField(TEXT("contents"))[0]->AsObject()->SetNumberField(TEXT("workmanship"),5);
         TestTrue(TEXT("Loot action transfers first"),Loot.Step(Snap,Profile,Intent,Error));if(!Intent){AddError(Error);continue;}
         TestEqual(TEXT("Loot uses normal transfer"),Intent->GetStringField(TEXT("action")),FString(TEXT("loot")));
         auto Owned=Snap->GetArrayField(TEXT("inventory"));Owned.Add(Snap->GetArrayField(TEXT("contents"))[0]);Snap->SetArrayField(TEXT("inventory"),Owned);Snap->SetArrayField(TEXT("contents"),{});

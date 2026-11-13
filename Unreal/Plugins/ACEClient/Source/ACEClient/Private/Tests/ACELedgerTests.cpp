@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "ACETestDatDirectory.h"
 #include "Mods/ACELedger.h"
 #include "Mods/ACEWaypoint.h"
 #include "Misc/ScopeExit.h"
@@ -70,7 +71,7 @@ bool FACELedgerTest::RunTest(const FString&)
     TestEqual(TEXT("Out-of-stock item remains tracked"),Entries.Num(),1);
 
     auto* GI=NewObject<UGameInstance>();GI->Init();
-    TestTrue(TEXT("Retail DAT loads for visual verification"),GI->GetSubsystem<UACEDatSubsystem>()->LoadDatDirectory(TEXT("C:/Turbine/Asheron's Call")));
+    TestTrue(TEXT("Retail DAT loads for visual verification"),GI->GetSubsystem<UACEDatSubsystem>()->LoadDatDirectory(ACETestDatDirectory()));
     auto* H=GI->GetSubsystem<UACEPluginSubsystem>();
     auto* Manager=GI->GetSubsystem<UACEClientSubsystem>()->GetUIElementManager();Manager->SetUiLocked(false);
     H->StorageRoot=FPaths::ProjectSavedDir()/TEXT("Automation/Ledgers");H->Settings=MakeShared<FJsonObject>();
@@ -428,6 +429,7 @@ bool FACELedgerTest::RunTest(const FString&)
         {
             auto Label=SNew(SACEPluginText).Text(FText::FromString(TEXT("Pin map to interface - illi iii Inventory"))).Font(FCoreStyle::GetDefaultFontStyle("Regular",FontSize));
             Labels->AddSlot().AutoHeight()[Label];
+            Label->SlatePrepass(1); // Evaluate the bound font attribute before measuring.
             const double TextHeight=Label->ComputeDesiredSize(1).Y;
             TestTrue(TEXT("Requested plugin text sizes produce increasing line heights"),TextHeight>PreviousTextHeight);
             PreviousTextHeight=TextHeight;

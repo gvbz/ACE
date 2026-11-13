@@ -160,6 +160,16 @@ bool FACEAutoCraftTest::RunTest(const FString&)
     ON_SCOPE_EXIT{S.SocketC2S->Close();Sockets->DestroySocket(S.SocketC2S);S.SocketC2S=nullptr;S.ServerC2SAddr.Reset();S.IssacClient.Reset();Receiver->Close();Sockets->DestroySocket(Receiver);};
     auto SentUses=[&](){int32 Count=0;for(const auto& Packet:S.CachedC2SPackets){FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);if(R.ReadUInt32()==ACEGameAction::UseWithTarget){++Count;TestEqual(TEXT("Packet applies arrowheads as source"),R.ReadUInt32(),10u);TestEqual(TEXT("Packet applies to arrowshafts"),R.ReadUInt32(),11u);}}return Count;};
     TestTrue(TEXT("Start succeeds"),H->StartAutoCraft());H->TickAutoCraft();TestTrue(TEXT("Craft is pending"),H->AutoCraft->Pending);TestEqual(TEXT("One craft was sent"),SentUses(),1);
+    auto UseReceipt=[&](int32 From,int32 To,double Requested,uint32 Error,const TCHAR* Type=TEXT("use"))
+    {
+        auto E=MakeShared<FJsonObject>();E->SetStringField(TEXT("type"),Type);E->SetStringField(TEXT("stage"),TEXT("completed"));
+        E->SetNumberField(TEXT("source"),uint32(From));E->SetNumberField(TEXT("target"),uint32(To));E->SetNumberField(TEXT("requested_at"),Requested);
+        E->SetNumberField(TEXT("action_serial"),++H->ActionSerial);E->SetNumberField(TEXT("error"),Error);H->LastActionError=Error;H->EmitPluginAction(E);
+    };
+    UseReceipt(99,11,H->AutoCraft->RequestedAt,123);H->TickAutoCraft();TestTrue(TEXT("Unrelated source error cannot stop a craft"),Plugin->Running);
+    UseReceipt(10,99,H->AutoCraft->RequestedAt,123);H->TickAutoCraft();TestTrue(TEXT("Same tool on another target cannot stop a craft"),Plugin->Running);
+    UseReceipt(10,11,H->AutoCraft->RequestedAt-1,123);H->TickAutoCraft();TestTrue(TEXT("Older request on same ingredients cannot stop a craft"),Plugin->Running);
+    UseReceipt(10,11,H->AutoCraft->RequestedAt,123,TEXT("cast"));H->TickAutoCraft();TestTrue(TEXT("Spell error cannot stop an item craft"),Plugin->Running);
     for(int32 N=0;N<20;++N)H->TickAutoCraft();TestEqual(TEXT("No duplicate crafts while awaiting network"),SentUses(),1);
     S.bUseBusy=false;H->ObserveUseDone(0);H->TickAutoCraft();TestEqual(TEXT("UseDone alone cannot increment progress"),H->AutoCraft->Completed,0);
     S.Confirmations.Add({5,42,TEXT("Chance of success")});H->TickAutoCraft();TestTrue(TEXT("Only job crafting confirmation accepted"),S.Confirmations.IsEmpty());
@@ -186,6 +196,13 @@ bool FACEAutoCraftTest::RunTest(const FString&)
     TestEqual(TEXT("Matching craft failure plus consumed inputs counts failure"),H->AutoCraft->Failures,1);
     H->Stop(Plugin->Id,TEXT("test reset"));
 
+    Item(10,Arrow.Source,1);Item(11,Arrow.Target,1);
+    TestTrue(TEXT("Rejection fixture starts"),H->StartAutoCraft());H->TickAutoCraft();
+    UseReceipt(10,11,H->AutoCraft->RequestedAt,123);const auto BeforeReject=SentUses();H->TickAutoCraft();
+    TestFalse(TEXT("Matching failed receipt stops only the current craft"),Plugin->Running);
+    TestEqual(TEXT("Rejected craft is never retried"),SentUses(),BeforeReject);
+    S.bUseBusy=false;S.WorldObjects.Remove(10);S.WorldObjects.Remove(11);
+
     // A same-type recipe must split a single stack before using two distinct IDs.
     const int32 PairRecipe=Catalog.Recipes.IndexOfByPredicate([](const FRecipe& R){return R.Source==R.Target&&R.SourceCount==1&&R.TargetCount==1&&!R.Skill;});
     if(TestTrue(TEXT("Same-type recipe exists"),PairRecipe!=INDEX_NONE))
@@ -195,6 +212,8 @@ bool FACEAutoCraftTest::RunTest(const FString&)
         TestEqual(TEXT("Split precedes craft"),H->AutoCraft->Preparation,FString(TEXT("split")));
         TestFalse(TEXT("Stack preparation does not send a craft"),S.bUseBusy);
         const auto PacketCount=S.CachedC2SPackets.Num();H->TickAutoCraft();TestEqual(TEXT("Pending split is not repeated"),S.CachedC2SPackets.Num(),PacketCount);
+        ++S.InventoryFailureSerial;S.InventoryFailureItem=999;H->TickAutoCraft();TestTrue(TEXT("Other inventory failure cannot stop ingredient split"),Plugin->Running);
+        ++S.InventoryFailureSerial;S.InventoryFailureItem=0;H->TickAutoCraft();TestTrue(TEXT("Unscoped inventory failure cannot identify a split ingredient"),Plugin->Running);
         S.WorldObjects[20].StackSize=3;Item(21,R.Source,1);H->TickAutoCraft();H->AutoCraft->ResultAt=FPlatformTime::Seconds()-1;H->TickAutoCraft();
         TestFalse(TEXT("Both split receipts confirm preparation"),H->AutoCraft->Pending);
         H->AutoCraft->NextAction=0;H->TickAutoCraft();
@@ -212,6 +231,14 @@ bool FACEAutoCraftTest::RunTest(const FString&)
         const int32 Into=H->AutoCraft->TargetGuid,From=H->AutoCraft->SourceGuid;S.WorldObjects[Into].StackSize+=H->AutoCraft->PrepareAmount;S.WorldObjects.Remove(From);
         H->TickAutoCraft();H->AutoCraft->ResultAt=FPlatformTime::Seconds()-1;H->TickAutoCraft();TestFalse(TEXT("Merge completes after both receipts"),H->AutoCraft->Pending);
         H->Stop(Plugin->Id,TEXT("test reset"));S.WorldObjects.Remove(30);S.WorldObjects.Remove(31);S.WorldObjects.Remove(32);
+        for(bool TargetFailure:{false,true})
+        {
+            Item(30,R.Source,2);Item(31,R.Source,1);Item(32,R.Target,FMath::Max(1,R.TargetCount));
+            TestTrue(TEXT("Rejected merge fixture starts"),H->StartAutoCraft());H->TickAutoCraft();
+            S.InventoryFailureItem=TargetFailure?H->AutoCraft->TargetGuid:H->AutoCraft->SourceGuid;++S.InventoryFailureSerial;
+            H->TickAutoCraft();TestFalse(TEXT("Either ingredient failure stops pending merge"),Plugin->Running);
+            S.WorldObjects.Remove(30);S.WorldObjects.Remove(31);S.WorldObjects.Remove(32);
+        }
     }
 
     Item(10,Arrow.Source,2);Item(11,Arrow.Target,2);Plugin->Profile->SetStringField(TEXT("recipe"),Arrow.Id);Plugin->Profile->SetNumberField(TEXT("quantity"),100);
@@ -279,6 +306,70 @@ bool FACEAutoCraftTest::RunTest(const FString&)
         TArray<FColor> Pixels;Target->GameThread_GetRenderTargetResource()->ReadPixels(Pixels);TArray64<uint8> Png;
         FImageUtils::PNGCompressImageArray(int32(Size.X),int32(Size.Y),Pixels,Png);
         TestTrue(TEXT("UI review image saved"),FFileHelper::SaveArrayToFile(Png,*(FPaths::ProjectSavedDir()/TEXT("AutoCraftTests/panel.png"))));
+    }
+    // UCM shares the executor, but owns its own one-batch job and failure domain.
+    {
+        auto UCM=H->Find(TEXT("ucm"));H->SetEnabled(UCM->Id,true);UCM->Running=true;UCM->Player=S.PlayerGuid;UCM->Server=C->GetServerName();
+        UCM->Profile->SetBoolField(TEXT("auto_craft"),true);H->UCMServicesProfile.Reset();
+        auto Supply=MakeShared<FJsonObject>();Supply->SetStringField(TEXT("name"),Catalog.Name(Arrow.Output));Supply->SetNumberField(TEXT("count"),100);
+        UCM->Profile->SetArrayField(TEXT("craft_targets"),{MakeShared<FJsonValueObject>(Supply)});
+        S.WorldObjects.Reset();S.WorldObjects.Add(Self.Guid,Self);S.Confirmations.Reset();S.bUseBusy=false;Item(10,Arrow.Source,3);Item(11,Arrow.Target,3);
+        auto View=[&](){auto O=MakeShared<FJsonObject>();if(H->UCMCraft)H->UCMCraft->NextRefresh=0;H->ExtendUCMCraftSnapshot(O);return O->GetObjectField(TEXT("crafting"));};
+        auto V=View();TestTrue(TEXT("Disabled standalone plugin is not required for UCM planning"),!V->GetArrayField(TEXT("candidates")).IsEmpty());
+        auto Request=MakeShared<FJsonObject>();Request->SetStringField(TEXT("recipe"),Arrow.Id);
+        // Inventory can change between the Lua snapshot and dispatch.
+        Item(12,Arrow.Output,100);H->ExecuteUCMCraft(*UCM,Request);
+        TestEqual(TEXT("Fresh stock cancels a stale recipe candidate"),H->UCMCraft->Selected,INDEX_NONE);
+        S.WorldObjects.Remove(12);S.WorldObjects[10].ObjectDescriptionFlags|=ACEObjectDescFlag::Retained;
+        TestTrue(TEXT("Retained ingredients are excluded by UCM planner"),View()->GetArrayField(TEXT("candidates")).IsEmpty());S.WorldObjects[10].ObjectDescriptionFlags=0;
+        S.TradeSelfItems.Add(11);TestTrue(TEXT("Offered ingredients cannot be crafted"),View()->GetArrayField(TEXT("candidates")).IsEmpty());S.TradeSelfItems.Reset();
+        H->ExecuteUCMCraft(*UCM,Request);TestTrue(TEXT("UCM dispatches recipe using native executor"),H->UCMCraft->Pending);
+        TestEqual(TEXT("One batch rather than entire stock target is scheduled"),H->UCMCraft->Goal,100);
+        auto CraftPackets=[&](){int32 N=0;for(const auto& Packet:S.CachedC2SPackets){FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);if(R.ReadUInt32()==ACEGameAction::UseWithTarget)++N;}return N;};
+        const int32 Packets=CraftPackets();H->ExecuteUCMCraft(*UCM,Request);TestEqual(TEXT("Pending craft is not resent"),CraftPackets(),Packets);
+        S.bUseBusy=false;UseReceipt(10,11,H->UCMCraft->RequestedAt,0);S.WorldObjects[10].StackSize--;S.WorldObjects[11].StackSize--;Item(12,Arrow.Output,100);
+        H->ExecuteUCMCraft(*UCM,Request);H->UCMCraft->ResultAt=FPlatformTime::Seconds()-1;H->ExecuteUCMCraft(*UCM,Request);
+        TestEqual(TEXT("Inventory confirmation finishes UCM batch"),H->UCMCraft->Selected,INDEX_NONE);TestTrue(TEXT("Craft completion leaves UCM running"),UCM->Running);
+        TestTrue(TEXT("Met stock minimum has no further candidates"),View()->GetArrayField(TEXT("candidates")).IsEmpty());
+        Supply->SetNumberField(TEXT("count"),200);TestEqual(TEXT("Partial stock uses idle priority"),View()->GetArrayField(TEXT("candidates"))[0]->AsObject()->GetStringField(TEXT("phase")),FString(TEXT("idle")));
+        H->ExecuteUCMCraft(*UCM,Request);UseReceipt(10,11,H->UCMCraft->RequestedAt,123);H->ExecuteUCMCraft(*UCM,Request);
+        TestEqual(TEXT("Rejected craft releases job"),H->UCMCraft->Selected,INDEX_NONE);TestTrue(TEXT("Server error leaves UCM enabled"),UCM->Running);
+        TestTrue(TEXT("Failed supply cannot be retried through another recipe"),View()->GetArrayField(TEXT("candidates")).IsEmpty());
+        TestTrue(TEXT("Craft failure is delivered to scheduler"),UCM->ActivityFailure.IsValid());
+        S.bUseBusy=false;UCM->Profile->SetBoolField(TEXT("auto_craft"),false);auto Empty=MakeShared<FJsonObject>();H->ExtendUCMCraftSnapshot(Empty);
+        TestFalse(TEXT("Disable releases crafting state"),H->UCMCraft.IsValid());H->Stop(UCM->Id,TEXT("Test complete"));
+    }
+    // Imported recipes are atomic, persistent and scoped to the observed server.
+    {
+        const FString CustomPath=H->StorageRoot/TEXT("custom-recipes.json");
+        const FString Custom=TEXT(R"({"schema":1,"version":"fixture","items":[
+          {"id":700001,"name":"Custom source","max_stack":100,"icon":0,"type":0},
+          {"id":700002,"name":"Custom target","max_stack":100,"icon":0,"type":0},
+          {"id":700003,"name":"Custom output","max_stack":100,"icon":0,"type":0}],
+          "recipes":[{"id":"custom-fixture","category":"Custom","source":700001,"target":700002,"output":700003,"yield_count":2,"skill":0,"difficulty":0,
+          "source_count":1,"target_count":1,"fail_source":0,"fail_target":0,"fail_output":0,"fail_yield":0,"chain":true}]})");
+        TestTrue(TEXT("Custom catalog fixture saved"),FFileHelper::SaveStringToFile(Custom,*CustomPath));
+        S.ServerName=TEXT("Recipe Server A");H->RefreshAutoCraft(true);
+        TestTrue(TEXT("Server catalog imports"),H->ImportAutoCraftCatalog(CustomPath));
+        TestTrue(TEXT("Custom recipe is in standalone selector"),H->AutoCraft->Catalog.ByName.Contains(TEXT("Custom output")));
+        TestTrue(TEXT("Bundled recipes survive overlay"),H->AutoCraft->Catalog.ById.Contains(Arrow.Id));
+        FACEAutoCraftState Shared;H->LoadAutoCraftCatalog(Shared);
+        TestTrue(TEXT("UCM loads the same server catalog"),Shared.Catalog.ById.Contains(TEXT("custom-fixture")));
+        FInventory CustomStock;CustomStock.Counts={{700001,2},{700002,3}};
+        TestEqual(TEXT("Imported recipe plans with declared direction and yield"),Plan(Shared.Catalog,Shared.Catalog.ById[TEXT("custom-fixture")],CustomStock,3,false).Units,4);
+        FFileHelper::SaveStringToFile(TEXT("{broken"),*CustomPath);
+        TestFalse(TEXT("Invalid replacement is rejected"),H->ImportAutoCraftCatalog(CustomPath));
+        H->AutoCraft.Reset();H->RefreshAutoCraft(true);
+        TestTrue(TEXT("Rejected replacement keeps prior persisted recipe"),H->AutoCraft->Catalog.ById.Contains(TEXT("custom-fixture")));
+        S.ServerName=TEXT("Recipe Server B");H->RefreshAutoCraft(true);
+        TestFalse(TEXT("Other server never inherits custom recipe"),H->AutoCraft->Catalog.ById.Contains(TEXT("custom-fixture")));
+        S.ServerName=TEXT("Recipe Server A");H->RefreshAutoCraft(true);
+        TestTrue(TEXT("Returning to server restores custom recipe"),H->AutoCraft->Catalog.ById.Contains(TEXT("custom-fixture")));
+        H->Find(TEXT("autocraft"))->Running=true;
+        TestFalse(TEXT("Active crafting prevents catalog removal"),H->RemoveAutoCraftCatalog());
+        H->Find(TEXT("autocraft"))->Running=false;
+        TestTrue(TEXT("Server catalog can be removed"),H->RemoveAutoCraftCatalog());
+        TestFalse(TEXT("Removing overlay restores bundled catalog"),H->AutoCraft->Catalog.ById.Contains(TEXT("custom-fixture")));
     }
     return true;
 }

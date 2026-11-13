@@ -176,6 +176,19 @@ namespace
         }
     }
     int PushArgument(lua_State* L);
+    struct FRegexPair {TArray<ANSICHAR> Key,Value;};
+    int PushRegexCaptures(lua_State* L)
+    {
+        const auto* Pairs=static_cast<const TArray<FRegexPair>*>(lua_touserdata(L,1));
+        lua_createtable(L,0,Pairs->Num());
+        for(const auto& Pair:*Pairs)
+        {
+            lua_pushlstring(L,Pair.Key.GetData(),Pair.Key.Num());
+            lua_pushlstring(L,Pair.Value.GetData(),Pair.Value.Num());
+            lua_rawset(L,-3);
+        }
+        return 1;
+    }
     int RegexTest(lua_State* L)
     {
         size_t TextBytes=0,PatternBytes=0;const char* Text=luaL_checklstring(L,1,&TextBytes);const char* Pattern=luaL_checklstring(L,2,&PatternBytes);
@@ -196,7 +209,7 @@ namespace
         // C++ temporaries are destroyed before raising the Lua longjmp exception.
         bool Failed=false;int Result=0;
         {
-            const double Start=FPlatformTime::Seconds();TMap<FString,FString> Groups;FString Error;
+            const double Start=FPlatformTime::Seconds();ACEVTRegex::FCaptures Groups;FString Error;
             const bool Found=ACEVTRegex::Match(UTF8_TO_TCHAR(Pattern),UTF8_TO_TCHAR(Text),Groups,Error);
             RegexWork+=FPlatformTime::Seconds()-Start;Failed=!Error.IsEmpty()||RegexWork>.02;
             if(!Failed)
@@ -204,8 +217,17 @@ namespace
                 if(!Found)lua_pushnil(L);
                 else
                 {
-                    auto Object=MakeShared<FJsonObject>();for(const auto& Pair:Groups)Object->SetStringField(Pair.Key,Pair.Value);
-                    lua_pushcfunction(L,PushArgument);lua_pushlightuserdata(L,&Object.Get());
+                    // JSON's FString keys fold case. Build the capture table
+                    // directly so groups named x and X remain distinct. Keep
+                    // UTF-8 storage outside pcall's longjmp boundary.
+                    TArray<FRegexPair> Pairs;
+                    for(const auto& Group:Groups)
+                    {
+                        auto& Pair=Pairs.AddDefaulted_GetRef();
+                        FTCHARToUTF8 Key(*Group.Key),Value(*Group.Value);
+                        Pair.Key.Append(Key.Get(),Key.Length());Pair.Value.Append(Value.Get(),Value.Length());
+                    }
+                    lua_pushcfunction(L,PushRegexCaptures);lua_pushlightuserdata(L,&Pairs);
                     Failed=lua_pcall(L,1,1,0)!=LUA_OK;
                 }
                 Result=1;

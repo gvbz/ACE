@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "ACETestDatDirectory.h"
 #include "Misc/FileHelper.h"
 #include "Interfaces/IPluginManager.h"
 #include "Serialization/JsonSerializer.h"
@@ -53,7 +54,7 @@ bool FACEUCMDetourTest::RunTest(const FString&)
     if(D){TArray<FString> Issues;ACEVTProfile::Convert(D,Issues);TestEqual(TEXT("Recovered salvage policy validates"),Issues.Num(),0);}
     TestFalse(TEXT("Truncated policy contents remain rejected"),ACEVTProfile::Read(Tail.LeftChop(3),TEXT("utl"),Error).IsValid());
     auto* GI=NewObject<UGameInstance>();GI->Init();auto* Dat=GI->GetSubsystem<UACEDatSubsystem>();
-    if(TestTrue(TEXT("Retail DAT loads for creature attack heights"),Dat->LoadDatDirectory(TEXT("C:/Turbine/Asheron's Call"))))
+    if(TestTrue(TEXT("Retail DAT loads for creature attack heights"),Dat->LoadDatDirectory(ACETestDatDirectory())))
     {
         FACEPosition Player;Player.CellId=0x01D9010B;Player.Location=FVector(34.804504,-34.515625,0);
         int32 Index=0;for(const auto& Model:ACECreatureFixtures::Models)
@@ -192,6 +193,30 @@ bool FACEUCMBlockedRouteTest::RunTest(const FString&)
     TestEqual(TEXT("Reopens a previously used door after it closes"),Action(Doors),FString(TEXT("use_world")));
     for(int N=1;N<=3;++N)
     {S->SetNumberField(TEXT("time"),106+N*6);TestEqual(TEXT("A persistently closed door has bounded retries"),Action(Doors),FString(N==3?TEXT("pause_navigation"):TEXT("use_world")));}
+
+    {
+        auto OriginalItems=S->GetArrayField(TEXT("inventory"));
+        S->SetNumberField(TEXT("time"),150);Door->SetBoolField(TEXT("door_identified"),false);
+        FACEPluginVM Lock;Lock.Load(Script,Error);
+        TestEqual(TEXT("Closed route door is assessed before choosing key or use"),Action(Lock),FString(TEXT("identify")));
+        Door->SetBoolField(TEXT("door_identified"),true);Door->SetBoolField(TEXT("door_locked"),true);Door->SetNumberField(TEXT("lock_difficulty"),200);
+        S->SetObjectField(TEXT("skills"),Json(TEXT(R"({"23":{"training":2,"current":210}})")));P->SetNumberField(TEXT("door_lockpick_margin"),10);
+        S->SetArrayField(TEXT("inventory"),Json(TEXT(R"({"v":[{"id":81,"name":"Pick","object_class":30,"usable":true,"structure":15},{"id":82,"name":"Pick","object_class":30,"usable":true,"structure":2},{"id":83,"name":"Other","object_class":30,"usable":true,"structure":1},{"id":84,"name":"Pick","object_class":30,"usable":true,"structure":0}]})"))->GetArrayField(TEXT("v")));
+        P->SetArrayField(TEXT("assist_items"),Json(TEXT(R"({"v":[{"name":"Pick","type":10}]})"))->GetArrayField(TEXT("v")));
+        S->SetNumberField(TEXT("time"),156);auto Unlock=Step(Lock);
+        TestEqual(TEXT("Uses a lockpick instead of repeatedly using a locked door"),Unlock->GetStringField(TEXT("action")),FString(TEXT("apply_item")));
+        TestEqual(TEXT("Consumes configured pick with fewest remaining uses"),Unlock->GetNumberField(TEXT("item")),82.);
+        TestEqual(TEXT("Pick targets the obstructing door"),Unlock->GetNumberField(TEXT("target")),77.);
+        S->SetNumberField(TEXT("time"),162);Door->SetBoolField(TEXT("door_locked"),false);
+        TestEqual(TEXT("Confirmed unlock is followed by normal door use"),Action(Lock),FString(TEXT("use_world")));
+        Door->SetBoolField(TEXT("door_locked"),true);S->GetObjectField(TEXT("skills"))->GetObjectField(TEXT("23"))->SetNumberField(TEXT("current"),209);
+        FACEPluginVM TooHard;TooHard.Load(Script,Error);TestEqual(TEXT("Insufficient lockpick margin pauses only route"),Action(TooHard),FString(TEXT("pause_navigation")));
+        S->GetObjectField(TEXT("skills"))->GetObjectField(TEXT("23"))->SetNumberField(TEXT("current"),210);
+        for(const auto& Pick:S->GetArrayField(TEXT("inventory")))Pick->AsObject()->SetBoolField(TEXT("lockpick_available"),false);
+        FACEPluginVM NoPicks;NoPicks.Load(Script,Error);TestEqual(TEXT("Unavailable picks never start an unlock loop"),Action(NoPicks),FString(TEXT("pause_navigation")));
+        S->SetArrayField(TEXT("inventory"),OriginalItems);P->RemoveField(TEXT("assist_items"));P->RemoveField(TEXT("door_lockpick_margin"));
+        Door->RemoveField(TEXT("door_identified"));Door->RemoveField(TEXT("door_locked"));
+    }
 
     // A door that closes during an off-route fight blocks the recorded return path.
     // Keep the detour off the active segment: an on-route fight now resumes forward.

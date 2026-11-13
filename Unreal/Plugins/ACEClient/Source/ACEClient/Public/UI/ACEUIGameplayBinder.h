@@ -62,6 +62,7 @@ class ACECLIENT_API UACEUIGameplayBinder : public UObject
 {
 	GENERATED_BODY()
 	friend class FACERetailScreenTest;
+	friend struct FACERetailVendorUIFixture;
 	friend struct FACEContractUIFixture;
 	friend class FACEPortalInterfaceTest;
 	friend class FACERetailLogoutTest;
@@ -88,6 +89,7 @@ class ACECLIENT_API UACEUIGameplayBinder : public UObject
 	friend class FACEEmoteTest;
 	friend class FACEUILayoutCommandsTest;
 	friend class FACEUIInteractionParityTest;
+	friend class FACEVendorTransactionsTest;
 	friend class FACERetailSpellComponentsTest;
 	friend class FACEPanelResizeSocialTest;
 	friend class FACEInventoryUICostTest;
@@ -1503,6 +1505,8 @@ private:
 	int32 GetVendorSelectionLimit(int32 ItemGuid) const;
 	void AddSelectedVendorItemToBuyCart();
 	void BuyVendorCartItem();
+	void BuyVendorCart();
+	bool SubmitVendorPurchase(const TArray<TPair<int32,int32>>& Items);
 	void SellVendorCart(bool bSelectedOnly = false);
 	bool DropInventoryInWorld(int32 Guid, int32 Amount, const FVector2D& Absolute);
 	void AddInventoryGuidToVendorSellCart(int32 Guid, int32 Amount = INDEX_NONE);

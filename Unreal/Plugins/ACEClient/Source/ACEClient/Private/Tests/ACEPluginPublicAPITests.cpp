@@ -102,7 +102,7 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
     }
     {
         FACEClientPlugin Observer;Observer.Api=2;Observer.Companion=true;Observer.SelectiveSnapshot=true;
-        Observer.Permissions={TEXT("data")};Observer.SnapshotFields={TEXT("char_ints"),TEXT("health"),TEXT("character_name"),TEXT("action_serial"),TEXT("action_events")};
+        Observer.Permissions={TEXT("data")};Observer.SnapshotFields={TEXT("char_ints"),TEXT("health"),TEXT("character_name"),TEXT("action_serial"),TEXT("action_events"),TEXT("inventory_failure_serial"),TEXT("inventory_failure_item"),TEXT("inventory_failure_error")};
         UACEPluginSubsystem::FCompanionReadBatch Batch;
         TGuardValue<UACEPluginSubsystem::FCompanionReadBatch*> Guard(H->CompanionReadBatch,&Batch);
         const auto Small=H->PublicSnapshot(Observer);
@@ -110,6 +110,7 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
         TestEqual(TEXT("Selective data keeps requested health"),Small->GetNumberField(TEXT("health")),100.);
         TestFalse(TEXT("Character observer never builds full gameplay data"),Batch.Data.IsValid());
         TestTrue(TEXT("Correlated completion history is available to lightweight readers"),Small->HasTypedField<EJson::Array>(TEXT("action_events")));
+        TestTrue(TEXT("Inventory failure correlation is lightweight"),Small->HasField(TEXT("inventory_failure_serial"))&&Small->HasField(TEXT("inventory_failure_item"))&&Small->HasField(TEXT("inventory_failure_error")));
         TestFalse(TEXT("Unused inventory never crosses into Lua"),Small->HasField(TEXT("inventory")));
         TestFalse(TEXT("Unused nearby objects never cross into Lua"),Small->HasField(TEXT("objects")));
         TestTrue(TEXT("Events and capability envelope survive field selection"),Small->HasField(TEXT("events"))&&Small->HasField(TEXT("capabilities")));

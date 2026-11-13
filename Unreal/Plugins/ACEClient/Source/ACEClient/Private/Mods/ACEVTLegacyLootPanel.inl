@@ -63,7 +63,7 @@ void LegacyLootPanel()
         {
             Add(Text(Caption,15,Muted));Add(SNew(SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).Text(FText::FromString(Str(LegacyRule,Key))).OnTextChanged_Lambda([this,Key](const FText& V){LegacyRule->SetStringField(Key,V.ToString());}));
         };
-        Input(TEXT("label"),TEXT("Rule name"));Input(TEXT("expression"),TEXT("VT expression (optional; preserved, not executed by UCM)"));
+        Input(TEXT("label"),TEXT("Rule name"));Input(TEXT("expression"),TEXT("Classic expression metadata (preserved; Classic does not evaluate it)"));
         const TArray<FString> Actions={TEXT("No loot"),TEXT("Keep"),TEXT("Salvage"),TEXT("Sell"),TEXT("Read"),TEXT("User 1"),TEXT("User 2"),TEXT("User 3"),TEXT("User 4"),TEXT("User 5"),TEXT("Keep up to")};
         auto Menu=SNew(SVerticalBox);for(int I=0;I<Actions.Num();++I)Menu->AddSlot().AutoHeight()[MenuButton(Actions[I],[this,I](){LegacyRule->SetNumberField(TEXT("action_id"),I);FSlateApplication::Get().DismissAllMenus();Rebuild();})];
         const int Action=int(Num(LegacyRule,TEXT("action_id")));
@@ -129,7 +129,7 @@ void LegacyLootPanel()
         const int I=Visible[Row];auto R=Rules[I]->AsObject();auto RuleCard=SNew(SVerticalBox);RuleCard->AddSlot().AutoHeight()[Text(FString::Printf(TEXT("%d. %s"),I+1,*Str(R,TEXT("label"))),16)];
         const TArray<FString> Actions={TEXT("Skip"),TEXT("Keep"),TEXT("Salvage"),TEXT("Sell"),TEXT("Read"),TEXT("User 1"),TEXT("User 2"),TEXT("User 3"),TEXT("User 4"),TEXT("User 5"),TEXT("Keep #")};const int Action=int(Num(R,TEXT("action_id")));
         RuleCard->AddSlot().AutoHeight()[Text(FString::Printf(TEXT("Action: %s | Priority: %.0f"),Actions.IsValidIndex(Action)?*Actions[Action]:TEXT("Custom"),Num(R,TEXT("priority")))+(Action==10?FString::Printf(TEXT(" | Count: %.0f"),Num(R,TEXT("amount"))):TEXT("")),14,Accent)];
-        if(!Str(R,TEXT("expression")).IsEmpty())RuleCard->AddSlot().AutoHeight()[Text(TEXT("Expression: ")+Str(R,TEXT("expression"))+TEXT(" (requires adapter)"),14,FLinearColor(1,.65f,.35f))];
+        if(!Str(R,TEXT("expression")).IsEmpty())RuleCard->AddSlot().AutoHeight()[Text(TEXT("Expression metadata: ")+Str(R,TEXT("expression")),14,Muted)];
         for(const auto& Req:R->GetArrayField(TEXT("requirements")))RuleCard->AddSlot().AutoHeight().Padding(0,6)[Text(LegacyRequirementSummary(Req->AsObject()),14,Muted)];
         auto Buttons=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(5,5));
         Buttons->AddSlot()[Button(TEXT("Edit"),[this,R,I](){FString Json;FJsonSerializer::Serialize(R,TJsonWriterFactory<>::Create(&Json));FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json),LegacyRule);LegacyRuleIndex=I;Rebuild();})];

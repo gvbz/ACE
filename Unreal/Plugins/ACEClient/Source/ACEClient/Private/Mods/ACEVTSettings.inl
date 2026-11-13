@@ -41,6 +41,11 @@ J VTSettings(const J& D,TArray<FString>& Issues)
     auto Out=MakeShared<FJsonObject>();A Buffs,Excluded,Consumables,BuffItems,Equipment,ItemTargets,Monsters,Handlers;
     // USD stores overrides of VT defaults, not overrides of whichever UCM
     // profile happened to be loaded previously.
+    Out->SetBoolField(TEXT("auto_craft"),true);Out->SetBoolField(TEXT("auto_fellowship"),true);
+    Out->SetBoolField(TEXT("random_helper_buffs"),false);Out->SetNumberField(TEXT("random_helper_interval"),5);
+    Out->SetBoolField(TEXT("cast_jiggle"),false);Out->SetBoolField(TEXT("jump_out_wand"),false);
+    for(const TCHAR* Key:{TEXT("craft_health_kits"),TEXT("craft_stamina_kits"),TEXT("craft_mana_kits")})Out->SetNumberField(Key,2);
+    for(const TCHAR* Key:{TEXT("craft_health_food"),TEXT("craft_stamina_food"),TEXT("craft_mana_food")})Out->SetNumberField(Key,15);
     Out->SetBoolField(TEXT("buffing"),true);Out->SetStringField(TEXT("combat"),TEXT("auto"));
     Out->SetBoolField(TEXT("navigation"),false);Out->SetBoolField(TEXT("looting"),false);Out->SetBoolField(TEXT("meta_enabled"),false);
     Out->SetBoolField(TEXT("recovery"),true);Out->SetBoolField(TEXT("target_lock"),false);
@@ -58,6 +63,9 @@ J VTSettings(const J& D,TArray<FString>& Issues)
     Out->SetBoolField(TEXT("auto_attack_power"),true);Out->SetBoolField(TEXT("use_recklessness"),true);
     Out->SetBoolField(TEXT("ring"),false);Out->SetNumberField(TEXT("ring_range"),5);Out->SetNumberField(TEXT("ring_min_targets"),4);
     Out->SetNumberField(TEXT("debuff_refresh"),5);Out->SetBoolField(TEXT("debuff_fallback"),false);
+    Out->SetNumberField(TEXT("debuff_selection"),2);
+    Out->SetObjectField(TEXT("grenade_catalog"),MakeShared<FJsonObject>());
+    const J* Grenades=nullptr;if(D->TryGetObjectField(TEXT("grenade_catalog"),Grenades))Out->SetObjectField(TEXT("grenade_catalog"),*Grenades);
     Out->SetNumberField(TEXT("use_arcs"),1);Out->SetNumberField(TEXT("arc_range"),5);Out->SetNumberField(TEXT("debuff_each_first"),1);
     Out->SetBoolField(TEXT("switch_debuff_wand"),true);
     for(const TCHAR* Key:{TEXT("debuff_yield"),TEXT("debuff_imperil"),TEXT("debuff_vuln")})Out->SetBoolField(Key,false);
@@ -96,9 +104,6 @@ J VTSettings(const J& D,TArray<FString>& Issues)
             if(Name==TEXT("Settings"))
             {
                 const FString Key=S(Row,TEXT("Setting"));const auto Value=Row->TryGetField(TEXT("Value"));
-                // Off is supported for these optional strategies; requesting
-                // them remains an import error until their runtime exists.
-                if(Value&&Value->Type==EJson::Boolean&&!Value->AsBool()&&(Key.Equals(TEXT("randomhelperbuffs"),ESearchCase::IgnoreCase)||Key.Equals(TEXT("AutoFellowManagement"),ESearchCase::IgnoreCase)||Key.Equals(TEXT("DoJiggle"),ESearchCase::IgnoreCase)))continue;
                 if(Key.Equals(TEXT("RechargeHandlerSet"),ESearchCase::IgnoreCase))
                 {
                     if(!Value||Value->Type!=EJson::Object){Issues.Add(TEXT("Invalid recharge handler table"));continue;}
@@ -131,7 +136,9 @@ J VTSettings(const J& D,TArray<FString>& Issues)
             else if(Name==TEXT("AssistItems"))
             {
                 const double Type=N(Row,TEXT("Type"),-1);const FString Item=S(Row,TEXT("Object"));
-                if(Type<0||(Type>6&&Type!=8&&Type!=9&&Type!=11)||FMath::FloorToDouble(Type)!=Type||Item.IsEmpty()||(Type==11&&Item!=TEXT("[All Peas]"))){Issues.Add(TEXT("Unsupported assistance item: ")+Item);continue;}
+                if(Type<0||Type>11||FMath::FloorToDouble(Type)!=Type||Item.IsEmpty()||(Type==11&&Item!=TEXT("[All Peas]"))){Issues.Add(TEXT("Unsupported assistance item: ")+Item);continue;}
+                if(Type==7&&(!Grenades||!(*Grenades)->HasTypedField<EJson::Object>(Item)))
+                {Issues.Add(TEXT("Grenade requires a matching GrenadeOptions entry in gameinfodb.ugd: ")+Item);continue;}
                 auto R=MakeShared<FJsonObject>();R->SetStringField(TEXT("name"),Item);R->SetNumberField(TEXT("type"),Type);Consumables.Add(Obj(R));
             }
             else if(Name==TEXT("GemFoodItems"))

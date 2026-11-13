@@ -277,6 +277,20 @@ bool FACEPluginHostTest::RunTest(const FString&)
             TestFalse(TEXT("Stopping relinquishes ownership of the viewport"),H->SuspendedWorldViewport.IsValid());
         }
     }
+    TestTrue(TEXT("High-power war can use optional jiggle"),ACEPluginCastMotion::Jiggle(1,300,0,0,0,false));
+    TestFalse(TEXT("Instant war skips jiggle"),ACEPluginCastMotion::Jiggle(1,25,0,0,0,false));
+    TestTrue(TEXT("Learned non-war instant spells can jiggle"),ACEPluginCastMotion::Jiggle(4,300,12,300,0,false));
+    TestFalse(TEXT("Instant item spell skips jiggle"),ACEPluginCastMotion::Jiggle(4,300,12,300,0,true));
+    TestTrue(TEXT("Timed hostile item spell can jiggle"),ACEPluginCastMotion::Jiggle(4,300,0,120,0,true));
+    TestEqual(TEXT("Jiggle starts in one direction"),ACEPluginCastMotion::JiggleStrafe(0),1.f);
+    TestEqual(TEXT("Jiggle alternates every 131 ms"),ACEPluginCastMotion::JiggleStrafe(.132),-1.f);
+    TestEqual(TEXT("Jiggle alternates back"),ACEPluginCastMotion::JiggleStrafe(.263),1.f);
+    H->OptionalCastOwner=TEXT("ucm");float Forward=1,Strafe=0,Turn=0;
+    H->ApplyMovement(nullptr,Forward,Strafe,Turn,true,false,false,FVector::ForwardVector,0);
+    TestTrue(TEXT("Manual movement cancels optional casting motion"),H->OptionalCastOwner.IsEmpty());
+    TestEqual(TEXT("Manual forward input survives cancellation"),Forward,1.f);
+    H->OptionalCastOwner=TEXT("ucm");H->Stop(TEXT("ucm"),TEXT("Test cancellation"));
+    TestTrue(TEXT("Stopping policy cancels optional motion"),H->OptionalCastOwner.IsEmpty());
     TestTrue(TEXT("Fast buff motion applies to self creature buffs"),ACEPluginCastMotion::FastBuff(4,300,12,300));
     TestTrue(TEXT("Fast buff motion applies to low-difficulty life spells"),ACEPluginCastMotion::FastBuff(2,25,4,0));
     TestFalse(TEXT("Fellowship buffs retain ordinary casting"),ACEPluginCastMotion::FastBuff(4,300,12|0x2000,300));
@@ -350,8 +364,8 @@ bool FACEPluginHostTest::RunTest(const FString&)
     TestEqual(TEXT("Saved rules restored"),P->Profile->GetArrayField(TEXT("loot_rules")).Num(),1);
     TestFalse(TEXT("Missing loot profile rejected"),H->LoadLootProfile(TEXT("Missing")));
     TestEqual(TEXT("Failed load preserves active rules"),P->Profile->GetArrayField(TEXT("loot_rules")).Num(),1);
-    for(const TCHAR* Bad:{TEXT(R"({"loot_rules":[{"action":"unsupported_user_action"}]})"),TEXT(R"({"loot_rules":[{"name_mode":"regex"}]})"),TEXT(R"({"loot_rules":[{"min_workmanship":8,"max_workmanship":7}]})"),TEXT(R"({"loot_rules":[{"min_value":"lots"}]})"),TEXT(R"({"loot_rules":[{"material":1.5}]})")})
-        TestFalse(TEXT("Malformed loot rules rejected before activating"),H->SaveProfile(TEXT("ucm"),TEXT("BadLoot"),Bad));
+    for(const TCHAR* Bad:{TEXT(R"({"loot_rules":[{"action":"unsupported_user_action"}]})"),TEXT(R"({"loot_rules":[{"name_mode":"regex","name":"["}]})"),TEXT(R"({"loot_rules":[{"min_workmanship":8,"max_workmanship":7}]})"),TEXT(R"({"loot_rules":[{"min_value":"lots"}]})"),TEXT(R"({"loot_rules":[{"material":1.5}]})")})
+        TestFalse(*FString::Printf(TEXT("Malformed loot rules rejected before activating: %s"),Bad),H->SaveProfile(TEXT("ucm"),TEXT("BadLoot"),Bad));
     for(const TCHAR* Bad:{TEXT(R"({"salvage_policy":[]})"),TEXT(R"({"salvage_policy":{"default":[{"min":8,"max":2}]}})"),TEXT(R"({"salvage_policy":{"default":[],"values":{"6":-1}}})"),TEXT(R"({"salvage_policy":{"default":[],"materials":{"x":[]}}})")})
         TestFalse(TEXT("Malformed salvage policies rejected"),H->SaveProfile(TEXT("ucm"),TEXT("BadSalvage"),Bad));
     const FString PreviousProfile=H->ProfileJson(TEXT("ucm"));

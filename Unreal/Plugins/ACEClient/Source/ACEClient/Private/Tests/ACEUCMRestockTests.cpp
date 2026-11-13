@@ -76,7 +76,7 @@ bool FACEUCMRestockTest::RunTest(const FString&)
     TestTrue(TEXT("Off-state recharge enabled"),Converted->GetBoolField(TEXT("mana_charges_when_off")));
     // Idle-only execution cannot run a meta, navigation, or combat.
     P=RestockJSON(TEXT(R"({"ucm_mana_only":true,"buffing":true,"combat":"magic","navigation":true,"item_mana":true,"mana_tank_minimum":3000})"));
-    S->SetArrayField(TEXT("inventory"),RestockJSON(TEXT(R"({"v":[{"id":20,"name":"Gear","equipped":true,"mana":1,"max_mana":100},{"id":21,"name":"Stone","type":524288,"mana":5000,"workmanship":1,"wcid":1}]})"))->GetArrayField(TEXT("v")));
+    S->SetArrayField(TEXT("inventory"),RestockJSON(TEXT(R"({"v":[{"id":20,"name":"Gear","equipped":true,"mana":1,"max_mana":100},{"id":21,"name":"Stone","type":524288,"identified":true,"usable":true,"mana_supply_available":true,"mana":5000,"workmanship":1,"wcid":1}]})"))->GetArrayField(TEXT("v")));
     FACEPluginVM Idle;Idle.Load(Script,Error);Step(Idle);TestEqual(TEXT("Idle recharge uses stone"),I->GetNumberField(TEXT("item")),21.);
     Step(Idle);TestFalse(TEXT("Idle recharge waits for observation"),I->HasField(TEXT("action")));
     S->GetArrayField(TEXT("inventory"))[0]->AsObject()->SetNumberField(TEXT("mana"),90);Step(Idle);TestFalse(TEXT("Idle-only policy never falls through to combat or buffs"),I->HasField(TEXT("action")));

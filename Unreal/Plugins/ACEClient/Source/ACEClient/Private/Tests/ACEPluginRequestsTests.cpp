@@ -17,6 +17,7 @@
 #include "Mods/ACEPluginVM.h"
 #include "Interfaces/IPluginManager.h"
 #include "Mods/ACEPluginSight.h"
+#include "Mods/ACEPluginEquipment.h"
 #include "ACEClientSubsystem.h"
 #include "ACEPlayerController.h"
 #include "ACEInventoryRules.h"
@@ -65,7 +66,14 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             const auto& Objects=Snapshot->GetArrayField(TEXT("route_objects"));
             TestEqual(TEXT("Usable door is in route snapshot"),Objects.Num(),1);
             if(Objects.Num()==1)TestEqual(TEXT("Door passage follows collision state even with stale animation"),Objects[0]->AsObject()->GetBoolField(TEXT("door_open")),Passable);
+            if(Objects.Num()==1)TestFalse(TEXT("Unassessed door cannot imply unlocked"),Objects[0]->AsObject()->GetBoolField(TEXT("door_identified")));
         }
+        FACEAppraisalInfo A;A.bSuccess=true;A.BoolProperties.Add(3,true);A.IntProperties.Add(38,250);H->Appraisals.Add(Door.Guid,A);
+        auto Snapshot=MakeShared<FJsonObject>();H->ExtendSnapshot(Snapshot);
+        auto Row=Snapshot->GetArrayField(TEXT("route_objects"))[0]->AsObject();
+        TestTrue(TEXT("Appraised route door exposes lock state"),Row->GetBoolField(TEXT("door_identified"))&&Row->GetBoolField(TEXT("door_locked")));
+        TestEqual(TEXT("Lock difficulty retains server value"),Row->GetNumberField(TEXT("lock_difficulty")),250.);
+        H->Appraisals.Remove(Door.Guid);
         Session.WorldObjects.Remove(Door.Guid);
     }
     {
@@ -180,6 +188,56 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         Receiver->GetAddress(*Address);Session.SocketC2S=Sockets->CreateSocket(NAME_DGram,TEXT("UCM vendor test sender"),false);
         Session.ServerC2SAddr=Address;Session.IssacClient=MakeUnique<FACEIsaac>(123u);
         ON_SCOPE_EXIT {Session.SocketC2S->Close();Sockets->DestroySocket(Session.SocketC2S);Session.SocketC2S=nullptr;Session.ServerC2SAddr.Reset();Session.IssacClient.Reset();Receiver->Close();Sockets->DestroySocket(Receiver);Session.CachedC2SPackets.Reset();};
+        {
+            auto* FellowPC=World->SpawnActor<AACEPlayerController>();auto* Local=NewObject<ULocalPlayer>(GEngine);
+            GI->AddLocalPlayer(Local,FPlatformUserId::CreateFromInternalId(0));FellowPC->SetPlayer(Local);
+            const auto SavedFellowship=Session.Fellowship;const bool WasGDLE=Session.Creds.bGDLE;const auto Permissions=P->Permissions;
+            ON_SCOPE_EXIT {Session.Fellowship=SavedFellowship;Session.Creds.bGDLE=WasGDLE;P->Permissions=Permissions;P->NextAction=0;P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));Session.WorldObjects.Remove(8101);GI->RemoveLocalPlayer(Local);FellowPC->Destroy();Session.CachedC2SPackets.Reset();};
+            P->Permissions.Add(TEXT("fellowship"));
+            FACEFellowshipInfo F;F.bValid=true;F.Name=TEXT("Test party");F.LeaderGuid=Session.PlayerGuid;
+            FACEFellowshipMember Self,Ally;Self.Guid=Session.PlayerGuid;Ally.Guid=int32(0xF0008100);Ally.Name=TEXT("Ally");F.Members={Self,Ally};
+            FACEWorldObject Nearby;Nearby.Guid=8101;Nearby.Name=TEXT("Nearby");Nearby.bIsPlayer=true;Session.WorldObjects.Add(Nearby.Guid,Nearby);
+            auto Intent=MakeShared<FJsonObject>();Intent->SetStringField(TEXT("action"),TEXT("fellowship"));
+            auto Dispatch=[&](const TCHAR* Op,int32 Target)
+            {P->NextAction=0;P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));Session.CachedC2SPackets.Reset();Intent->SetStringField(TEXT("operation"),Op);Intent->SetNumberField(TEXT("target"),uint32(Target));H->Execute(*P,Intent);};
+            for(bool GDLE:{false,true})for(const TCHAR* Op:{TEXT("dismiss"),TEXT("leader"),TEXT("recruit")})
+            {
+                Session.Creds.bGDLE=GDLE;Session.Fellowship=F;const bool Recruit=FString(Op)==TEXT("recruit");const int32 Target=Recruit?Nearby.Guid:Ally.Guid;
+                Dispatch(Op,Target);TestEqual(TEXT("Fellowship API sends one ACE/GDLE action"),Session.CachedC2SPackets.Num(),1);
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {
+                    FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);
+                    TestEqual(TEXT("Fellowship operation retains retail opcode"),R.ReadUInt32(),Recruit?ACEGameAction::FellowshipRecruit:FString(Op)==TEXT("leader")?ACEGameAction::FellowshipAssignNewLeader:ACEGameAction::FellowshipDismiss);
+                    TestEqual(TEXT("Fellowship GUID remains unsigned on wire"),R.ReadUInt32(),uint32(Target));
+                }
+                TestEqual(TEXT("Sending never predicts membership or leadership"),Session.Fellowship.LeaderGuid,F.LeaderGuid);
+                TestEqual(TEXT("Sending never predicts member removal"),Session.Fellowship.Members.Num(),2);
+                Session.Fellowship.LeaderGuid=Ally.Guid;Dispatch(Op,Target);TestTrue(TEXT("Closed fellowship nonleader cannot manage members"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());
+            }
+            Session.Fellowship=F;Session.Fellowship.LeaderGuid=Ally.Guid;Session.Fellowship.bOpen=true;Dispatch(TEXT("recruit"),Nearby.Guid);
+            TestEqual(TEXT("Open fellowship permits nonleader recruiting"),Session.CachedC2SPackets.Num(),1);
+            Session.Fellowship=F;
+            for(const TCHAR* Op:{TEXT("dismiss"),TEXT("leader")})for(int32 Id:{Session.PlayerGuid,999})
+            {Dispatch(Op,Id);TestTrue(TEXT("Self or nonmember management is rejected"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());}
+            Dispatch(TEXT("recruit"),Ally.Guid);TestTrue(TEXT("Already joined member is not recruited again"),Session.CachedC2SPackets.IsEmpty()&&!P->ActivityFailure.IsValid());
+            Intent->SetStringField(TEXT("name"),F.Name);Dispatch(TEXT("create"),0);TestTrue(TEXT("Existing fellowship is not recreated"),Session.CachedC2SPackets.IsEmpty()&&!P->ActivityFailure.IsValid());
+            Intent->SetStringField(TEXT("name"),TEXT("Other party"));Dispatch(TEXT("create"),0);TestTrue(TEXT("Creation cannot silently replace a fellowship"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());
+            Session.Fellowship.bLocked=true;Dispatch(TEXT("open"),0);TestTrue(TEXT("Locked fellowship openness is rejected"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());
+            P->Permissions.Add(TEXT("say"));P->Profile->SetBoolField(TEXT("auto_fellowship"),true);H->FellowshipTells.Reset();H->UCMServicesProfile.Reset();
+            H->QueueFellowshipTell(TEXT("hello"),TEXT("Visitor"),0x50000020);H->QueueFellowshipTell(TEXT("xp"),TEXT("NPC"),0x70000001);
+            TestTrue(TEXT("Only authenticated player commands enter manager queue"),H->FellowshipTells.IsEmpty());
+            H->QueueFellowshipTell(TEXT("xp"),TEXT("Visitor"),0x50000020);TestEqual(TEXT("Recruitment tell captured without buffing"),H->FellowshipTells.Num(),1);
+            auto Public=MakeShared<FJsonObject>();H->ExtendSnapshot(Public);TestFalse(TEXT("Other data snapshots cannot read manager tells"),Public->HasField(TEXT("fellowship_tells")));
+            for(bool GDLE:{false,true})
+            {
+                Session.Creds.bGDLE=GDLE;Session.CachedC2SPackets.Reset();P->NextAction=0;
+                auto Reply=MakeShared<FJsonObject>();Reply->SetStringField(TEXT("action"),TEXT("say"));Reply->SetStringField(TEXT("recipient"),TEXT("Visitor"));Reply->SetStringField(TEXT("text"),TEXT("Your spot is reserved"));H->Execute(*P,Reply);
+                TestEqual(TEXT("Manager reply uses one ACE/GDLE tell"),Session.CachedC2SPackets.Num(),1);
+                for(const auto& Packet:Session.CachedC2SPackets){FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);TestEqual(TEXT("Reply uses retail tell opcode"),R.ReadUInt32(),ACEGameAction::Tell);TestEqual(TEXT("Tell text survives dispatch"),R.ReadString16L(),FString(TEXT("Your spot is reserved")));TestEqual(TEXT("Tell goes to applicant"),R.ReadString16L(),FString(TEXT("Visitor")));}
+            }
+            H->FellowshipTells.Reset();P->Profile->SetBoolField(TEXT("auto_fellowship"),false);
+            P->Permissions.Remove(TEXT("fellowship"));Dispatch(TEXT("leader"),Ally.Guid);TestTrue(TEXT("New operations still require fellowship capability"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());
+        }
         FACEWorldObject Stock;Stock.Guid=501;Stock.Name=TEXT("Scarab");Stock.WeenieClassId=300;Stock.MaxStackSize=100;Stock.VendorQuantityAvailable=-1;
         Session.OpenVendorGuid=Vendor.Guid;Session.WorldObjects.Add(Vendor.Guid,Vendor);Session.VendorMerchandise={Stock};
         auto Snapshot=MakeShared<FJsonObject>();H->ExtendSnapshot(Snapshot);
@@ -230,12 +288,14 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             Session.WorldObjects[602].ObjectDescriptionFlags|=ACEObjectDescFlag::Retained;
             TestEqual(TEXT("Retained notes excluded immediately without appraisal refresh"),Refresh()->GetArrayField(TEXT("vendor_trade_notes")).Num(),0);
             Session.CachedC2SPackets.Reset();H->ExecuteInventory(*P,Redeem,TEXT("sell_note"));TestEqual(TEXT("Retained note cannot be redeemed even with stale intent"),CountSales(),0);
-            Session.WorldObjects[602].ObjectDescriptionFlags=0;Session.VendorCurrencyName=TEXT("Tokens");P->Running=true;
+            Session.WorldObjects[602].ObjectDescriptionFlags=0;Session.VendorCurrencyName=TEXT("Pyreals");P->Running=true;
+            H->ExecuteInventory(*P,Redeem,TEXT("sell_note"));TestEqual(TEXT("Ordinary currency display name does not block note redemption"),CountSales(),1);
+            Session.CachedC2SPackets.Reset();Session.VendorCurrencyName=TEXT("Tokens");Session.VendorCurrencyWeenie=999;P->Running=true;
             H->ExecuteInventory(*P,Redeem,TEXT("sell_note"));TestEqual(TEXT("Custom currency vendor cannot redeem for restocking"),CountSales(),0);
-            Session.VendorCurrencyName.Empty();Session.VendorCurrencyWeenie=999;P->Running=true;
+            Session.CachedC2SPackets.Reset();Session.VendorCurrencyName.Empty();P->Running=true;
             TestFalse(TEXT("Unnamed alternate currency is not pyreals"),Refresh()->GetBoolField(TEXT("vendor_uses_pyreals")));
             H->ExecuteInventory(*P,Redeem,TEXT("sell_note"));TestEqual(TEXT("Unnamed alternate currency cannot sell notes"),CountSales(),0);
-            Session.VendorCurrencyWeenie=0;Session.TradeSelfItems.Add(602);P->Running=true;
+            Session.CachedC2SPackets.Reset();Session.VendorCurrencyWeenie=0;Session.TradeSelfItems.Add(602);P->Running=true;
             TestEqual(TEXT("Notes offered in trade excluded from redemption"),Refresh()->GetArrayField(TEXT("vendor_trade_notes")).Num(),0);
             H->ExecuteInventory(*P,Redeem,TEXT("sell_note"));TestEqual(TEXT("Stale trade-offered intent cannot sell notes"),CountSales(),0);
         }
@@ -258,6 +318,111 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             TestEqual(TEXT("Close identifies exact vendor"),R.ReadUInt32(),500u);
         }
         P->Running=true;Session.WorldObjects.Remove(Vendor.Guid);Session.VendorMerchandise.Empty();
+        {
+            auto* Dat=GI->GetSubsystem<UACEDatSubsystem>();
+            if(!TestTrue(TEXT("Recovery implement DAT loads"),Dat->LoadDatDirectory(ACETestDatDirectory())))return false;
+            uint32 Heal=0;
+            for(uint32 Id=1;Id<7000;++Id){FString Name;uint32 Icon=0;if(Dat->TryGetSpellInfo(Id,Name,Icon)&&Name==TEXT("Heal Self I")){Heal=Id;break;}}
+            if(!TestTrue(TEXT("Innate recovery spell found"),Heal!=0))return false;
+            {
+                FACEAppraisalInfo Requirements;Requirements.bSuccess=true;FACEPlayerVitals V;
+                Requirements.IntProperties.Add(188,3);V.HeritageGroup=3;
+                Requirements.IntProperties.Add(110,4);V.EffectiveAllegianceRank=4;
+                TestTrue(TEXT("Activation uses authoritative heritage and effective rank"),ACEPluginEquipment::CanActivate(Requirements,V));
+                V.HeritageGroup=2;TestFalse(TEXT("Wrong heritage cannot activate"),ACEPluginEquipment::CanActivate(Requirements,V));V.HeritageGroup=3;
+                V.EffectiveAllegianceRank=3;TestFalse(TEXT("Insufficient rank cannot activate"),ACEPluginEquipment::CanActivate(Requirements,V));V.EffectiveAllegianceRank=4;
+                Requirements.IntProperties.Add(259,1);Requirements.IntProperties.Add(260,100);V.MaxHealth=99;
+                TestFalse(TEXT("Activation vital requirement is checked"),ACEPluginEquipment::CanActivate(Requirements,V));V.MaxHealth=100;
+                TestTrue(TEXT("Activation vital equality is accepted"),ACEPluginEquipment::CanActivate(Requirements,V));
+                Requirements.IntProperties.Add(369,50);V.Level=49;
+                TestFalse(TEXT("Use level requirement is checked"),ACEPluginEquipment::CanActivate(Requirements,V));
+            }
+            FACEWorldObject Wand;Wand.Guid=9300;Wand.Name=TEXT("Recovery wand");Wand.ItemType=ACEItemType::Caster;
+            Wand.SpellDID=Heal;Wand.WielderId=Session.PlayerGuid;Wand.CurrentWieldedLocation=0x1000000;Wand.ItemUseable=0x00100008;
+            Session.WorldObjects.Add(Wand.Guid,Wand);
+            FACEAppraisalInfo A;A.bSuccess=true;A.IntProperties.Add(107,100);A.IntProperties.Add(108,100);H->Appraisals.Add(Wand.Guid,A);
+            const int32 OldMode=Session.PlayerVitals.CombatMode;const bool WasGDLE=Session.Creds.bGDLE;
+            Session.PendingCombatMode=0;Session.ApplyServerCombatMode(8);
+            auto Use=MakeShared<FJsonObject>();Use->SetNumberField(TEXT("item"),Wand.Guid);Use->SetNumberField(TEXT("target"),uint32(Session.PlayerGuid));Use->SetNumberField(TEXT("spell"),Heal);
+            for(bool GDLE:{false,true})
+            {
+                Session.Creds.bGDLE=GDLE;Session.CachedC2SPackets.Reset();H->ExecuteInventory(*P,Use,TEXT("cast_item"));
+                TestEqual(TEXT("Innate recovery sends one action on ACE/GDLE"),Session.CachedC2SPackets.Num(),1);
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {
+                    FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);
+                    TestEqual(TEXT("Item spell is UseWithTarget, never CastTargetedSpell"),R.ReadUInt32(),ACEGameAction::UseWithTarget);
+                    TestEqual(TEXT("Innate source is wand"),R.ReadUInt32(),uint32(Wand.Guid));TestEqual(TEXT("Innate target is self"),R.ReadUInt32(),uint32(Session.PlayerGuid));
+                }
+                H->CompletePendingAction(0);TestTrue(TEXT("Resource refresh preserves wand assessment"),H->Appraisals.Contains(Wand.Guid));
+                Session.ClearPendingUse();P->WaitAction.Empty();P->NextAction=0;
+            }
+            for(int32 Case=0;Case<5;++Case)
+            {
+                H->Appraisals[Wand.Guid]=A;Session.WorldObjects[Wand.Guid]=Wand;Use->SetNumberField(TEXT("target"),uint32(Session.PlayerGuid));Use->SetNumberField(TEXT("spell"),Heal);
+                if(Case==0)H->Appraisals[Wand.Guid].IntProperties.Add(109,10000);
+                if(Case==1)Session.WorldObjects[Wand.Guid].ItemCurrentMana=0;
+                if(Case==2)Use->SetNumberField(TEXT("spell"),Heal+1);
+                if(Case==3)Use->SetNumberField(TEXT("target"),500);
+                if(Case==4){Session.WorldObjects[Wand.Guid].WielderId=0;Session.WorldObjects[Wand.Guid].CurrentWieldedLocation=0;}
+                Session.CachedC2SPackets.Reset();H->ExecuteInventory(*P,Use,TEXT("cast_item"));
+                TestEqual(TEXT("Stale or ineligible innate request sends nothing"),Session.CachedC2SPackets.Num(),0);
+                P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));
+            }
+            uint32 Imperil=0;
+            for(uint32 Id=1;Id<7000;++Id){FString Name;uint32 Icon=0;if(Dat->TryGetSpellInfo(Id,Name,Icon)&&Name==TEXT("Imperil Other I")){Imperil=Id;break;}}
+            if(!TestTrue(TEXT("Retail debuff spell found"),Imperil!=0))return false;
+            {
+                FACEWorldObject Weapon=Wand;Weapon.Guid=9390;Weapon.ItemType=ACEItemType::MeleeWeapon;Weapon.CurrentWieldedLocation=ACEEquipMask::MeleeWeapon;
+                Weapon.ValidLocations=ACEEquipMask::MeleeWeapon;Weapon.SpellDID=0;
+                FACEAppraisalInfo Proc=A;Proc.SpellIds={int32(Imperil)};Proc.IntProperties.Add(106,500);
+                H->Appraisals.Add(Weapon.Guid,Proc);Session.WorldObjects.Add(Weapon.Guid,Weapon);
+                auto Row=H->PluginItemSnapshot(Weapon)->AsObject();
+                TestTrue(TEXT("Physical first-spell proc exposes native eligibility"),Row->GetBoolField(TEXT("proc_debuff_available")));
+                TestEqual(TEXT("Physical proc carries actual spellcraft"),Row->GetObjectField(TEXT("proc_debuff"))->GetNumberField(TEXT("skill")),500.);
+                TestFalse(TEXT("Physical proc is not an activatable innate wand spell"),Row->HasField(TEXT("innate_spell")));
+                Weapon.ItemCurrentMana=0;TestFalse(TEXT("Drained proc weapon unavailable"),H->PluginItemSnapshot(Weapon)->AsObject()->GetBoolField(TEXT("proc_debuff_available")));Weapon.ItemCurrentMana=-1;
+                H->Appraisals[Weapon.Guid].IntProperties.Add(109,10000);TestFalse(TEXT("Proc activation requirements checked"),H->PluginItemSnapshot(Weapon)->AsObject()->GetBoolField(TEXT("proc_debuff_available")));
+                H->Appraisals[Weapon.Guid]=Proc;H->Appraisals[Weapon.Guid].SpellIds={int32(Heal),int32(Imperil)};
+                TestFalse(TEXT("A later spell cannot be invented as the weapon proc"),H->PluginItemSnapshot(Weapon)->AsObject()->HasField(TEXT("proc_debuff")));
+                H->Appraisals.Remove(Weapon.Guid);Session.WorldObjects.Remove(Weapon.Guid);
+            }
+            Wand.SpellDID=Imperil;Session.WorldObjects[Wand.Guid]=Wand;H->Appraisals[Wand.Guid]=A;
+            FACEWorldObject Enemy;Enemy.Guid=9301;Enemy.Name=TEXT("Item debuff target");Enemy.ItemType=ACEItemType::Creature;
+            Enemy.ObjectDescriptionFlags=ACEObjectDescFlag::Attackable;Enemy.bHasPosition=true;Enemy.Position=Session.PlayerPosition;Enemy.Position.Location.X+=3;
+            Session.WorldObjects.Add(Enemy.Guid,Enemy);Use->SetNumberField(TEXT("target"),Enemy.Guid);Use->SetNumberField(TEXT("spell"),Imperil);
+            for(bool GDLE:{false,true})
+            {
+                Session.Creds.bGDLE=GDLE;Session.CachedC2SPackets.Reset();Session.ClearPendingUse();P->WaitAction.Empty();
+                H->ExecuteInventory(*P,Use,TEXT("cast_item"));TestEqual(TEXT("Debuff implement sends one ACE/GDLE request"),Session.CachedC2SPackets.Num(),1);
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);TestEqual(TEXT("Debuff uses item activation"),R.ReadUInt32(),ACEGameAction::UseWithTarget);TestEqual(TEXT("Debuff source is wand"),R.ReadUInt32(),uint32(Wand.Guid));TestEqual(TEXT("Debuff target is creature"),R.ReadUInt32(),uint32(Enemy.Guid));}
+                H->CompletePendingAction(0);
+            }
+            for(int Case=0;Case<3;++Case)
+            {
+                Session.WorldObjects[Enemy.Guid]=Enemy;
+                if(Case==0)Session.WorldObjects[Enemy.Guid].bIsPlayer=true;
+                if(Case==1)Session.WorldObjects[Enemy.Guid].PetOwnerId=Session.PlayerGuid;
+                if(Case==2)Session.WorldObjects[Enemy.Guid].bDying=true;
+                Session.CachedC2SPackets.Reset();H->ExecuteInventory(*P,Use,TEXT("cast_item"));
+                TestEqual(TEXT("Player, pet and dying targets reject debuff activation"),Session.CachedC2SPackets.Num(),0);P->ActivityFailure.Reset();
+            }
+            Session.WorldObjects.Remove(Enemy.Guid);H->PendingDebuffCasts.Empty();Session.ClearPendingUse();
+            FACEWorldObject Grenade;Grenade.Guid=9302;Grenade.Name=TEXT("Fixture grenade");Grenade.ItemType=ACEItemType::MissileWeapon;Grenade.ContainerId=Session.PlayerGuid;Grenade.StackSize=3;
+            Session.WorldObjects.Add(Grenade.Guid,Grenade);
+            auto Catalog=MakeShared<FJsonObject>(),Entry=MakeShared<FJsonObject>(),Assist=MakeShared<FJsonObject>();
+            Entry->SetNumberField(TEXT("WieldReqType"),0);Entry->SetNumberField(TEXT("WieldReqAttribute"),0);Entry->SetNumberField(TEXT("WieldReqValue"),0);Entry->SetNumberField(TEXT("Spell"),Imperil);Entry->SetNumberField(TEXT("Spellcraft"),500);Catalog->SetObjectField(Grenade.Name,Entry);
+            Assist->SetStringField(TEXT("name"),Grenade.Name);Assist->SetNumberField(TEXT("type"),7);
+            H->UCMServicesProfile=MakeShared<FJsonObject>();H->UCMServicesProfile->SetObjectField(TEXT("grenade_catalog"),Catalog);H->UCMServicesProfile->SetArrayField(TEXT("assist_items"),{MakeShared<FJsonValueObject>(Assist)});P->Running=true;
+            TestTrue(TEXT("Known grenade supplies expose native spell metadata"),H->UCMGrenadeSpell(Grenade).IsValid());
+            Session.TradeSelfItems.Add(Grenade.Guid);TestFalse(TEXT("Traded grenades are ineligible"),H->UCMGrenadeSpell(Grenade).IsValid());Session.TradeSelfItems.Reset();
+            Grenade.StackSize=0;TestFalse(TEXT("Empty grenades are ineligible"),H->UCMGrenadeSpell(Grenade).IsValid());Grenade.StackSize=3;
+            Entry->SetNumberField(TEXT("WieldReqType"),7);Entry->SetNumberField(TEXT("WieldReqValue"),10000);TestFalse(TEXT("Grenade level requirement is rechecked"),H->UCMGrenadeSpell(Grenade).IsValid());
+            Entry->SetNumberField(TEXT("WieldReqType"),0);Entry->SetNumberField(TEXT("Spell"),Heal);TestFalse(TEXT("Beneficial spells cannot masquerade as grenades"),H->UCMGrenadeSpell(Grenade).IsValid());
+            H->UCMServicesProfile.Reset();Session.WorldObjects.Remove(Grenade.Guid);P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));
+            Session.Creds.bGDLE=WasGDLE;Session.ApplyServerCombatMode(OldMode);H->Appraisals.Remove(Wand.Guid);Session.WorldObjects.Remove(Wand.Guid);
+        }
         {
             const int32 OldMode=Session.PlayerVitals.CombatMode;
             FACEWorldObject Essence;Essence.Guid=9200;Essence.ContainerId=Session.PlayerGuid;
@@ -308,6 +473,35 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             Session.CachedC2SPackets.Reset();H->ExecuteInventory(*P,Use,TEXT("apply_item"));
             TestEqual(TEXT("Stale intent cannot consume an item now retained"),Session.CachedC2SPackets.Num(),0);
             TestTrue(TEXT("Rejected refill leaves UCM running"),P->Running);
+            H->Appraisals[Stone.Guid].IntProperties.Add(107,5000);Session.WorldObjects[Stone.Guid].ItemCurrentMana=0;
+            H->ExecuteInventory(*P,Use,TEXT("apply_item"));
+            TestEqual(TEXT("Live empty-stone update keeps donor retention protection despite older filled appraisal"),Session.CachedC2SPackets.Num(),0);
+            Session.WorldObjects[Stone.Guid].ItemCurrentMana=-1;
+            const bool WasGDLE=Session.Creds.bGDLE;
+            FACEWorldObject Pack;Pack.Guid=9102;Pack.ContainerId=Session.PlayerGuid;Pack.ItemType=ACEItemType::Container;
+            Session.WorldObjects.Add(Pack.Guid,Pack);
+            Use->RemoveField(TEXT("target"));
+            for(bool GDLE:{false,true})for(int Case=0;Case<4;++Case)
+            {
+                Session.Creds.bGDLE=GDLE;Session.TradeSelfItems.Reset();Session.CachedC2SPackets.Reset();
+                auto& Live=Session.WorldObjects[Stone.Guid];Live.ContainerId=Case==3?Pack.Guid:Session.PlayerGuid;
+                Live.ObjectDescriptionFlags=Case==1?ACEObjectDescFlag::Retained:0;
+                if(Case==2)Session.TradeSelfItems.Add(Stone.Guid);
+                if(Case==3)Session.TradeSelfItems.Add(Pack.Guid);
+                const bool Available=Case<2;
+                TestEqual(TEXT("Mana supply availability allows retention but excludes trade and traded packs"),H->PluginItemSnapshot(Live)->AsObject()->GetBoolField(TEXT("mana_supply_available")),Available);
+                H->ExecuteInventory(*P,Use,TEXT("use_item"));
+                TestEqual(TEXT("ACE and GDLE revalidate mana supply before sending use"),Session.CachedC2SPackets.Num(),Available?1:0);
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {
+                    FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);
+                    TestEqual(TEXT("Equipment recharge uses targeted item action on both servers"),R.ReadUInt32(),ACEGameAction::UseWithTarget);
+                    TestEqual(TEXT("Recharge source is the selected supply"),R.ReadUInt32(),uint32(Stone.Guid));
+                    TestEqual(TEXT("Recharge target is the player, not the selected mob"),R.ReadUInt32(),uint32(Session.PlayerGuid));
+                }
+                H->CompletePendingAction(0);P->WaitAction.Empty();P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));
+            }
+            Session.Creds.bGDLE=WasGDLE;Session.TradeSelfItems.Reset();Session.WorldObjects.Remove(Pack.Guid);
             Session.WorldObjects.Remove(Stone.Guid);Session.WorldObjects.Remove(Donor.Guid);H->Appraisals.Remove(Stone.Guid);H->Appraisals.Remove(Donor.Guid);
             P->Profile->RemoveField(TEXT("ucm_activity_failure"));Session.PendingCombatMode=0;Session.ApplyServerCombatMode(OldMode);
         }
@@ -359,6 +553,78 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         Session.WorldObjects[Player.Guid].bIsPlayer=false;
         H->NextAppraisalScan=0;H->LastAppraisalRequest=0;H->RefreshAutomationData();
         TestTrue(TEXT("Selected enemies still receive background appraisal"),H->AppraisalRequests.Contains(Player.Guid));
+    }
+    {
+        const auto Objects=Session.WorldObjects;const auto Appraisals=H->Appraisals;
+        const auto Requests=H->AppraisalRequests,Times=H->TargetAppraisalTimes;
+        const auto Profile=P->Profile;const bool Running=P->Running;
+        ON_SCOPE_EXIT {Session.WorldObjects=Objects;H->Appraisals=Appraisals;H->AppraisalRequests=Requests;
+            H->TargetAppraisalTimes=Times;P->Profile=Profile;P->Running=Running;H->InventoryRevision=MAX_uint64;};
+        Session.WorldObjects.Empty();H->Appraisals.Empty();H->AppraisalRequests.Empty();H->TargetAppraisalTimes.Empty();
+        P->Running=false;P->Profile=MakeShared<FJsonObject>();P->Profile->SetBoolField(TEXT("mana_charges_when_off"),true);
+        const double Now=FPlatformTime::Seconds();
+        // More items than the old 120-second, one-request-per-second scan can
+        // service. Worn jewelry comes after the generic inventory entries.
+        for(int32 Id=9300;Id<9500;++Id)
+        {
+            FACEWorldObject O;O.Guid=Id;O.ItemType=ACEItemType::Armor;O.ContainerId=Session.PlayerGuid;
+            Session.WorldObjects.Add(Id,O);FACEAppraisalInfo A;A.ObjectGuid=Id;A.bSuccess=true;H->Appraisals.Add(Id,A);
+            H->AppraisalRequests.Add(Id,Now-200);H->TargetAppraisalTimes.Add(Id,Now-200);
+        }
+        for(int32 Id:{9500,9501})
+        {
+            FACEWorldObject O;O.Guid=Id;O.ItemType=ACEItemType::Jewelry;O.WielderId=Session.PlayerGuid;
+            if(Id==9501){O.WielderId=0;O.ParentGuid=Session.PlayerGuid;O.CurrentWieldedLocation=1;}
+            O.Name=Id==9501?TEXT("Encrusted Bloodstone Jewel"):TEXT("Full ring");Session.WorldObjects.Add(Id,O);
+            FACEAppraisalInfo A;A.ObjectGuid=Id;A.bSuccess=true;A.IntProperties={{107,Id==9501?34:100},{108,100}};
+            H->Appraisals.Add(Id,A);H->AppraisalRequests.Add(Id,Now-31);H->TargetAppraisalTimes.Add(Id,Now-31);
+        }
+        auto Scan=[&](){H->LastAppraisalRequest=FPlatformTime::Seconds()-2;H->NextAppraisalScan=0;H->RefreshAutomationData();};
+        Scan();
+        TestTrue(TEXT("Stopped UCM refreshes the lowest worn mana before a full inventory scan"),H->AppraisalRequests.FindRef(9501)>=Now);
+        TestEqual(TEXT("General inventory does not displace the jewel refresh"),H->AppraisalRequests.FindRef(9300),Now-200);
+        const double Sent=H->AppraisalRequests.FindRef(9501);H->RefreshAutomationData();
+        TestEqual(TEXT("Recharge polling preserves the one-request-per-second budget"),H->AppraisalRequests.FindRef(9501),Sent);
+        auto Low=H->Appraisals.FindChecked(9501);Low.IntProperties[107]=32;H->ObserveAppraisal(Low);
+        TestEqual(TEXT("Fresh jewel mana reaches the policy"),H->PluginItemSnapshot(Session.WorldObjects[9501])->AsObject()->GetNumberField(TEXT("mana")),32.);
+        H->PendingManaRefresh=true;H->PendingResourceRefresh.Empty();H->CompletePendingAction(0);
+        TestTrue(TEXT("Mana use preserves equipped item appraisal while refreshing resources"),H->Appraisals.Contains(9501));
+        Scan();
+        TestTrue(TEXT("Post-use confirmation starts with the lowest-mana item"),H->AppraisalRequests.Contains(9501)&&!H->AppraisalRequests.Contains(9500));
+        Low.IntProperties[107]=100;H->ObserveAppraisal(Low);
+        TestEqual(TEXT("Confirmed recharge reaches the next decision"),H->PluginItemSnapshot(Session.WorldObjects[9501])->AsObject()->GetNumberField(TEXT("mana")),100.);
+        FACEWorldObject Charge;Charge.Guid=9502;Charge.ItemType=ACEItemType::ManaStone;Charge.ContainerId=Session.PlayerGuid;
+        Charge.Name=TEXT("Titan Mana Charge");Session.WorldObjects.Add(Charge.Guid,Charge);
+        FACEAppraisalInfo ChargeInfo;ChargeInfo.ObjectGuid=Charge.Guid;ChargeInfo.bSuccess=true;ChargeInfo.IntProperties={{107,5000},{108,5000}};
+        H->ObserveAppraisal(ChargeInfo);
+        H->ObserveItemUse(Charge.Guid,Session.PlayerGuid);
+        TestTrue(TEXT("Manual charge use requests the same mana refresh as UCM"),H->PendingManaRefresh&&H->PendingResourceRefresh.Contains(Charge.Guid));
+        H->CompletePendingAction(0);
+        TestFalse(TEXT("Manual charge cannot reuse stale contents after success"),H->Appraisals.Contains(Charge.Guid));
+        TestTrue(TEXT("Manual charge refresh preserves the jewel's equipment appraisal"),H->Appraisals.Contains(9501));
+        // GDLE's public mana quality must reach the same snapshot immediately,
+        // without waiting for the appraisal lane to revisit the item.
+        for(const auto& Entry:TArray<TPair<uint32,int32>>{{107,25},{108,200},{107,0}})
+        {
+            FACEBinaryWriter W;W.WriteUInt32(ACEOpcode::PublicUpdatePropertyInt);W.WriteUInt8(uint8(Entry.Value+1));
+            W.WriteUInt32(9501);W.WriteUInt32(Entry.Key);W.WriteInt32(Entry.Value);
+            // Direct handler isolates resource mapping; network stamp/order
+            // validation has separate LivePropertyUpdates coverage.
+            FACEBinaryReader R(W.GetData());R.ReadUInt32();Session.HandlePublicUpdatePropertyInt(R);
+            const auto Item=H->PluginItemSnapshot(Session.WorldObjects[9501])->AsObject();
+            TestEqual(TEXT("Live mana quality supersedes the older appraisal"),Item->GetNumberField(Entry.Key==107?TEXT("mana"):TEXT("max_mana")),double(Entry.Value));
+            TestEqual(TEXT("Lua property map agrees with resource fields"),Item->GetObjectField(TEXT("int_properties"))->GetNumberField(FString::FromInt(Entry.Key)),double(Entry.Value));
+        }
+        Session.WorldObjects[9501].ItemCurrentMana=-2;
+        const auto Removed=H->PluginItemSnapshot(Session.WorldObjects[9501])->AsObject();
+        TestEqual(TEXT("Removed mana is empty for maintenance"),Removed->GetNumberField(TEXT("mana")),0.);
+        TestFalse(TEXT("Removed mana does not fabricate an existing integer property for loot rules"),Removed->GetObjectField(TEXT("int_properties"))->HasField(TEXT("107")));
+        Session.WorldObjects.Remove(Charge.Guid);H->AppraisalRequests.Remove(Charge.Guid);
+        P->Profile->SetBoolField(TEXT("mana_charges_when_off"),false);
+        H->AppraisalRequests.Add(9300,Now-121);H->AppraisalRequests.Add(9499,Now-400);
+        // Keep worn objects recent so this checks fairness of the general lane.
+        H->AppraisalRequests.Add(9500,Now);H->AppraisalRequests.Add(9501,Now);
+        Scan();TestTrue(TEXT("Oldest inventory appraisal cannot starve behind repeated earlier entries"),H->AppraisalRequests.FindRef(9499)>=Now);
     }
     {
         TestTrue(TEXT("Native vitals view uses session storage"),&C->GetPlayerVitalsView()==&Session.GetPlayerVitals());
@@ -1517,6 +1783,36 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         auto AttackIntent=[&](int32 Target,int32 Mode)
         {auto I=MakeShared<FJsonObject>();I->SetStringField(TEXT("action"),TEXT("attack"));I->SetStringField(TEXT("activity"),TEXT("combat"));I->SetNumberField(TEXT("target"),Target);I->SetNumberField(TEXT("mode"),Mode);return I;};
         auto AttackCount=[&](){int32 Count=0;for(const auto& Packet:Session.CachedC2SPackets){FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);if(R.CanRead(4)){const uint32 Op=R.ReadUInt32();if(Op==ACEGameAction::TargetedMeleeAttack||Op==ACEGameAction::TargetedMissileAttack)++Count;}}return Count;};
+        {
+            uint32 Imperil=0;for(uint32 Id=1;Id<7000;++Id){FString Name;uint32 Icon=0;if(Dat->TryGetSpellInfo(Id,Name,Icon)&&Name==TEXT("Imperil Other I")){Imperil=Id;break;}}
+            if(!TestTrue(TEXT("Proc fixture finds retail Imperil"),Imperil!=0))return false;
+            const bool WasGDLE=Session.Creds.bGDLE;
+            ON_SCOPE_EXIT{Session.Creds.bGDLE=WasGDLE;Session.WorldObjects.Remove(9391);H->Appraisals.Remove(9391);H->PendingDebuffCasts.Empty();H->PhysicalAttackOwner.Empty();P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));Session.CachedC2SPackets.Reset();};
+            for(bool GDLE:{false,true})for(int32 Mode:{2,4})
+            {
+                Session.Creds.bGDLE=GDLE;Session.WorldObjects.Add(970,Enemy);H->DefeatedTargets.Empty();Session.PendingCombatMode=0;Session.ApplyServerCombatMode(Mode);
+                FACEWorldObject Proc;Proc.Guid=9391;Proc.Name=TEXT("Proc weapon");Proc.ItemType=Mode==2?ACEItemType::MeleeWeapon:ACEItemType::MissileWeapon;
+                Proc.WielderId=Session.PlayerGuid;Proc.ValidLocations=Proc.CurrentWieldedLocation=Mode==2?ACEEquipMask::MeleeWeapon:ACEEquipMask::MissileWeapon;
+                Session.WorldObjects.Add(Proc.Guid,Proc);FACEAppraisalInfo A;A.bSuccess=true;A.SpellIds={int32(Imperil)};A.IntProperties.Add(106,500);H->Appraisals.Add(Proc.Guid,A);
+                auto I=AttackIntent(970,Mode);I->SetNumberField(TEXT("item"),Proc.Guid);I->SetNumberField(TEXT("debuff_spell"),Imperil);I->SetNumberField(TEXT("power"),Mode==2?0:1);
+                auto Dispatch=[&](){P->NextAction=0;P->WaitAction.Empty();H->PhysicalAttackOwner.Empty();Session.CachedC2SPackets.Reset();Session.ClearPendingUse();H->Execute(*P,I);};
+                Dispatch();TestEqual(TEXT("Proc uses normal ACE/GDLE physical attack packets"),AttackCount(),1);
+                TestTrue(TEXT("Sending a proc attack does not predict debuff success"),!H->PendingDebuffCasts.IsEmpty());
+                H->PendingDebuffCasts.Empty();P->NextAction=0;H->Execute(*P,I);
+                TestEqual(TEXT("Existing repeating attack does not need a second proc packet"),AttackCount(),1);
+                TestTrue(TEXT("Existing attack still registers proc confirmation tracking"),!H->PendingDebuffCasts.IsEmpty());
+                const auto Revision=H->DebuffRevision;
+                H->ObserveMetaChat(TEXT("You cast Imperil Other I on Target one."),TEXT(""),ACEChatMessageType::Magic);
+                TestTrue(TEXT("Server proc result confirms the tracked target and spell"),H->DebuffRevision>Revision&&H->LastDebuffTarget==970&&H->LastDebuffSpell==int32(Imperil));
+                H->Debuffs.Empty();
+                I->SetNumberField(TEXT("debuff_spell"),Imperil+1);Dispatch();TestEqual(TEXT("Unrelated proc spell cannot be requested"),AttackCount(),0);I->SetNumberField(TEXT("debuff_spell"),Imperil);
+                P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));
+                Session.WorldObjects[Proc.Guid].CurrentWieldedLocation=ACEEquipMask::Shield;Dispatch();TestEqual(TEXT("Offhand proc cannot masquerade as the main weapon"),AttackCount(),0);
+                P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));
+                Session.WorldObjects[Proc.Guid]=Proc;H->Appraisals[Proc.Guid].IntProperties.Add(109,10000);Dispatch();TestEqual(TEXT("Changed activation requirements block proc dispatch"),AttackCount(),0);
+                P->ActivityFailure.Reset();P->Profile->RemoveField(TEXT("ucm_activity_failure"));
+            }
+        }
         for(int32 Mode:{2,4})
         {
             Session.WorldObjects.Add(970,Enemy);Session.WorldObjects.Add(971,NextEnemy);H->DefeatedTargets.Empty();H->LastCombatDeath.Reset();H->PhysicalAttackOwner.Empty();
@@ -1776,6 +2072,45 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             H->Execute(*P,Intent(Focus));const int32 BeforeStop=CastCount();H->Stop(P->Id);
             ModeReply(8);H->UpdateCombatTransition(*P);
             TestTrue(TEXT("Stop discards queued combat action"),!P->CombatTransitionIntent&&CastCount()==BeforeStop);
+            {
+                // GDLE accepts a player-requested mode silently. Exercise the
+                // full buff dispatch without an ACE-only CombatMode response.
+                Session.Creds.bGDLE=true;ON_SCOPE_EXIT{Session.Creds.bGDLE=false;};
+                P->Running=true;P->NextAction=0;P->WaitAction.Empty();P->ActivityFailure.Reset();
+                H->ConfirmedBuffAckAt=0;H->DeferredBuffIntent.Reset();H->BuffRetryAt=0;
+                H->PendingSpell=0;H->PhysicalAttackOwner.Empty();Session.bUseBusy=false;
+                Session.bServerAttackInProgress=false;Session.PendingCombatMode=0;ModeReply(1);
+                const uint32 FirstAction=Session.NextGameActionSequence;
+                const int32 BeforeGDLECast=CastCount();
+                H->Execute(*P,Intent(Focus));
+                TestEqual(TEXT("GDLE can buff without an unsolicited combat-mode property"),CastCount(),BeforeGDLECast+1);
+                TestFalse(TEXT("GDLE buff does not retain a doomed stance wait"),P->CombatTransitionIntent.IsValid());
+                TArray<TPair<uint32,uint32>> Sent;
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {
+                    FACEBinaryReader R(Packet.Value.Payload);R.Skip(20);
+                    if(!R.CanRead(8))continue;
+                    const uint32 Sequence=R.ReadUInt32(),Opcode=R.ReadUInt32();
+                    if(Sequence>=FirstAction)Sent.Emplace(Sequence,Opcode);
+                }
+                Sent.Sort([](const auto& A,const auto& B){return A.Key<B.Key;});
+                if(TestTrue(TEXT("GDLE buff sends its mode and spell actions"),Sent.Num()>=2))
+                {
+                    TestEqual(TEXT("GDLE changes mode before casting"),Sent[0].Value,ACEGameAction::ChangeCombatMode);
+                    TestEqual(TEXT("GDLE cast follows the mode in server action order"),Sent[1].Value,ACEGameAction::CastTargetedSpell);
+                }
+                Ack(0);P->NextAction=0;
+                const int32 BeforeSecond=CastCount(),BeforeSecondMode=Count(ACEGameAction::ChangeCombatMode);
+                H->Execute(*P,Intent(Self));
+                TestEqual(TEXT("Next GDLE buff uses the already-active magic stance"),CastCount(),BeforeSecond+1);
+                TestEqual(TEXT("GDLE does not repeat stance requests between buffs"),Count(ACEGameAction::ChangeCombatMode),BeforeSecondMode);
+                Ack(0);P->NextAction=0;
+                ModeReply(1); // Explicit GDLE correction remains authoritative.
+                const int32 BeforeCorrectedMode=Count(ACEGameAction::ChangeCombatMode);
+                H->Execute(*P,Intent(Focus));
+                TestEqual(TEXT("A server peace correction requires magic again"),Count(ACEGameAction::ChangeCombatMode),BeforeCorrectedMode+1);
+                Ack(0);P->NextAction=0;P->Running=false;
+            }
             // ManaChargesWhenOff has its own restricted VM and session identity.
             // It must retain the same transition safety without requiring Start.
             FACEWorldObject Stone;Stone.Guid=974;Stone.ContainerId=Session.PlayerGuid;
@@ -1788,6 +2123,37 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             TestTrue(TEXT("Idle recharge can wait for peace without starting UCM"),P->CombatTransitionIntent.IsValid()&&!P->Running);
             ModeReply(1);H->UpdateCombatTransition(*P);
             TestEqual(TEXT("Idle recharge uses its stone after confirmed stance"),Count(ACEGameAction::Use),BeforeUse+1);
+            Ack(0);Session.bUseBusy=false;P->WaitAction.Empty();P->NextAction=0;
+            Session.WorldObjects[974].ItemUseable=0x00100008;
+            const int32 BeforeTargetedCharge=Count(ACEGameAction::UseWithTarget);
+            H->Execute(*P,Recharge);
+            TestEqual(TEXT("Targeted mana charges also work while UCM is stopped"),Count(ACEGameAction::UseWithTarget),BeforeTargetedCharge+1);
+            bool PlayerTarget=false;
+            for(const auto& Packet:Session.CachedC2SPackets)
+            {
+                FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);
+                if(R.CanRead(12)&&R.ReadUInt32()==ACEGameAction::UseWithTarget&&R.ReadUInt32()==974)
+                    PlayerTarget=R.ReadUInt32()==uint32(Session.PlayerGuid);
+            }
+            TestTrue(TEXT("Suit recharge targets the player, not one armor item"),PlayerTarget);
+            Ack(0);Session.bUseBusy=false;P->WaitAction.Empty();P->NextAction=0;
+            Session.WorldObjects[974].ItemUseable=8;
+            ModeReply(8);Recharge->SetStringField(TEXT("activity"),TEXT("item_mana"));
+            H->Execute(*P,Recharge);P->CombatTransitionStarted=FPlatformTime::Seconds()-16;
+            H->UpdateCombatTransition(*P);
+            TestFalse(TEXT("Temporary stopped-service stance failure does not permanently disable mana recharge"),H->IdleManaFailed);
+            TestTrue(TEXT("Stopped recharge retains a bounded activity failure"),P->ActivityFailure.IsValid());
+            // The actual idle dispatcher must deliver the host failure to its
+            // restricted stock policy, even for an API 2 plugin that is stopped.
+            const int32 OldApi=P->Api;P->Api=2;const auto OldVitals=Session.PlayerVitals;
+            Session.PlayerVitals.Health=Session.PlayerVitals.MaxHealth=100;
+            H->IdleManaVM.Reset();H->IdleManaProfileHash=0;H->NextIdleManaDecision=0;
+            H->TickIdleEquipmentMana();
+            TestFalse(TEXT("Stopped dispatcher consumes the failure notification"),P->ActivityFailure.IsValid());
+            TestTrue(TEXT("Stopped dispatcher shows the mana retry status"),P->Status.Contains(TEXT("Equipment mana paused")));
+            TestTrue(TEXT("Recharge failure does not start combat, buffing or navigation"),!P->Running&&!P->CombatTransitionIntent);
+            P->Api=OldApi;Session.PlayerVitals=OldVitals;H->IdleManaVM.Reset();H->IdleManaFailed=false;
+            H->PendingManaRefresh=false;H->PendingResourceRefresh.Empty();Session.PendingCombatMode=0;ModeReply(1);
             P->Profile->RemoveField(TEXT("mana_charges_when_off"));Session.bUseBusy=false;P->WaitAction.Empty();
         }
     }

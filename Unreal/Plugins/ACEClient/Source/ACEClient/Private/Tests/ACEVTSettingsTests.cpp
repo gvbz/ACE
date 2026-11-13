@@ -28,7 +28,21 @@ bool FACEVTSettingsTest::RunTest(const FString&)
         auto Dispels=ACEVTProfile::Convert(D,Issues);TestEqual(TEXT("Requested dispel policies have runtime adapters"),Issues.Num(),0);
         TestTrue(TEXT("Self dispel import enabled"),Dispels->GetBoolField(TEXT("dispel_self")));TestTrue(TEXT("Dispel supply import enabled"),Dispels->GetBoolField(TEXT("dispel_items")));
     }
+    {
+        auto D=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"Settings","columns":["Setting","Value"],"rows":[["AutoCraftItems",true],["AutoFellowManagement",true],["IdleCraftCount_HealthKits",5],["IdleCraftCount_StamKits",6],["IdleCraftCount_ManaKits",7],["IdleCraftCount_HealthFood",8],["IdleCraftCount_StamFood",9],["IdleCraftCount_ManaFood",10]]}]})"));
+        auto Services=ACEVTProfile::Convert(D,Issues);TestEqual(TEXT("Automatic services import has no unsupported settings"),Issues.Num(),0);
+        TestTrue(TEXT("Automatic crafting imported"),Services->GetBoolField(TEXT("auto_craft")));TestTrue(TEXT("Automatic fellowship imported"),Services->GetBoolField(TEXT("auto_fellowship")));
+        TestEqual(TEXT("Health kit stock imported"),Services->GetNumberField(TEXT("craft_health_kits")),5.);TestEqual(TEXT("Mana food stock imported"),Services->GetNumberField(TEXT("craft_mana_food")),10.);
+    }
     auto P=ACEVTProfile::Convert(Document,Issues);TestEqual(TEXT("Supported character tables convert"),Issues.Num(),0);
+    TestTrue(TEXT("Omitted auto crafting uses VT resource default"),P->GetBoolField(TEXT("auto_craft")));TestTrue(TEXT("Omitted fellowship manager uses VT default"),P->GetBoolField(TEXT("auto_fellowship")));
+    TestEqual(TEXT("Omitted idle kit target uses VT resource default"),P->GetNumberField(TEXT("craft_health_kits")),2.);TestEqual(TEXT("Omitted idle food target uses VT resource default"),P->GetNumberField(TEXT("craft_health_food")),15.);
+    {
+        auto D=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"Settings","columns":["Setting","Value"],"rows":[["DoorLockpickDiffExcessThreshold",10]]},{"name":"AssistItems","columns":["Object","Type"],"rows":[["Intricate Lockpick",10]]}]})"));
+        auto Doors=ACEVTProfile::Convert(D,Issues);TestEqual(TEXT("Lockpick assistance imports without dropping entries"),Issues.Num(),0);
+        TestEqual(TEXT("Imported lockpick retains category ten"),Doors->GetArrayField(TEXT("assist_items"))[0]->AsObject()->GetNumberField(TEXT("type")),10.);
+        TestEqual(TEXT("Lockpick excess is skill units, not map distance"),Doors->GetNumberField(TEXT("door_lockpick_margin")),10.);
+    }
     {
         auto VoidDocument=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"MyMonsters","columns":["MonsterName","DamageType","Corruption"],"rows":[["<DEFAULT>",9,true]]}]})"));
         auto Converted=ACEVTProfile::Convert(VoidDocument,Issues);
@@ -53,9 +67,9 @@ bool FACEVTSettingsTest::RunTest(const FString&)
         TestEqual(TEXT("Hunt skill margin imported separately"),Converted->GetNumberField(TEXT("skill_margin")),20.);
         Converted->SetBoolField(TEXT("buffing"),false);Converted->SetBoolField(TEXT("recovery"),false);Converted->SetStringField(TEXT("combat"),TEXT("off"));
         auto S=Snapshot();S->SetNumberField(TEXT("health"),100);
-        S->SetArrayField(TEXT("inventory"),SettingsJSON(TEXT(R"({"values":[{"id":20,"type":0,"equipped":true,"mana":30,"max_mana":100},{"id":21,"name":"Major Mana Stone","type":524288,"mana":5000,"wcid":1}]})"))->GetArrayField(TEXT("values")));
+        S->SetArrayField(TEXT("inventory"),SettingsJSON(TEXT(R"({"values":[{"id":20,"type":0,"equipped":true,"mana":30,"max_mana":100},{"id":21,"name":"Major Mana Stone","type":524288,"mana":5000,"wcid":1,"identified":true,"usable":true}]})"))->GetArrayField(TEXT("values")));
         FACEPluginVM Refill;Refill.Load(Script,Error);auto I=Step(Refill,S,Converted);TestEqual(TEXT("Type eight supply refills at configured threshold"),I->GetNumberField(TEXT("item")),21.);
-        S->SetNumberField(TEXT("time"),101);S->SetNumberField(TEXT("action_serial"),1);I=Step(Refill,S,Converted);TestEqual(TEXT("UseDone alone is not equipment mana confirmation"),I->GetStringField(TEXT("status")),FString(TEXT("Waiting for equipment mana refresh")));
+        S->SetNumberField(TEXT("time"),101);S->SetNumberField(TEXT("action_serial"),1);I=Step(Refill,S,Converted);TestFalse(TEXT("UseDone alone cannot repeat an unconfirmed equipment recharge"),I->HasField(TEXT("action")));
         S->GetArrayField(TEXT("inventory"))[0]->AsObject()->SetNumberField(TEXT("mana"),90);I=Step(Refill,S,Converted);TestFalse(TEXT("Observed mana increase completes refill"),I->HasField(TEXT("action")));
         S->GetArrayField(TEXT("inventory"))[0]->AsObject()->SetNumberField(TEXT("mana"),30);
         FACEPluginVM Rejected;Rejected.Load(Script,Error);S->SetNumberField(TEXT("time"),200);Step(Rejected,S,Converted);
@@ -380,9 +394,10 @@ bool FACEVTSettingsTest::RunTest(const FString&)
         auto Profile=SettingsJSON(TEXT(R"({"buffing":false,"recovery":false,"combat":"off","looting":true,"loot_rules":[{"action":"keep"}],"corpse_attempts":2,"corpse_blacklist_seconds":50})"));auto S=Snapshot();S->SetNumberField(TEXT("health"),100);
         S->SetArrayField(TEXT("corpses"),SettingsJSON(TEXT(R"({"v":[{"id":200,"name":"Corpse","distance":1,"identified":true}]})"))->GetArrayField(TEXT("v")));
         FACEPluginVM Loot;Loot.Load(Script,Error);TestEqual(TEXT("First corpse use"),Step(Loot,S,Profile)->GetStringField(TEXT("action")),FString(TEXT("open_corpse")));
+        auto Receipt=SettingsJSON(TEXT(R"({"type":"use","source":200,"action_serial":1,"requested_at":100,"error":1})"));S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Receipt)});
         S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("action_error"),1);TestFalse(TEXT("Server rejection releases corpse approach without immediate retry"),Step(Loot,S,Profile)->HasField(TEXT("action")));
         S->SetNumberField(TEXT("time"),110);TestEqual(TEXT("Corpse retry after attempt spacing"),Step(Loot,S,Profile)->GetStringField(TEXT("action")),FString(TEXT("open_corpse")));
-        S->SetNumberField(TEXT("action_serial"),2);Step(Loot,S,Profile);S->SetNumberField(TEXT("time"),159);TestFalse(TEXT("Configured blacklist duration observed"),Step(Loot,S,Profile)->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("action_serial"),2);Receipt->SetNumberField(TEXT("action_serial"),2);Receipt->SetNumberField(TEXT("requested_at"),110);Step(Loot,S,Profile);S->SetNumberField(TEXT("time"),159);TestFalse(TEXT("Configured blacklist duration observed"),Step(Loot,S,Profile)->HasField(TEXT("action")));
         S->SetNumberField(TEXT("time"),160);TestEqual(TEXT("Expired blacklist permits new attempt cycle"),Step(Loot,S,Profile)->GetStringField(TEXT("action")),FString(TEXT("open_corpse")));
     }
     {

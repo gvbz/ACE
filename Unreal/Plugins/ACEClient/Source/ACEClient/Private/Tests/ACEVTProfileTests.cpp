@@ -26,6 +26,12 @@ bool FACEVTProfileTest::RunTest(const FString&)
     const auto RoundTrip=ACEVTProfile::Read(Encoded,TEXT("utl"),Error);TestEqual(TEXT("UTL requirement body round trips"),RoundTrip->GetArrayField(TEXT("rules"))[0]->AsObject()->GetArrayField(TEXT("requirements"))[0]->AsObject()->GetStringField(TEXT("body")),FString(TEXT("6\r\n131\r\n")));
     auto Converted=ACEVTProfile::Convert(D,Issues);TestEqual(TEXT("Material condition supported"),Issues.Num(),0);
     TestEqual(TEXT("Property key preserved"),Converted->GetArrayField(TEXT("loot_rules"))[0]->AsObject()->GetArrayField(TEXT("conditions"))[0]->AsObject()->GetNumberField(TEXT("key")),131.);
+    D->GetArrayField(TEXT("rules"))[0]->AsObject()->SetStringField(TEXT("expression"),TEXT("false [persisted Classic metadata]"));
+    Converted=ACEVTProfile::Convert(D,Issues);
+    TestEqual(TEXT("Classic expression metadata does not reject ordinary requirements"),Issues.Num(),0);
+    TestEqual(TEXT("Classic expression metadata preserves the rule conditions"),Converted->GetArrayField(TEXT("loot_rules"))[0]->AsObject()->GetArrayField(TEXT("conditions")).Num(),1);
+    auto MetadataRoundTrip=ACEVTProfile::Read(ACEVTProfile::WriteLoot(D,Error),TEXT("utl"),Error);
+    TestEqual(TEXT("Unused Classic expression still round trips"),MetadataRoundTrip->GetArrayField(TEXT("rules"))[0]->AsObject()->GetStringField(TEXT("expression")),FString(TEXT("false [persisted Classic metadata]")));
     D->GetArrayField(TEXT("rules"))[0]->AsObject()->SetNumberField(TEXT("action_id"),10);
     D->GetArrayField(TEXT("rules"))[0]->AsObject()->SetNumberField(TEXT("amount"),4);
     Converted=ACEVTProfile::Convert(D,Issues);

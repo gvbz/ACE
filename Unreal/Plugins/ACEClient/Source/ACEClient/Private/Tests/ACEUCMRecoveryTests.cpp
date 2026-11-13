@@ -316,6 +316,48 @@ bool FACEUCMRecoveryTest::RunTest(const FString&)
             State->SetNumberField(TEXT("action_serial"),1);
         }
     }
+    // VT m/dg/he can use a stronger innate recovery spell without learning it
+    // or meeting its school skill/component requirements. Activate the item.
+    for(bool Imported:{false,true})for(bool Equipped:{false,true})
+    {
+        auto S=Snapshot(),P=Profile();S->SetNumberField(TEXT("health"),50);
+        auto Heal=MakeShared<FJsonObject>(*Spells[TEXT("Heal Self I")]);
+        auto Innate=MakeShared<FJsonObject>(*Spells[TEXT("Adja's Intervention")]);Innate->SetBoolField(TEXT("known"),false);Innate->SetNumberField(TEXT("skill"),0);
+        S->SetArrayField(TEXT("spells"),{MakeShared<FJsonValueObject>(Heal)});
+        auto Wand=S->GetArrayField(TEXT("inventory"))[0]->AsObject();Wand->SetObjectField(TEXT("innate_recovery"),Innate);
+        Wand->SetBoolField(TEXT("innate_recovery_available"),true);Wand->SetBoolField(TEXT("equipped"),Equipped);
+        if(Imported)P->SetArrayField(TEXT("recharge_handlers"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"vital":2,"stance":1,"handler":"Regular Spell","min":0,"max":100})")))});
+        FACEPluginVM V;V.Load(Source,Error);auto I=Step(V,S,P);
+        TestEqual(TEXT("Recovery equips the specific implement before using its innate"),I->GetStringField(TEXT("action")),FString(Equipped?TEXT("cast_item"):TEXT("equip")));
+        if(!Equipped){Wand->SetBoolField(TEXT("equipped"),true);I=Step(V,S,P);}
+        TestEqual(TEXT("Innate recovery names the source item"),I->GetNumberField(TEXT("item")),99.);
+        TestEqual(TEXT("Stronger innate beats learned recovery spell"),I->GetNumberField(TEXT("spell")),Innate->GetNumberField(TEXT("id")));
+        TestFalse(TEXT("No repeated innate before vital update"),Step(V,S,P)->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("health"),100);TestFalse(TEXT("Authoritative health rise completes innate recovery"),Step(V,S,P)->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("health"),50);Wand->SetBoolField(TEXT("innate_recovery_available"),false);
+        FACEPluginVM Fallback;Fallback.Load(Source,Error);TestEqual(TEXT("Ineligible innate falls back to learned recovery"),Step(Fallback,S,P)->GetNumberField(TEXT("spell")),Heal->GetNumberField(TEXT("id")));
+        Wand->SetBoolField(TEXT("innate_recovery_available"),true);
+        Wand->SetObjectField(TEXT("int_properties"),RecoveryJson(TEXT(R"({"280":17})")));S->SetObjectField(TEXT("cooldowns"),RecoveryJson(TEXT(R"({"17":5})")));
+        FACEPluginVM Cooling;Cooling.Load(Source,Error);TestEqual(TEXT("Innate on cooldown yields to learned recovery"),Step(Cooling,S,P)->GetStringField(TEXT("action")),FString(TEXT("cast")));
+        S->RemoveField(TEXT("cooldowns"));Innate->SetNumberField(TEXT("power"),Heal->GetNumberField(TEXT("power")));
+        FACEPluginVM Equal;Equal.Load(Source,Error);TestEqual(TEXT("Equal-power innate does not replace learned spell"),Step(Equal,S,P)->GetStringField(TEXT("action")),FString(TEXT("cast")));
+    }
+    // Imported handler intervals use VT's integer vital percentage. Conversion
+    // source exactly at its reserve is eligible, not considered below reserve.
+    {
+        auto S=Snapshot(),P=Profile();S->SetNumberField(TEXT("health"),101);S->SetNumberField(TEXT("max_health"),200);
+        auto Food=RecoveryJson(TEXT(R"({"id":51,"name":"Food","type":32,"usable":true,"identified":true,"count":5,"boost_vital":2,"boost":100})"));
+        auto Items=S->GetArrayField(TEXT("inventory"));Items.Add(MakeShared<FJsonValueObject>(Food));S->SetArrayField(TEXT("inventory"),Items);
+        S->SetArrayField(TEXT("spells"),{MakeShared<FJsonValueObject>(Spells[TEXT("Heal Self I")])});
+        P->SetArrayField(TEXT("recharge_handlers"),{
+            MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"vital":2,"stance":1,"handler":"Recharge With Food","min":0,"max":50})"))),
+            MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"vital":2,"stance":1,"handler":"Regular Spell","min":0,"max":100})")))});
+        FACEPluginVM V;V.Load(Source,Error);TestEqual(TEXT("50.5 percent falls in VT's integer 0-50 interval"),Step(V,S,P)->GetNumberField(TEXT("item")),51.);
+        S=Snapshot();S->SetNumberField(TEXT("mana"),10);S->SetNumberField(TEXT("health"),65);
+        S->SetArrayField(TEXT("spells"),{MakeShared<FJsonValueObject>(Spells[TEXT("Health to Mana Self I")])});
+        P=Profile();P->SetArrayField(TEXT("recharge_handlers"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"vital":6,"stance":1,"handler":"Health to Mana","min":0,"max":100})")))});
+        FACEPluginVM Boundary;Boundary.Load(Source,Error);TestEqual(TEXT("Source at the reserve can recover another vital"),Step(Boundary,S,P)->GetStringField(TEXT("action")),FString(TEXT("cast")));
+    }
     // Regular mana recovery prefers conversion even over a higher-tier boost;
     // replenished mana then pays for Revitalize when stamina falls below threshold.
     for(bool Imported:{false,true})
@@ -493,6 +535,82 @@ bool FACEUCMResourcesTest::RunTest(const FString&)
     auto Snapshot=[](){return RecoveryJson(TEXT(R"({"time":100,"player":1,"health":100,"max_health":100,"stamina":100,"max_stamina":100,"mana":100,"max_mana":100,"combat_mode":1,"ready":true,"busy":false,"action_serial":0,"action_error":0,"spells":[],"enchantments":[],"targets":[],"inventory":[{"id":20,"wcid":20,"name":"Essence","type":128,"identified":true,"usable":true,"structure":2,"max_structure":50,"int_properties":{"280":213}},{"id":21,"wcid":49485,"name":"Encapsulated Spirit","type":128,"usable":true},{"id":30,"wcid":30,"name":"Mana Stone","type":524288,"identified":true,"usable":true,"mana_empty":true,"mana":0},{"id":31,"wcid":31,"name":"Loot Ring","type":8,"identified":true,"mana":5000,"max_mana":5000},{"id":32,"wcid":31,"name":"Keep Ring","type":8,"identified":true,"mana":5000,"max_mana":5000},{"id":33,"wcid":33,"name":"Armor","type":2,"identified":true,"equipped":true,"mana":10,"max_mana":100}]})"));};
     auto Profile=[](){return RecoveryJson(TEXT(R"({"buffing":false,"recovery":false,"combat":"off","looting":false,"refill_summons":true,"summon_refill_charges":5,"weapon_items":[20],"item_mana":false,"fill_mana_stones":false,"mana_source_items":[31]})"));};
     auto Step=[&](FACEPluginVM& VM,auto S,auto P){TSharedPtr<FJsonObject>I;TestTrue(*Error,VM.Step(S,P,I,Error));return I?I:MakeShared<FJsonObject>();};
+    for(int Case=0;Case<8;++Case)
+    {
+        FACEPluginVM VM;VM.Load(Source,Error);auto S=Snapshot(),P=Profile();
+        P->SetBoolField(TEXT("ucm_mana_only"),true);P->SetBoolField(TEXT("item_mana"),true);
+        auto Inv=S->GetArrayField(TEXT("inventory"));auto First=Inv[2]->AsObject();
+        First->SetNumberField(TEXT("mana"),5000);First->SetBoolField(TEXT("mana_empty"),false);
+        auto Second=MakeShared<FJsonObject>(*First);Second->SetNumberField(TEXT("id"),40);Inv.Add(MakeShared<FJsonValueObject>(Second));S->SetArrayField(TEXT("inventory"),Inv);
+        if(Case==0)First->SetBoolField(TEXT("identified"),false);
+        if(Case==1)First->SetBoolField(TEXT("usable"),false);
+        if(Case==2)First->SetBoolField(TEXT("equipped"),true);
+        if(Case==3)First->SetBoolField(TEXT("mana_supply_available"),false);
+        if(Case==4)First->SetNumberField(TEXT("count"),0);
+        if(Case==5){First->SetObjectField(TEXT("int_properties"),RecoveryJson(TEXT(R"({"280":213})")));S->SetObjectField(TEXT("cooldowns"),RecoveryJson(TEXT(R"({"213":12})")));}
+        if(Case==6){Second->SetNumberField(TEXT("workmanship"),7);P->SetNumberField(TEXT("mana_tank_minimum"),1000);}
+        if(Case==7){First->SetBoolField(TEXT("retained"),true);First->SetBoolField(TEXT("resource_available"),false);First->SetBoolField(TEXT("mana_supply_available"),true);}
+        auto I=Step(VM,S,P);
+        TestEqual(TEXT("Recharge skips unavailable supplies, prefers a filled tank, and permits retained charges"),I->GetNumberField(TEXT("item")),Case==7?30.:40.);
+    }
+    for(bool ReceiptBeforeMana:{false,true})
+    {
+        FACEPluginVM VM;VM.Load(Source,Error);auto S=Snapshot(),P=Profile();
+        P->SetBoolField(TEXT("ucm_mana_only"),true);P->SetBoolField(TEXT("item_mana"),true);
+        auto Charge=S->GetArrayField(TEXT("inventory"))[2]->AsObject();Charge->SetNumberField(TEXT("mana"),5000);
+        Step(VM,S,P);
+        auto Success=RecoveryJson(TEXT(R"({"type":"use","source":30,"target":1,"requested_at":100,"action_serial":1,"error":0})"));
+        auto Unrelated=RecoveryJson(TEXT(R"({"type":"use","source":21,"requested_at":101,"action_serial":2,"error":1})"));
+        auto OldAttempt=RecoveryJson(TEXT(R"({"type":"use","source":30,"requested_at":90,"action_serial":3,"error":1})"));
+        S->SetNumberField(TEXT("time"),102);S->SetNumberField(TEXT("action_serial"),3);S->SetNumberField(TEXT("action_error"),1);
+        if(ReceiptBeforeMana)S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Success),MakeShared<FJsonValueObject>(Unrelated),MakeShared<FJsonValueObject>(OldAttempt)});
+        else S->SetArrayField(TEXT("action_events"),{});
+        TestFalse(TEXT("Use receipt or unrelated failure cannot issue another recharge"),Step(VM,S,P)->HasField(TEXT("action")));
+        auto Gear=S->GetArrayField(TEXT("inventory"))[5]->AsObject();Gear->SetNumberField(TEXT("mana"),100);
+        S->SetNumberField(TEXT("time"),103);Step(VM,S,P);
+        // A mana update may precede UseDone on GDLE; ACE may return the
+        // appraisal after UseDone. Neither ordering loses successful recovery.
+        S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Success),MakeShared<FJsonValueObject>(Unrelated)});
+        Gear->SetNumberField(TEXT("mana"),0);S->SetNumberField(TEXT("time"),130);
+        TestEqual(TEXT("Fresh mana confirms the cycle despite unrelated or stale failures"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("use_item")));
+    }
+    {
+        FACEPluginVM VM;VM.Load(Source,Error);auto S=Snapshot(),P=Profile();
+        P->SetBoolField(TEXT("ucm_mana_only"),true);P->SetBoolField(TEXT("item_mana"),true);
+        S->GetArrayField(TEXT("inventory"))[2]->AsObject()->SetNumberField(TEXT("mana"),5000);Step(VM,S,P);
+        S->SetNumberField(TEXT("time"),102);S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"type":"use","source":30,"requested_at":100,"action_serial":1,"error":1})")))});
+        Step(VM,S,P);S->SetNumberField(TEXT("time"),130);
+        TestFalse(TEXT("A matching recharge failure applies its own bounded cooldown"),Step(VM,S,P)->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("time"),133);
+        TestEqual(TEXT("A rejected recharge resumes without restarting UCM"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("use_item")));
+    }
+    for(const TCHAR* Supply:{TEXT("Mana Stone"),TEXT("Titan Mana Charge"),TEXT("Custom Mana Reservoir")})
+    {
+        FACEPluginVM VM;TestTrue(TEXT("Stopped recharge policy loads"),VM.Load(Source,Error));
+        auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("ucm_mana_only"),true);P->SetBoolField(TEXT("item_mana"),true);
+        P->SetNumberField(TEXT("item_mana_threshold"),33);
+        auto Inv=S->GetArrayField(TEXT("inventory"));auto Charge=Inv[2]->AsObject(),Jewel=Inv[5]->AsObject();
+        Charge->SetStringField(TEXT("name"),Supply);Charge->SetNumberField(TEXT("mana"),5000);Charge->SetBoolField(TEXT("mana_empty"),false);
+        Jewel->SetStringField(TEXT("name"),TEXT("Encrusted Bloodstone Jewel"));Jewel->SetNumberField(TEXT("type"),8);Jewel->SetNumberField(TEXT("mana"),34);
+        TestFalse(TEXT("Stopped service waits while every worn item exceeds 33 percent"),Step(VM,S,P)->HasField(TEXT("action")));
+        Jewel->SetNumberField(TEXT("mana"),32);S->SetNumberField(TEXT("time"),102);
+        auto I=Step(VM,S,P);TestEqual(TEXT("Any worn jewelry crossing the threshold recharges with each supported supply"),I->GetStringField(TEXT("action")),FString(TEXT("use_item")));
+        TestEqual(TEXT("Selected recharge supply is used"),I->GetNumberField(TEXT("item")),30.);
+        S->SetNumberField(TEXT("time"),104);S->SetNumberField(TEXT("action_serial"),1);
+        TestFalse(TEXT("UseDone alone cannot trigger another charge"),Step(VM,S,P)->HasField(TEXT("action")));
+        Jewel->SetNumberField(TEXT("mana"),100);Charge->SetNumberField(TEXT("mana"),0);
+        S->SetNumberField(TEXT("time"),106);TestFalse(TEXT("Fresh full suit stops further use"),Step(VM,S,P)->HasField(TEXT("action")));
+        // A replacement supply and another drain cycle work without restarting.
+        Charge->SetNumberField(TEXT("mana"),5000);Jewel->SetNumberField(TEXT("mana"),0);S->SetNumberField(TEXT("time"),140);
+        TestEqual(TEXT("Empty jewel triggers recharge again while UCM remains stopped"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("use_item")));
+        auto Failure=RecoveryJson(TEXT(R"({"activity":"item_mana","status":"Temporary server rejection"})"));
+        P->SetObjectField(TEXT("ucm_activity_failure"),Failure);S->SetNumberField(TEXT("time"),142);
+        TestEqual(TEXT("Idle failure uses a bounded activity pause"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
+        P->RemoveField(TEXT("ucm_activity_failure"));S->SetNumberField(TEXT("time"),144);
+        TestFalse(TEXT("Idle retry pause does not hammer supplies"),Step(VM,S,P)->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("time"),174);
+        TestEqual(TEXT("Stopped recharge resumes after the failure cooldown"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("use_item")));
+    }
     {
         FACEPluginVM VM;TestTrue(TEXT("Resource maintenance policy loads"),VM.Load(Source,Error));auto S=Snapshot(),P=Profile();
         auto I=Step(VM,S,P);TestEqual(TEXT("Low essence gets a spirit independently of automatic combat/summoning"),I->GetStringField(TEXT("action")),FString(TEXT("apply_item")));
@@ -515,6 +633,9 @@ bool FACEUCMResourcesTest::RunTest(const FString&)
     {
         FACEPluginVM VM;VM.Load(Source,Error);auto S=Snapshot(),P=Profile();Step(VM,S,P);
         S->SetNumberField(TEXT("time"),101);S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("action_error"),1);
+        S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"type":"use","source":999,"target":20,"action_serial":1,"requested_at":100,"error":1})")))});
+        TestFalse(TEXT("Unrelated use cannot reject or repeat pet refill"),Step(VM,S,P)->HasField(TEXT("action")));
+        S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"type":"use","source":21,"target":20,"action_serial":2,"requested_at":100,"error":1})")))});
         TestFalse(TEXT("Rejected refill backs off without stopping UCM"),Step(VM,S,P)->HasField(TEXT("action")));
         S->SetNumberField(TEXT("time"),132);S->SetNumberField(TEXT("action_error"),0);
         TestEqual(TEXT("Refill can retry after backoff"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("apply_item")));

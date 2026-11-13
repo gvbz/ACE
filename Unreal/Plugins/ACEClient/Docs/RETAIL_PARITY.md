@@ -1,12 +1,149 @@
 # Retail client replacement: acceptance and evidence
 
+Vendor affordability follow-up (2026-11-13): normal vendor single-item, cart-row
+and Buy All actions now check the full retail purchase price before sending Buy.
+The pyreal purse comes from player `CoinValue` (int quality 20), as in retail
+`gmVendorUI::UpdateTotalValue` (004C48E0); `BuySingleItem` (004C2820) and the Buy All
+handler reject insufficient funds before `CM_Vendor::Event_Buy`. Rejection keeps
+the cart and selection and displays "You don't have enough money" without starting
+the hourglass. Mobile/VR vendor menus share the same check. Alternate-currency
+shops retain the existing live owned-currency count; currency identity uses its
+advertised WCID, not the display name. Item Tools' explicit server-bank opt-in
+remains separate from normal vendor UI. Packet, UI and Item Tools regressions
+cover insufficient/exact funds, cart totals, balance updates, price rounding,
+trade-note premiums and alternate currencies. This is local source and fixture
+verification; the reported custom server has not been tested live.
+Validation: Win64 Development Editor build and all seven suites in
+`TestOutput/UCMKnownGaps-Nov12/vendor-affordability-tests/index.json` passed
+(vendor transactions, three Item Tools suites, retail UI screens, mobile menus
+and VR menus). The large retail screen fixture was split into vendor helpers to
+stay within MSVC optimizer limits without disabling checks or optimizations.
+
+UCM follow-up (2026-11-13) adds learned/wand/physical-proc/grenade debuff selection,
+idle helper buffs, optional casting movement, server-scoped recipe imports and
+Classic expression/regex compatibility. Physical proc weapons use actual attacks
+and confirmed effects, thrown weapons now support configured offhands, and regex
+`x`/`n` options plus mixed capture backreferences follow .NET semantics. The final
+conditional/balancing regex implementation now includes capture restoration on
+backtracking, assertion conditions and case-sensitive caches/capture names.
+The known in-scope UCM implementation register is closed; external integrations
+are excluded by user request. This is local source/fixture validation, not live
+server or packaged-device acceptance. See the current
+[gap register](Plugins/VirindiCompatibility.md) for evidence and external-data
+requirements that remain.
+
+Automatic fellowship management and UCM-integrated crafting are now implemented
+(2026-11-13). The optional manager includes nearby tell recruitment, FIFO
+reservations, membership-confirmed operations and member votes. Crafting uses
+verified catalog recipes, imported stock targets and inventory-confirmed jobs,
+with recovery taking priority between actions. See the current
+[Virindi gap register](Plugins/VirindiCompatibility.md) for configuration,
+intentional differences and remaining custom-recipe limitations.
+
 The target is the complete retail 1802 client reproduced in Unreal: gameplay,
 network behavior, controls, DAT content, and interface design. Graphical fidelity
 work follows feature completion. A feature is not complete merely because its
 button exists, its opcode has a constant, or a focused regression test passes.
 
-This is the working acceptance record, most recently reviewed on 2026-10-13. The client
+This is the working acceptance record, most recently reviewed on 2026-11-13. The client
 is **not yet a feature-complete retail replacement**.
+
+## UCM known-gap review: 2026-11-13
+
+Reconciled the historical VT gap lists against current runtime and source.
+Closed additional receipt/scheduler races across metas, assistance, components,
+pets and loot maintenance; added innate recovery-implement activation and
+configured lockpicking for route doors. API metadata, permissions and selective
+snapshot support are documented. Native profile replacement also preserves
+damage-format metadata across repeated saves and reloads. The follow-up adds
+server-observed fellowship command sequencing and Lua dismiss/leader operations,
+and isolates AutoCraft errors by ingredient/request identity. See the
+[current comparison and remaining feature categories](Plugins/VirindiCompatibility.md#known-gap-audit-and-interaction-follow-up-2026-11-13).
+This is local source/policy/packet verification, not complete VT parity or live
+ACE/GDLE acceptance. No release was published by this review.
+
+## UCM buff/mana receipt follow-up: 2026-11-12
+
+Compared VT's buff and worn-mana rules with ACE and pinned GDLE mana-stone
+handling. Fixed blocking recharge appraisal waits, lost/misattributed buff and
+mana outcomes, unavailable supply selection, and consumable buff retry stalls.
+GDLE's public item-mana updates now reach Lua instead of being discarded; ACE
+still refreshes from full appraisals. Missing/removed mana remains absent in
+integer property maps, so resource recovery cannot change loot-rule semantics.
+See [the comparison and coverage record](Plugins/VirindiCompatibility.md#buff-receipts-and-equipment-mana-follow-up-2026-11-12).
+Live-server timing remains an acceptance check; this is not a claim of full VT
+or retail parity.
+
+## Equipment mana while UCM is stopped: 2026-11-12
+
+An Encrusted Bloodstone Jewel could run empty despite a 33% equipment threshold.
+Two client paths can explain missed recharges: the general one-ID-per-second
+scan revisited the first eligible inventory entries every 120 seconds, starving
+later items in large inventories; a stopped-service stance timeout also latched
+`IdleManaFailed` until a restart or profile change.
+
+- Refresh worn mana before general inventory appraisals, starting with the
+  lowest known percentage, with a 30-second per-item retry/refresh interval and
+  the existing global request budget. Include jewelry and parent-attached gear.
+  General inventory refreshes now select the oldest request. Known carried
+  supplies retain the general cadence because their mana does not drain.
+- After a successful mana use, prioritize fresh equipped-mana readings without
+  discarding equipment appraisals. Confirm an actual mana increase before another
+  refill; do not mistake `UseDone` alone for a full suit. Refresh source/target
+  resources after manual use as well as UCM/Action Deck use.
+- Pass stopped-service operational failures back to the restricted recharge
+  policy for its bounded cooldown. Keep UCM stopped, respect inventory action
+  locks, and reserve the permanent failure latch for script/load errors.
+- Cover 33% jewelry thresholds, an empty jewel, repeated recharge cycles, mana
+  stones/charges/custom ManaStone-category supplies, player-targeted suit use,
+  large inventories, manual recharge and recovery from a stance timeout.
+
+References: ACE `Player.ManaConsumersTick` updates server mana without sending
+an ordinary item property for every drain. VT `ev.cs` refreshes worn appraisals,
+compares each item's mana percentage and targets the player for suit recharging;
+`cLogic.InitializeDefaultLogicRules` enables `RefillWieldedMana` while stopped
+through `ManaChargesWhenOff`. The user's precise supply and failure sequence are
+unknown; these are reproduced client failure paths, not a live-server replay.
+
+Validation: editor build, resource-maintenance/recovery policy tests, actual
+stopped-service dispatch and packet tests, equipment assessment-cache tests and
+the 512-item idle workload passed. The affected host/cache/workload suites were
+rerun after adding manual recharge handling. Quest/Android shared-source checks
+passed. Release v156 carries this change across the supported platforms; its
+packaging and regression evidence is recorded in the release receipt. The
+reporting character's exact setup has not been verified live.
+
+## GDLE combat stance and UCM buffing: 2026-11-12
+
+Reefcull reports `Combat stance was not confirmed; action deferred` when UCM
+attempts to buff. UCM required a new `CombatMode` integer quality (40) before
+dispatching the spell. GDLE's `ChangeCombatMode(mode, playerRequested=true)`
+intentionally omits that quality on success; it only publishes a correction or
+a server-initiated change. It can also omit the motion update when the requested
+stance is already active, so waiting for motion is not a reliable substitute.
+
+- Match retail's immediate requested-mode state for GDLE. Send the stance and
+  subsequent spell through the same reliable, ordered weenie action queue.
+- Retain the actual received quality rather than inventing a server update.
+  Explicit server corrections remain authoritative, including rejection to
+  peace. ACE continues to require its normal stance acknowledgment.
+- Cover magic, melee, missile and peace transitions, repeated silent requests,
+  correction handling, and consecutive UCM buffs with packet-order assertions.
+
+Evidence: retail `ClientCombatSystem::SetCombatMode` (`0x0056BE30`) updates its
+mode and sends `CM_Combat::Event_ChangeCombatMode` without a success acknowledgment;
+`OnQualityChanged` applies server corrections. Public GDLE reference:
+[`CMonsterWeenie::ChangeCombatMode`](https://github.com/esoterick/gdle-linux/blob/542a209d89e13d6fbb5df3f3e77fd72d10a4b647/Source/Monster.cpp#L2044)
+and its `CClientEvents::ChangeCombatMode` caller. The regression tests reproduce
+GDLE's silent-success contract locally; Reefcull's deployed source and a live
+session have not been verified.
+
+Validation: Windows editor build and all ten selected automation suites passed,
+including `ACE.Network.GDLEInteractionTransport`,
+`ACE.Plugins.RouteAndTellRequests`, buffing/recovery, Action Deck, AutoCraft and
+network/quality regressions. Quest and Android shared-source synchronization
+checks passed. Release v156 includes this fix; see its release receipt for
+packaged-platform validation. Live Reefcull acceptance remains unverified.
 
 ## Public retail chat command audit: 2026-11-11
 

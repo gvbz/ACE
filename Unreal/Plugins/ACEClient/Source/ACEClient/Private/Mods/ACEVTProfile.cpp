@@ -314,7 +314,8 @@ J Convert(const J& D,TArray<FString>& Issues)
             if(Action==10){Q->SetBoolField(TEXT("count_by_name"),true);Q->SetNumberField(TEXT("keep_up_to"),N(R,TEXT("amount")));if(N(R,TEXT("amount"))==0)Q->SetStringField(TEXT("action"),TEXT("skip"));}
             if(Action==2||Action==3||Action==4)Q->SetStringField(TEXT("action"),Action==2?TEXT("salvage"):Action==3?TEXT("sell"):TEXT("read"));
             if(Action<0||Action>10||(Action>=5&&Action<=9))Problems.Add(FString::Printf(TEXT("Custom User action %d requires its original plugin"),Action));
-            if(!S(R,TEXT("expression")).IsEmpty())Problems.Add(TEXT("custom expression"));
+            // VTClassic cLootItemRule.Match/EarlyMatch evaluate IntRules only.
+            // CustomExpression is persisted metadata, not an executable condition.
             bool Disabled=false;
             for(const auto& Req:R->GetArrayField(TEXT("requirements")))
                 if(N(Req->AsObject(),TEXT("type"))==9999&&S(Req->AsObject(),TEXT("body")).TrimStartAndEnd().Equals(TEXT("true"),ESearchCase::IgnoreCase))Disabled=true;

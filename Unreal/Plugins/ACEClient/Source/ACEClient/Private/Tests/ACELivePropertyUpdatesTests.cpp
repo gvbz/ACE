@@ -106,6 +106,38 @@ bool FACELivePropertyUpdatesTest::RunTest(const FString&)
 	TestEqual(TEXT("Appraisal zero clears the known icon too"), Session.WorldObjects[Item.Guid].IconId, 0);
 	TestEqual(TEXT("Appraisal zero clears the known overlay"), Session.WorldObjects[Item.Guid].IconOverlayId, 0);
 	TestEqual(TEXT("Inspect result cannot reuse the icon that its appraisal cleared"), Appraisal.IconDid, 0);
+	TestEqual(TEXT("Successful appraisal without mana records absence"), Session.WorldObjects[Item.Guid].ItemCurrentMana, -2);
+	for (uint32 Key : {107u, 108u})
+	{
+		auto ManaUpdate = [&](uint8 Stamp, int32 Value)
+		{
+			FACEBinaryWriter W; W.WriteUInt32(ACEOpcode::PublicUpdatePropertyInt); W.WriteUInt8(Stamp);
+			W.WriteUInt32(Item.Guid); W.WriteUInt32(Key); W.WriteInt32(Value); return W.GetData();
+		};
+		auto Read = [&]() { return Key == 107 ? Session.WorldObjects[Item.Guid].ItemCurrentMana : Session.WorldObjects[Item.Guid].ItemMaximumMana; };
+		Session.ReceiveGameMessage(ManaUpdate(254, 5000));
+		TestEqual(TEXT("GDLE live item mana is retained"), Read(), 5000);
+		Session.ReceiveGameMessage(ManaUpdate(255, 0));
+		Session.ReceiveGameMessage(ManaUpdate(254, 5000));
+		TestEqual(TEXT("Late recharge packet cannot resurrect depleted mana"), Read(), 0);
+		Session.ReceiveGameMessage(ManaUpdate(0, 100));
+		TestEqual(TEXT("Mana quality stamp wraps normally"), Read(), 100);
+		auto Truncated = ManaUpdate(2, 5000); Truncated.Pop(); Session.ReceiveGameMessage(Truncated);
+		Session.ReceiveGameMessage(ManaUpdate(1, 20));
+		TestEqual(TEXT("Truncated mana message does not consume timestamp"), Read(), 20);
+		FACEBinaryWriter Remove; Remove.WriteUInt32(0x1D2); Remove.WriteUInt8(2); Remove.WriteUInt32(Item.Guid); Remove.WriteUInt32(Key);
+		Session.ReceiveGameMessage(Remove.GetData()); Session.ReceiveGameMessage(ManaUpdate(1, 5000));
+		TestEqual(TEXT("Mana removal clears the reading and rejects older updates"), Read(), -2);
+	}
+	FACEBinaryWriter ManaID; ManaID.WriteUInt32(Item.Guid); ManaID.WriteUInt32(1); ManaID.WriteUInt32(1);
+	ManaID.WriteUInt16(2); ManaID.WriteUInt16(16); ManaID.WriteUInt32(107); ManaID.WriteInt32(75); ManaID.WriteUInt32(108); ManaID.WriteInt32(100);
+	FACEBinaryReader ManaReader(ManaID.GetData()); Session.HandleIdentifyObjectResponse(ManaReader);
+	TestEqual(TEXT("Later successful appraisal replaces public current mana"), Session.WorldObjects[Item.Guid].ItemCurrentMana, 75);
+	TestEqual(TEXT("Later successful appraisal replaces public maximum mana"), Session.WorldObjects[Item.Guid].ItemMaximumMana, 100);
+	Session.UpsertWorldObject(Item);
+	TestEqual(TEXT("Repeated description preserves mana for the same item instance"), Session.WorldObjects[Item.Guid].ItemCurrentMana, 75);
+	Session.UpsertWorldObject(Item, true);
+	TestEqual(TEXT("A replacement instance cannot inherit another item's mana"), Session.WorldObjects[Item.Guid].ItemCurrentMana, -1);
 
 	// A string property can arrive on either protocol layout, including before
 	// the player ObjectCreate. They must all use the same timestamp identity.

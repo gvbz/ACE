@@ -95,6 +95,18 @@ bool FACEUCMProfileStorageTest::RunTest(const FString&)
     TestEqual(TEXT("Protections belong to Character"),SectionFor(TEXT("protection_profile")),FString(TEXT("Character")));
     TestEqual(TEXT("Custom banes belong to Character"),SectionFor(TEXT("bane_custom")),FString(TEXT("Character")));
     {
+        TSharedPtr<FJsonObject> Native=MakeShared<FJsonObject>();Native->SetNumberField(TEXT("damage_type"),8);
+        auto Mob=MakeShared<FJsonObject>();Mob->SetStringField(TEXT("name"),TEXT("Rat"));Mob->SetNumberField(TEXT("damage_type"),16);
+        Native->SetArrayField(TEXT("monsters"),{MakeShared<FJsonValueObject>(Mob)});
+        TSharedPtr<FJsonObject> NativeLinks,Loaded,LoadedLinks;
+        TestTrue(TEXT("Native profile without format markers saves"),Save(Root,TEXT("Native"),Native,NativeLinks,nullptr,Error));
+        auto NativeBase=Copy(Native);Native->SetNumberField(TEXT("skill_margin"),45);
+        TestTrue(TEXT("Next save does not report a migration as a disk conflict"),Save(Root,TEXT("Native"),Native,NativeLinks,NativeBase,Error));
+        TestTrue(TEXT("Native profile reloads"),Load(Root,TEXT("Native"),Loaded,LoadedLinks,Error));
+        TestEqual(TEXT("Native cold damage stays cold after reload"),Loaded->GetNumberField(TEXT("damage_type")),8.);
+        TestEqual(TEXT("Native mob fire damage stays fire after reload"),Loaded->GetArrayField(TEXT("monsters"))[0]->AsObject()->GetNumberField(TEXT("damage_type")),16.);
+    }
+    {
         auto* GI=NewObject<UGameInstance>();GI->Init();ON_SCOPE_EXIT{GI->Shutdown();};
         auto* H=GI->GetSubsystem<UACEPluginSubsystem>();H->StorageRoot=Root/TEXT("Host");H->Settings=MakeShared<FJsonObject>();
         TestTrue(TEXT("Initial selection creates Default references"),H->InitializeUCMSelection());

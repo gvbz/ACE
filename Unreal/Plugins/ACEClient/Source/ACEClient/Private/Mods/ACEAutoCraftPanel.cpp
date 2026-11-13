@@ -126,6 +126,13 @@ public:
                 .OnValueCommitted_Lambda([this](int32 Value,ETextCommit::Type){Plugin->Profile->SetNumberField(TEXT("quantity"),Value);Save();})
                 .OnEndSliderMovement_Lambda([this](int32){Save();})]];
         Add(TEXT("Quantity to make (additional finished items)"),Quantity);
+        Add(TEXT("Server recipe catalog (.json file path)"),SNew(SACEPluginEditableTextBox).Style(&Style->Edit)
+            .HintText(FText::FromString(TEXT("Path to a verified recipe catalog for this server")))
+            .OnTextChanged_Lambda([this](const FText& T){CatalogPath=T.ToString().TrimStartAndEnd();}));
+        Form->AddSlot().AutoHeight().Padding(0,0,0,8)[SNew(SHorizontalBox)
+            +SHorizontalBox::Slot().FillWidth(1)[Button(TEXT("Import for this server"),[this](){Host->ImportAutoCraftCatalog(CatalogPath);},[this](){return !CatalogPath.IsEmpty();},TEXT("AutoCraft.ImportCatalog"))]
+            +SHorizontalBox::Slot().FillWidth(1).Padding(6,0,0,0)[Button(TEXT("Use bundled recipes"),[this](){Host->RemoveAutoCraftCatalog();},[](){return true;},TEXT("AutoCraft.RemoveCatalog"))]];
+        Form->AddSlot().AutoHeight().Padding(0,0,0,8)[CraftLabel(TEXT("Server recipes also apply to UCM automatic crafting. Import replaces this server's previous custom catalog; bundled recipes remain unless a recipe ID is overridden."),12,CraftMuted)];
         Form->AddSlot().AutoHeight().Padding(0,0,0,8)[Toggle(TEXT("ingredients"),TEXT("Make missing ingredients from items in my packs"),true)];
         Form->AddSlot().AutoHeight().Padding(0,0,0,8)[Toggle(TEXT("confirm"),TEXT("Confirm this job's crafting prompts automatically"),true)];
         Form->AddSlot().AutoHeight().Padding(0,0,0,12)[Toggle(TEXT("stop_on_failure"),TEXT("Stop after a failed attempt"),false)];
@@ -163,6 +170,7 @@ public:
     virtual void Tick(const FGeometry& G,double T,float D)override
     {SCompoundWidget::Tick(G,T,D);if(Host.IsValid()){Style->Refresh();Host->RefreshAutoCraft();}}
 private:
+    FString CatalogPath;
     TWeakObjectPtr<UACEPluginSubsystem> Host;TSharedPtr<FACEClientPlugin> Plugin;TSharedPtr<FACEPluginStyle> Style;
     FACEAutoCraftState& Data()const{return *Host->AutoCraft;}
     bool Option(const TCHAR* Key,bool Default=false)const{bool B=Default;Plugin->Profile->TryGetBoolField(Key,B);return B;}

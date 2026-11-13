@@ -2038,6 +2038,11 @@ void FACESession::UpsertWorldObject(const FACEWorldObject& Object, bool bForceRe
 			&& Merged.ItemType == Existing->ItemType
 			&& ((Merged.ObjectDescriptionFlags ^ Existing->ObjectDescriptionFlags)
 				& (ACEObjectDescFlag::Attackable | ACEObjectDescFlag::Vendor | ACEObjectDescFlag::Corpse)) == 0;
+		if (bSameWeenieRole)
+		{
+			if (Merged.ItemCurrentMana == -1) Merged.ItemCurrentMana = Existing->ItemCurrentMana;
+			if (Merged.ItemMaximumMana == -1) Merged.ItemMaximumMana = Existing->ItemMaximumMana;
+		}
 		if (Existing->bDying && !Merged.bIsPlayer && bSameInstance && bSameWeenieRole && !Merged.AllowsDeadPoseInteraction())
 		{
 			Merged.bDying = true;
@@ -6541,6 +6546,15 @@ void FACESession::HandleIdentifyObjectResponse(FACEBinaryReader& Reader)
 			Info.CritResistRating, Info.CritDamageResistRating);
 	}
 	Info.Summary = (Header + Summary).TrimStartAndEnd();
+	if (Info.bSuccess) if (auto* Object = WorldObjects.Find(Info.ObjectGuid))
+	{
+		// An empty stone may omit ItemCurMana. A successful full appraisal
+		// replaces the previous resource reading, including explicit absence.
+		const int32* Current = Info.IntProperties.Find(107), *Maximum = Info.IntProperties.Find(108);
+		Object->ItemCurrentMana = Current ? FMath::Max(0, *Current) : -2;
+		Object->ItemMaximumMana = Maximum ? FMath::Max(0, *Maximum) : -2;
+		if (HasPlayerInventoryState(*Object)) ++InventoryDataRevision;
+	}
 	OnAppraisal.Broadcast(Info);
 }
 
@@ -7930,7 +7944,7 @@ void FACESession::HandlePublicUpdatePropertyInt(FACEBinaryReader& Reader)
 	}
 	if (FACEWorldObject* Obj = WorldObjects.Find(Guid))
 	{
-		if(Obj->ContainerId || Obj->WielderId==PlayerGuid)++InventoryDataRevision;
+		if(Obj->ContainerId || Obj->WielderId==PlayerGuid || (Obj->CurrentWieldedLocation && Obj->ParentGuid==PlayerGuid))++InventoryDataRevision;
 		if (Prop == 4) // PropertyInt.ClothingPriority
 		{
 			Obj->ClothingPriority = Value;
@@ -7988,6 +8002,8 @@ void FACESession::HandlePublicUpdatePropertyInt(FACEBinaryReader& Reader)
 		{
 			Obj->Structure = Value;
 		}
+		else if (Prop == 107) Obj->ItemCurrentMana = FMath::Max(0, Value);
+		else if (Prop == 108) Obj->ItemMaximumMana = FMath::Max(0, Value);
 		else if (Prop == 95) // PropertyInt.RadarBlipColor (e.g. advocate items).
 		{
 			Obj->RadarBlipColor = static_cast<uint8>(Value);
@@ -9099,7 +9115,7 @@ void FACESession::SendChangeCombatMode(uint32 CombatMode)
 	// overwrite CurrentStance / wipe Magic before PropertyInt.CombatMode arrives.
 	PlayerVitals.CombatMode = static_cast<int32>(CombatMode);
 	DeferredServerCombatMode = INDEX_NONE;
-	if (CombatMode == ACECombatMode::NonCombat)
+	if (Creds.bGDLE || CombatMode == ACECombatMode::NonCombat)
 	{
 		PendingCombatMode = 0;
 		PendingCombatModeUntil = 0.0;
@@ -9109,6 +9125,12 @@ void FACESession::SendChangeCombatMode(uint32 CombatMode)
 		PendingCombatMode = CombatMode;
 		PendingCombatModeUntil = FPlatformTime::Seconds() + 5.0;
 	}
+	// GDLE ChangeCombatMode(mode, playerRequested=true) omits CombatMode on
+	// success, and may omit motion too when already in that stance. Retail uses
+	// the requested mode immediately; the following action shares this reliable,
+	// ordered weenie queue. Preserve the received quality and honor subsequent
+	// corrections normally, including an immediate server rejection to peace.
+	if (Creds.bGDLE) ++CombatModeRevision;
 	TArray<FACEWorldObject> Equipped;
 	GetEquippedItems(Equipped);
 	const uint32 Stance = ACECombatStance::ResolveForCombatMode(Equipped, CombatMode);

@@ -8,6 +8,17 @@ void FACESession::HandleRemoveProperty(FACEBinaryReader& Reader, uint32 Family, 
 	Reader.ReadUInt8();
 	const int32 Guid = bPublic ? Reader.ReadInt32() : PlayerGuid;
 	const int32 Key = Reader.ReadInt32();
+	if (bPublic && Guid != PlayerGuid && Family == ACEOpcode::PrivateUpdatePropertyInt && (Key == 107 || Key == 108))
+	{
+		if (auto* Object = WorldObjects.Find(Guid))
+		{
+			// Missing ItemCurMana represents an empty stone, not its previous
+			// filled reading. Remove and update share the transport stamp gate.
+			if (Key == 107) Object->ItemCurrentMana = -2; else Object->ItemMaximumMana = -2;
+			if (HasPlayerInventoryState(*Object)) ++InventoryDataRevision;
+		}
+		return;
+	}
 	if (!PlayerGuid || Guid != PlayerGuid) return;
 
 	bool bChanged = false, bVitaeChanged = false;

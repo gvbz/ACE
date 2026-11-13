@@ -1306,6 +1306,10 @@ struct ACECLIENT_API FACEWorldObject
 	UPROPERTY(BlueprintReadOnly, Category = "ACE")
 	float SalvageWorkmanship = -1.f;
 
+	/** Latest appraisal/public mana qualities: -1 unknown, -2 authoritatively absent. */
+	int32 ItemCurrentMana = -1;
+	int32 ItemMaximumMana = -1;
+
 	UPROPERTY(BlueprintReadOnly, Category = "ACE")
 	int32 SetupId = 0;
 

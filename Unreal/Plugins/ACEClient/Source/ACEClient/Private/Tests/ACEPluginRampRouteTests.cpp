@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "ACETestDatDirectory.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/FileHelper.h"
 #include "Interfaces/IPluginManager.h"
@@ -33,7 +34,7 @@ bool FACEPluginRampRouteTest::RunTest(const FString&)
  ON_SCOPE_EXIT {GI->Shutdown();GEngine->DestroyWorldContext(World);World->DestroyWorld(false);};
  auto* Dat=GI->GetSubsystem<UACEDatSubsystem>();auto* C=GI->GetSubsystem<UACEClientSubsystem>();
  auto* H=GI->GetSubsystem<UACEPluginSubsystem>();auto Session=C->GetSession();
- if(!Dat->LoadDatDirectory(TEXT("C:/Turbine/Asheron's Call")))return false;
+ if(!Dat->LoadDatDirectory(ACETestDatDirectory()))return false;
  const uint32 Block=0x61460000;
  const FVector Origin=FACEPosition::AceVectorToUnreal(FVector(0x61*192,0x46*192,0),100);
  // Olthoi120 points 3-5: the reported fourth point lies part way down this ramp.

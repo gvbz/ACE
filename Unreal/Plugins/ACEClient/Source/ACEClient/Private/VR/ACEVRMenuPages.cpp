@@ -185,8 +185,9 @@ void UACEVRMenu::BuildVendor()
         +SHorizontalBox::Slot().FillWidth(1)[Tab(TEXT("Buying"),!bVendorSelling,[this](){ClearItemSelection();bVendorSelling=false;PageIndex=0;bDirty=true;})]
         +SHorizontalBox::Slot().FillWidth(1)[Tab(TEXT("Selling"),bVendorSelling,[this](){ClearItemSelection();bVendorSelling=true;PageIndex=0;bDirty=true;})]];
     const auto Session=Client->GetSession();if(!Session)return;
-    const FString Currency=Session->GetVendorCurrencyName().IsEmpty()?TEXT("pyreals"):Session->GetVendorCurrencyName();
-    const int32 Purse=Session->GetVendorCurrencyName().IsEmpty()?Binder->CountPlayerPyreals():Session->GetVendorCurrencyCount();
+    const FString Currency=Session->VendorUsesPyreals()?TEXT("pyreals"):
+        (Session->GetVendorCurrencyName().IsEmpty()?TEXT("currency"):Session->GetVendorCurrencyName());
+    const int32 Purse=Session->GetVendorPurchaseFunds();
     Body->AddSlot().AutoHeight().Padding(4)[PageText(FString::Printf(TEXT("You have %d %s"),Purse,*Currency),28)];
     auto& Cart=bVendorSelling?Binder->VendorSellCart:Binder->VendorBuyCart;
     int64 Total=0;
@@ -207,7 +208,7 @@ void UACEVRMenu::BuildVendor()
     auto CartSurface=SNew(SBorder).Padding(8).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(.03f,.05f,.07f))[CartPanel];
     Body->AddSlot().AutoHeight().Padding(4)[CartSurface];if(bVendorSelling)ItemDestinations.Add({CartSurface,0,0,0,0,true});
     Body->AddSlot().AutoHeight().Padding(4)[Button(bVendorSelling?TEXT("Sell listed items"):TEXT("Buy listed items"),[this]()
-    {if(bVendorSelling)Binder->SellVendorCart(false);else{Client->SendBuyItems(Client->GetOpenVendorGuid(),Binder->VendorBuyCart);Binder->VendorBuyCart.Reset();}bDirty=true;},!Cart.IsEmpty())];
+    {if(bVendorSelling)Binder->SellVendorCart(false);else Binder->BuyVendorCart();bDirty=true;},!Cart.IsEmpty())];
     FACEWorldObject Selection;const bool SelectedExists=Client->GetWorldObject(Selected,Selection);
     const auto Stock=Client->GetVendorMerchandise();
     const bool Valid=bVendorSelling?SelectedExists && Client->IsOwnedInventoryItem(Selection):Stock.ContainsByPredicate([this](const auto& I){return I.Guid==Selected;});

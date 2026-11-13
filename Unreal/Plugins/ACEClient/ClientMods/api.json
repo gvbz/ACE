@@ -68,12 +68,16 @@
       "signature": "regextest(text, pattern)",
       "returns": "boolean",
       "limits": {"text_bytes":16384,"pattern_bytes":8192,"regex_seconds_per_callback":0.02},
+      "syntax": "Bounded ICU/.NET subset: named captures, unnamed-first numeric backreferences, lookbehind, comments, scoped/global x and n options, capture/assertion conditionals and balancing groups. Pattern/input cache keys and capture names are case-sensitive.",
+      "engine_limits": {"text_characters":4096,"pattern_characters":2048,"capture_groups":32,"match_milliseconds":2,"stack_bytes":65536,"history_engine":{"capture_history_bytes":65536,"repetitions":32,"nesting":64,"max_capture_slot":32,"syntax_nodes":2048,"instructions_per_match":100000}},
       "errors": "Unsupported pattern or exceeded quota raises a script error"
     },
     "regexmatch": {
       "signature": "regexmatch(text, pattern)",
-      "returns": "capture object with string keys, or nil; key 0 is the whole match",
+      "returns": "capture object with case-sensitive numeric/name string keys, or nil; key 0 is the whole match; each group is its latest unbalanced capture",
       "limits": {"text_bytes":16384,"pattern_bytes":8192,"regex_seconds_per_callback":0.02},
+      "syntax": "Bounded ICU/.NET subset: named captures, unnamed-first numeric backreferences, lookbehind, comments, scoped/global x and n options, capture/assertion conditionals and balancing groups. Pattern/input cache keys and capture names are case-sensitive.",
+      "engine_limits": {"text_characters":4096,"pattern_characters":2048,"capture_groups":32,"match_milliseconds":2,"stack_bytes":65536,"history_engine":{"capture_history_bytes":65536,"repetitions":32,"nesting":64,"max_capture_slot":32,"syntax_nodes":2048,"instructions_per_match":100000}},
       "errors": "Unsupported pattern or exceeded quota raises a script error"
     },
     "ucmcommand": {
@@ -416,8 +420,15 @@
           "spell",
           "target",
           "fast_cast",
+          "cast_jiggle",
           "activity"
         ]
+      },
+      "cast_item": {
+        "permission": "cast",
+        "additional_permissions": ["inventory"],
+        "fields": ["item", "spell", "target", "activity", "cast_jiggle", "jump_out_wand"],
+        "constraints": "Equipped owned casting implement. Eligible innate instant self recovery targets player; harmful timed debuffs require a living attackable non-player/non-pet and clear projectile sight. Uses item mana/activation, not learned spell components. Completion is a use receipt; verify vital/debuff separately. Optional motion flags require navigation and default false."
       },
       "attack": {
         "permission": "combat",
@@ -624,6 +635,8 @@
       },
       "fellowship": {
         "permission": "fellowship",
+        "operations": ["create", "quit", "disband", "open", "close", "recruit", "dismiss", "leader"],
+        "notes": "create uses name; recruit, dismiss and leader use target GUID. Management checks current membership/leader authority; open fellowships allow member recruitment. Requests do not predict server state: observe fellowship.valid/name/open/leader/members before sequencing dependent actions.",
         "fields": [
           "operation",
           "name",
@@ -640,9 +653,11 @@
       },
       "say": {
         "permission": "say",
+        "notes": "recipient sends a private tell (maximum 128 characters); otherwise channel=2048 sends fellowship chat, or local talk. Text is limited to 500 characters; no embedded newlines.",
         "fields": [
           "text",
-          "channel"
+          "channel",
+          "recipient"
         ]
       },
       "it_give": {
@@ -843,6 +858,10 @@
       "item_buffs",
       "jumping",
       "known_spells",
+      "inventory_failure_serial",
+      "inventory_failure_item",
+      "inventory_failure_error",
+      "action_events",
       "last_spell",
       "last_spell_confirmed",
       "level",
@@ -938,6 +957,14 @@
   "notice_style": {"window":"0/main, 1..4/extra, -1/all; explicit routing bypasses window category filters","color":"named color or #RRGGBB; retained with history"},
   "companion_identify": {"permission":"identify","action":"identify","target":"owned or nearby GUID","rate":"one per second shared with commands","behavior":"background appraisal, preserves selection and automation ownership"},
   "action_events": {"permission":"data","types":["use","cast"],"stages":["requested","completed"],"fields":["time","target","source","wcid","target_wcid","spell","action_serial","error"],"unknown":"source/wcid apply to item use; spell applies to cast; serial/error apply to completion"},
+  "action_history": {"field":"action_events","permission":"data","limit":64,"additional_fields":["requested_at","confirmed"],"scope":"Completed use/cast history; available to selective readers; match identity, newer serial and request time. Cast confirmed is not projectile-hit confirmation."},
+  "inventory_failures": {"fields":["inventory_failure_serial","inventory_failure_item","inventory_failure_error"],"permission":"data","selective":true,"scope":"Latest inventory failure only; match item and newer serial. Give success requires inventory evidence."},
+  "optional_cast_motion": {"flags":["cast_jiggle","jump_out_wand"],"permission":"navigation","default":false,"jump_out_wand":"cast_item only; 200 ms delay, discard after 750 ms","cast_jiggle":"eligible casts; backward with alternating strafe every 131 ms, bounded to 5 s","cancellation":"manual movement, blocked UI, stop, session change, completion or failure; ordinary collision applies"},
+  "innate_spell": {"scope":"inventory rows for assessed casting implements","fields":["id","name","power","category","level","caster_target","beneficial","duration","flags","school","skill"],"eligibility":"innate_spell_available checks known activation requirements, ownership, trade state and item mana; target eligibility is rechecked by cast_item"},
+  "proc_debuff": {"scope":"inventory rows for assessed physical weapons","fields":["id","name","power","category","school","flags","duration","skill"],"eligibility":"proc_debuff_available checks activation, ownership/trade and mana; also require can_wield and ammunition. First appraised offensive timed non-War/non-Item spell only. Requires physical attacks and actual effect confirmation, never cast_item."},
+  "innate_recovery": {"scope":"inventory rows for assessed casting implements","fields":["id","name","power","category","level","caster_target","duration"],"eligibility":"innate_recovery_available; check cooldowns; execute cast_item and verify vital change"},
+  "route_doors": {"fields":["door_open","door_identified","door_locked","lock_difficulty"],"unknown":"Locked/difficulty absent until successful appraisal; passage follows live physics"},
+  "lockpick_available": {"scope":"lockpick inventory rows","meaning":"Owned, unequipped, not offered in trade, remaining structure; retention allowed"},
   "item_icon": {
     "fields": ["icon", "overlay", "underlay", "effects", "item_type", "size", "text"],
     "appearance": "Unsigned 32-bit values; complete texture DIDs; same compositors as inventory/Supply Ledger",

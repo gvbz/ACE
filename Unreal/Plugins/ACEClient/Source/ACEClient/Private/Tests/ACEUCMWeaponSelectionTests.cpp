@@ -64,6 +64,13 @@ bool FACEUCMWeaponSelectionTest::RunTest(const FString&)
     auto Offhand=Step(S,P);Item(Offhand,91,TEXT("Automatic offhand applies the same rend priority"));TestTrue(TEXT("Secondary weapon goes in left hand"),Offhand->GetBoolField(TEXT("offhand")));
     S->GetArrayField(TEXT("inventory"))[2]->AsObject()->SetObjectField(TEXT("int_properties"),Json(TEXT(R"({"263":16})")));
     Item(Step(S,P),92,TEXT("Offhand cleave follows ordered elements alongside rends"));
+    auto Side=S->GetArrayField(TEXT("inventory"))[1]->AsObject(),OtherSide=S->GetArrayField(TEXT("inventory"))[2]->AsObject();
+    Side->RemoveField(TEXT("int_properties"));OtherSide->RemoveField(TEXT("int_properties"));
+    Side->SetNumberField(TEXT("damage_type"),16);Side->SetNumberField(TEXT("damage"),10);Side->SetNumberField(TEXT("damage_mod"),20);
+    Item(Step(S,P),91,TEXT("Offhand tie-break retains server damage modifier"));
+    auto Main=S->GetArrayField(TEXT("inventory"))[0]->AsObject();Main->SetNumberField(TEXT("type"),256);Main->SetNumberField(TEXT("ammo_type"),0);Main->SetNumberField(TEXT("equipped_slot"),ACEEquipMask::MissileWeapon);
+    P->SetStringField(TEXT("combat"),TEXT("missile"));
+    auto Thrown=Step(S,P);Item(Thrown,91,TEXT("Thrown main hand supports automatic offhand like VT"));TestTrue(TEXT("Thrown secondary goes in offhand"),Thrown->GetBoolField(TEXT("offhand")));
 
     // All seven elemental casters, through the native appraisal snapshot and
     // actual Lua policy. Wand elements live in quality 45, with no weapon profile.

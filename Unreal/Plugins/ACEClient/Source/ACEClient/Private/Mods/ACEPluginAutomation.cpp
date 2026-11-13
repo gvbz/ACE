@@ -352,6 +352,7 @@ void UACEPluginSubsystem::CompletePendingAction(uint32 Error)
     }
     PendingSpellOwner.Empty();
     FastCastOwner.Empty();
+    OptionalCastOwner.Empty();
     FastCastStarted=false;
     if(Error&&PendingSpell)OffensiveCasts.RemoveAll([this](const auto& E){return E.Spell==PendingSpell&&E.Target==PendingSpellTarget;});
     if(Error&&PendingSpell)PendingDebuffCasts.RemoveAll([this](const auto& E){return N(E->AsObject(),TEXT("spell"))==PendingSpell&&N(E->AsObject(),TEXT("target"))==uint32(PendingSpellTarget);});
@@ -361,18 +362,28 @@ void UACEPluginSubsystem::CompletePendingAction(uint32 Error)
     {
         auto* Client=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
         if(auto Session=Client->GetSession())for(const auto& Pair:Session->GetWorldObjects())
-            if(Pair.Value.WielderId==Client->GetPlayerGuid())
-            {Appraisals.Remove(Pair.Key);AppraisalRequests.Remove(Pair.Key);DirtyInventoryAppraisals.Add(Pair.Key);}
-        ++DataRevision;
+            if(Pair.Value.WielderId==Client->GetPlayerGuid()
+                ||(Pair.Value.CurrentWieldedLocation&&Pair.Value.ParentGuid==Client->GetPlayerGuid()))
+            {
+                // Keep the previous reading until the reply arrives: Lua must
+                // confirm an increase, and equipment eligibility must not vanish.
+                // Missing timestamps prioritize a fresh reading of the lowest
+                // mana piece ahead of the general inventory scan.
+                AppraisalRequests.Remove(Pair.Key);TargetAppraisalTimes.Remove(Pair.Key);
+            }
     }
     PendingManaRefresh=false;
     // Stone contents and essence charges change after use as well as equipped mana.
     // Reassess them before another maintenance decision can reuse stale contents.
     for (int32 Id : PendingResourceRefresh)
     {
-        Appraisals.Remove(Id);AppraisalRequests.Remove(Id);DirtyInventoryAppraisals.Add(Id);
         auto* Client=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();FACEWorldObject Item;
-        if(Client->GetWorldObject(Id,Item)&&IsOwnedPluginItem(Item))
+        const bool Owned=Client->GetWorldObject(Id,Item)&&IsOwnedPluginItem(Item);
+        // An innate cast spends mana, not the implement's identity/requirements.
+        // Refresh its resources without making an already assessed wand unknown.
+        if(!Owned||!(Item.ItemType&ACEItemType::Caster))Appraisals.Remove(Id);
+        AppraisalRequests.Remove(Id);DirtyInventoryAppraisals.Add(Id);
+        if(Owned)
         {
             // At most the source and target: do not put confirmation behind a
             // full inventory's periodic appraisal scan.
@@ -526,14 +537,15 @@ void UACEPluginSubsystem::RefreshAutomationData()
     auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto Session=C->GetSession();
     if(!Session || C->GetSessionState()!=EACESessionState::InWorld)
     {
-        SaveItemBuffTimers();SaveEquipmentAppraisals();EquipmentAssessments.Empty();ActionOutcomes.Empty();
+        SaveItemBuffTimers();SaveEquipmentAppraisals();EquipmentAssessments.Empty();ActionOutcomes.Empty();FellowshipTells.Reset();UCMCraft.Reset();UCMServicesProfile.Reset();FellowshipManagerStatus.Empty();
         CombatTarget=0;DefeatedTargets.Empty();LastCombatDeath.Reset();LastCombatVitals=FIntVector(-1,-1,-1);
         ConfirmedBuffAckAt=BuffRetryAt=0;ConfirmedBuffOwner.Empty();DeferredBuffIntent.Reset();DeferredBuffOwner.Empty();PendingBuffResultDriven=false;
         DataPlayer=0;Appraisals.Empty();TargetAppraisalTimes.Empty();TargetHealthSamples.Empty();CorpseFirstSeen.Empty();LootedCorpses.Empty();AppraisalRequests.Empty();ItemBuffs.Empty();CachedInventory.Empty();CachedInventoryIndices.Empty();DirtyInventoryAppraisals.Empty();ClearBuffRequests();
-        PendingSpell=0;PendingSpellOwner.Empty();FastCastOwner.Empty();PendingManaRefresh=false;PendingResourceRefresh.Empty();Debuffs.Empty();PendingDebuffCasts.Empty();OffensiveCasts.Empty();InventoryRevision=MAX_uint64;C->BackgroundAppraisals.Empty();return;
+        PendingSpell=0;PendingSpellOwner.Empty();FastCastOwner.Empty();OptionalCastOwner.Empty();PendingManaRefresh=false;PendingResourceRefresh.Empty();Debuffs.Empty();PendingDebuffCasts.Empty();OffensiveCasts.Empty();InventoryRevision=MAX_uint64;C->BackgroundAppraisals.Empty();return;
     }
     if(DataPlayer!=C->GetPlayerGuid()||DataServer!=C->GetServerName()||ObservedSession.Pin()!=Session)
     {
+        FellowshipTells.Reset();UCMCraft.Reset();UCMServicesProfile.Reset();FellowshipManagerStatus.Empty();
         SaveItemBuffTimers();SaveEquipmentAppraisals();
         UnbindCombatEvents();CombatTarget=0;DefeatedTargets.Empty();LastCombatDeath.Reset();LastCombatVitals=FIntVector(-1,-1,-1);
         ConfirmedBuffAckAt=BuffRetryAt=0;ConfirmedBuffOwner.Empty();DeferredBuffIntent.Reset();DeferredBuffOwner.Empty();PendingBuffResultDriven=false;
@@ -554,7 +566,7 @@ void UACEPluginSubsystem::RefreshAutomationData()
         DataPlayer=C->GetPlayerGuid();DataServer=C->GetServerName();NextAppraisalScan=0;Appraisals.Empty();TargetAppraisalTimes.Empty();TargetHealthSamples.Empty();CachedSpeciesNames.Reset();CorpseFirstSeen.Empty();LootedCorpses.Empty();AppraisalRequests.Empty();ItemBuffs.Empty();
         LoadItemBuffTimers();LoadEquipmentAppraisals();
         CachedInventory.Empty();CachedInventoryIndices.Empty();DirtyInventoryAppraisals.Empty();
-        PendingSpell=0;PendingSpellOwner.Empty();FastCastOwner.Empty();PendingResourceRefresh.Empty();PendingManaRefresh=false;Debuffs.Empty();PendingDebuffCasts.Empty();InventoryRevision=MAX_uint64;++DataRevision;C->BackgroundAppraisals.Empty();
+        PendingSpell=0;PendingSpellOwner.Empty();FastCastOwner.Empty();OptionalCastOwner.Empty();PendingResourceRefresh.Empty();PendingManaRefresh=false;Debuffs.Empty();PendingDebuffCasts.Empty();InventoryRevision=MAX_uint64;++DataRevision;C->BackgroundAppraisals.Empty();
     }
     ExpireOffensiveCasts(FPlatformTime::Seconds());
     if(FPlatformTime::Seconds()>=NextEquipmentAssessmentSave)SaveEquipmentAppraisals();
@@ -597,11 +609,44 @@ void UACEPluginSubsystem::RefreshAutomationData()
         const double* Last=AppraisalRequests.Find(Id);const auto* A=Appraisals.Find(Id);
         return !Last||Now-*Last>(!A||!A->bSuccess?30:120);
     };
+    // Mana drains without ordinary property updates. A first-match scan of a
+    // large inventory can perpetually revisit its first 120 entries and never
+    // reach the worn jewel. Give worn mana and supplies a bounded refresh lane,
+    // shared by running and stopped UCM, within the existing one-ID/sec budget.
+    const bool Recharge=B(UCM->Profile,TEXT("item_mana"),true)
+        &&(UCM->Running||B(UCM->Profile,TEXT("mana_charges_when_off")));
+    if(Recharge)
+    {
+        double BestFraction=MAX_dbl,Oldest=MAX_dbl;
+        for(const auto& Pair:Session->GetWorldObjects())
+        {
+            const auto& O=Pair.Value;if(!IsOwnedPluginItem(O))continue;
+            const bool Worn=O.WielderId==C->GetPlayerGuid()||(O.CurrentWieldedLocation&&O.ParentGuid==C->GetPlayerGuid());
+            if(!Worn&&!(O.ItemType&ACEItemType::ManaStone))continue;
+            const auto* A=Appraisals.Find(O.Guid);
+            const int32 Maximum=O.ItemMaximumMana!=-1?FMath::Max(0,O.ItemMaximumMana):(A?A->IntProperties.FindRef(108):0);
+            if(Worn&&A&&A->bSuccess&&Maximum<=0)continue;
+            // Carried supplies do not drain. Refresh unknown/used supplies here;
+            // known ones keep the general cadence so a bag of stones cannot
+            // occupy every request slot ahead of opponent appraisals.
+            if(!Worn&&A&&A->bSuccess)continue;
+            const double* Last=AppraisalRequests.Find(O.Guid);
+            const double* Received=TargetAppraisalTimes.Find(O.Guid);
+            // Also bounds retries when a server ignores or rejects appraisal.
+            if((Last&&Now-*Last<30)||(Received&&Now-*Received<30))continue;
+            const double Fraction=Worn&&A&&A->bSuccess&&Maximum>0
+                ?double(O.ItemCurrentMana!=-1?FMath::Max(0,O.ItemCurrentMana):A->IntProperties.FindRef(107))/Maximum:2.;
+            const double Age=Last?*Last:-MAX_dbl;
+            if(Fraction<BestFraction||(Fraction==BestFraction&&(Age<Oldest
+                ||(Age==Oldest&&(!Request||uint32(O.Guid)<uint32(Request))))))
+            {Request=O.Guid;BestFraction=Fraction;Oldest=Age;}
+        }
+    }
     const auto Sel=C->GetSelectedObject();
     // Selection alone is not a request to assess another player. In particular,
     // fellowship recovery/buffing can select a deceptive player repeatedly.
     FACEWorldObject Selected;
-    if(UCM->Running && Sel.Guid && C->GetWorldObject(Sel.Guid,Selected)
+    if(!Request && UCM->Running && Sel.Guid && C->GetWorldObject(Sel.Guid,Selected)
         && Selected.IsAttackable() && (Selected.ItemType&ACEItemType::Creature)
         && !Selected.bIsPlayer && !Selected.PetOwnerId && !Selected.bDying
         && !DefeatedTargets.Contains(Sel.Guid) && Need(Sel.Guid))Request=Sel.Guid;
@@ -622,10 +667,16 @@ void UACEPluginSubsystem::RefreshAutomationData()
             if(Distance<Nearest||(Distance==Nearest&&(!Request||uint32(O.Guid)<uint32(Request)))){Nearest=Distance;Request=O.Guid;}
         }
     }
-    if(!Request)for(const auto& Pair:Session->GetWorldObjects())
+    if(!Request)
     {
-        const auto& O=Pair.Value;if(IsOwnedPluginItem(O)&&Need(O.Guid)
-            && !(O.ItemType&(ACEItemType::SpellComponents|ACEItemType::Money|ACEItemType::Container))) {Request=O.Guid;break;}
+        double Oldest=MAX_dbl;
+        for(const auto& Pair:Session->GetWorldObjects())
+        {
+            const auto& O=Pair.Value;if(!IsOwnedPluginItem(O)||!Need(O.Guid)
+                ||(O.ItemType&(ACEItemType::SpellComponents|ACEItemType::Money|ACEItemType::Container)))continue;
+            const double* Last=AppraisalRequests.Find(O.Guid);const double Age=Last?*Last:-MAX_dbl;
+            if(Age<Oldest||(Age==Oldest&&(!Request||uint32(O.Guid)<uint32(Request)))){Request=O.Guid;Oldest=Age;}
+        }
     }
     if(Request){LastAppraisalRequest=Now;AppraisalRequests.Add(Request,Now);C->RequestBackgroundAppraisal(Request);}
 }
@@ -715,6 +766,10 @@ TSharedPtr<FJsonValue> UACEPluginSubsystem::PluginItemSnapshot(const FACEWorldOb
     const bool Equipped=C->GetPlayerGuid()!=0 && (Item.WielderId==C->GetPlayerGuid() || (Item.CurrentWieldedLocation && Item.ParentGuid==C->GetPlayerGuid()));
     J->SetBoolField(TEXT("equipped"),Equipped);J->SetNumberField(TEXT("ammo_type"),Item.AmmoType);
     J->SetBoolField(TEXT("resource_available"),LootItemAvailable(C,Item));
+    if(Item.ObjectDescriptionFlags&0x20000)J->SetBoolField(TEXT("lockpick_available"),LootItemAvailable(C,Item,true)&&Item.Structure>0);
+    // Retention protects against destructive donor use, not releasing stored
+    // mana. Both the supply and containing packs must remain outside trade.
+    J->SetBoolField(TEXT("mana_supply_available"),(Item.ItemType&ACEItemType::ManaStone)&&LootItemAvailable(C,Item,true));
     J->SetBoolField(TEXT("salvage_tool_available"),SalvageToolAvailable(C,Item));
     J->SetNumberField(TEXT("equipped_slot"),uint32(Item.CurrentWieldedLocation));
     J->SetBoolField(TEXT("targeted"),ACEItemUseable::IsTargeted(Item.ItemUseable));J->SetBoolField(TEXT("usable"),ACEInventoryRules::IsUsable(Item.ItemUseable));
@@ -807,9 +862,104 @@ TSharedPtr<FJsonValue> UACEPluginSubsystem::PluginItemSnapshot(const FACEWorldOb
         J->SetNumberField(TEXT("armor"),A->IntProperties.FindRef(28));
         J->SetNumberField(TEXT("spell"),Item.SpellDID);
     }
+    // GDLE sends public current-mana updates while recharging. They supersede
+    // the older appraisal without invalidating weapon/buff eligibility. ACE
+    // also works through the appraisal path when no live quality is sent.
+    if(Item.ItemCurrentMana!=-1)
+    {
+        J->SetNumberField(TEXT("mana"),FMath::Max(0,Item.ItemCurrentMana));J->SetBoolField(TEXT("mana_empty"),Item.ItemCurrentMana<=0);
+        if(Item.ItemCurrentMana>=0)Ints->SetNumberField(TEXT("107"),Item.ItemCurrentMana);else Ints->RemoveField(TEXT("107"));
+    }
+    if(Item.ItemMaximumMana!=-1)
+    {
+        J->SetNumberField(TEXT("max_mana"),FMath::Max(0,Item.ItemMaximumMana));
+        if(Item.ItemMaximumMana>=0)Ints->SetNumberField(TEXT("108"),Item.ItemMaximumMana);else Ints->RemoveField(TEXT("108"));
+    }
+    // Item spells use activation and item mana, not learned-school components.
+    if((Item.ItemType&ACEItemType::Caster)&&Item.SpellDID&&A&&A->bSuccess)
+    {
+        uint32 School=0,Power=0,Category=0,Flags=0;double Duration=0;
+        if(Dat->TryGetPluginSpellInfo(Item.SpellDID,School,Power,Category,Flags,Duration))
+        {
+            auto Spell=MakeShared<FJsonObject>();FString Name;uint32 Icon=0,Level=0,LevelSchool=0;
+            Dat->TryGetSpellInfo(Item.SpellDID,Name,Icon);Dat->TryGetSpellSchoolAndLevel(Item.SpellDID,LevelSchool,Level);
+            Spell->SetNumberField(TEXT("id"),Item.SpellDID);Spell->SetStringField(TEXT("name"),Name);
+            Spell->SetNumberField(TEXT("power"),Power);Spell->SetNumberField(TEXT("category"),Category);Spell->SetNumberField(TEXT("level"),Level);
+            Spell->SetBoolField(TEXT("caster_target"),(Flags&8)!=0);Spell->SetBoolField(TEXT("beneficial"),(Flags&4)!=0);
+            Spell->SetNumberField(TEXT("duration"),Duration);Spell->SetNumberField(TEXT("flags"),Flags);Spell->SetNumberField(TEXT("school"),School);
+            Spell->SetNumberField(TEXT("skill"),A->IntProperties.FindRef(106));
+            const bool Available=ACEPluginEquipment::CanActivate(*A,V)
+                &&(Equipped||LootItemAvailable(C,Item,true))
+                &&(N(J,TEXT("max_mana"))<=0||N(J,TEXT("mana"))>0);
+            J->SetObjectField(TEXT("innate_spell"),Spell);J->SetBoolField(TEXT("innate_spell_available"),Available);
+            if((Flags&4)&&(Flags&8)&&Duration==0)
+            {J->SetObjectField(TEXT("innate_recovery"),Spell);J->SetBoolField(TEXT("innate_recovery_available"),Available);}
+        }
+    }
+    // VT ga/dz uses the first appraised spell of a physical weapon for proc
+    // debuffing. It is triggered by attacks, never by UseWithTarget. Do not scan
+    // past a buff/damage spell and invent a different proc for this weapon.
+    if((Item.ItemType&(ACEItemType::MeleeWeapon|ACEItemType::MissileWeapon))
+        &&!(Item.ValidLocations&ACEEquipMask::MissileAmmo)&&A&&A->bSuccess&&!A->SpellIds.IsEmpty())
+    {
+        const uint32 SpellId=A->SpellIds[0];uint32 School=0,Power=0,Category=0,Flags=0;double Duration=0;
+        if(Dat->TryGetPluginSpellInfo(SpellId,School,Power,Category,Flags,Duration)
+            &&School!=1&&School!=3&&!(Flags&(4|8))&&Duration>0)
+        {
+            auto Spell=MakeShared<FJsonObject>();FString Name;uint32 Icon=0;
+            Dat->TryGetSpellInfo(SpellId,Name,Icon);
+            Spell->SetNumberField(TEXT("id"),SpellId);Spell->SetStringField(TEXT("name"),Name);
+            Spell->SetNumberField(TEXT("power"),Power);Spell->SetNumberField(TEXT("category"),Category);
+            Spell->SetNumberField(TEXT("school"),School);Spell->SetNumberField(TEXT("flags"),Flags);
+            Spell->SetNumberField(TEXT("duration"),Duration);Spell->SetNumberField(TEXT("skill"),A->IntProperties.FindRef(106));
+            Spell->SetBoolField(TEXT("beneficial"),false);Spell->SetBoolField(TEXT("caster_target"),false);
+            J->SetObjectField(TEXT("proc_debuff"),Spell);
+            J->SetBoolField(TEXT("proc_debuff_available"),ACEPluginEquipment::CanActivate(*A,V)
+                &&(Equipped||LootItemAvailable(C,Item,true))&&(N(J,TEXT("max_mana"))<=0||N(J,TEXT("mana"))>0));
+        }
+    }
     AddEquipmentSnapshot(Item,J);
     return MakeShared<FJsonValueObject>(J);
 }
+TSharedPtr<FJsonObject> UACEPluginSubsystem::UCMGrenadeSpell(const FACEWorldObject& Item) const
+{
+    const auto P=PolicyPlugin();if(!P||!P->Running)return nullptr;
+    const auto Config=UCMServicesProfile?UCMServicesProfile:P->Profile;
+    const TSharedPtr<FJsonObject> *Catalog=nullptr,*Entry=nullptr;const TArray<TSharedPtr<FJsonValue>>* Assist=nullptr;
+    if(!Config->TryGetObjectField(TEXT("grenade_catalog"),Catalog)||!(*Catalog)->TryGetObjectField(Item.Name,Entry)
+        ||!Config->TryGetArrayField(TEXT("assist_items"),Assist)||!Assist->ContainsByPredicate([&](const auto& V){return V->Type==EJson::Object&&N(V->AsObject(),TEXT("type"),-1)==7&&S(V->AsObject(),TEXT("name"))==Item.Name;}))return nullptr;
+    auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto* Dat=GetGameInstance()->GetSubsystem<UACEDatSubsystem>();
+    const bool Equipped=Item.WielderId==C->GetPlayerGuid()||(Item.CurrentWieldedLocation&&Item.ParentGuid==C->GetPlayerGuid());
+    if(!(Item.ItemType&ACEItemType::MissileWeapon)||(!Equipped&&!LootItemAvailable(C,Item,true))||Item.StackSize==0)return nullptr;
+    FACEAppraisalInfo Requirements;Requirements.bSuccess=true;
+    const int32 Kind=int32(N(*Entry,TEXT("WieldReqType"),-1));if(Kind<0||Kind>12)return nullptr;
+    Requirements.IntProperties.Add(158,Kind);Requirements.IntProperties.Add(159,int32(N(*Entry,TEXT("WieldReqAttribute"))));Requirements.IntProperties.Add(160,int32(N(*Entry,TEXT("WieldReqValue"))));
+    if(!ACEPluginEquipment::WieldFailure(Requirements,C->GetPlayerVitalsView()).IsEmpty())return nullptr;
+    if(const auto* Actual=Appraisals.Find(Item.Guid);Actual&&Actual->bSuccess&&!ACEPluginEquipment::WieldFailure(*Actual,C->GetPlayerVitalsView()).IsEmpty())return nullptr;
+    const uint32 SpellId=uint32(N(*Entry,TEXT("Spell")));uint32 School=0,Power=0,Category=0,Flags=0,Icon=0;double Duration=0;FString Name;
+    if(!Dat->TryGetPluginSpellInfo(SpellId,School,Power,Category,Flags,Duration)||(Flags&(4|8))||Duration<=0||!Dat->TryGetSpellInfo(SpellId,Name,Icon))return nullptr;
+    auto Spell=MakeShared<FJsonObject>();Spell->SetNumberField(TEXT("id"),SpellId);Spell->SetStringField(TEXT("name"),Name);
+    Spell->SetNumberField(TEXT("school"),School);Spell->SetNumberField(TEXT("power"),Power);Spell->SetNumberField(TEXT("category"),Category);
+    Spell->SetNumberField(TEXT("flags"),Flags);Spell->SetNumberField(TEXT("duration"),Duration);Spell->SetNumberField(TEXT("skill"),N(*Entry,TEXT("Spellcraft")));
+    return Spell;
+}
+
+void UACEPluginSubsystem::ExtendUCMCombatSnapshot(const TSharedPtr<FJsonObject>& Out)
+{
+    TArray<TSharedPtr<FJsonValue>> Choices;const TArray<TSharedPtr<FJsonValue>>* Inventory=nullptr;
+    if(Out->TryGetArrayField(TEXT("inventory"),Inventory))
+    {
+        auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
+        for(const auto& Value:*Inventory)
+        {
+            FACEWorldObject Item;if(!C->GetWorldObject(int32(uint32(N(Value->AsObject(),TEXT("id")))),Item))continue;
+            if(auto Spell=UCMGrenadeSpell(Item))
+            {auto Choice=MakeShared<FJsonObject>();Choice->SetNumberField(TEXT("item"),uint32(Item.Guid));Choice->SetObjectField(TEXT("spell"),Spell);Choices.Add(MakeShared<FJsonValueObject>(Choice));if(Choices.Num()>=64)break;}
+        }
+    }
+    Out->SetArrayField(TEXT("grenade_debuffs"),Choices);
+}
+
 void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
 {
     TRACE_CPUPROFILER_EVENT_SCOPE(ACEPluginSnapshot);
@@ -829,6 +979,9 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
     Out->SetNumberField(TEXT("chat_serial"),MetaChatSerial);Out->SetArrayField(TEXT("chat_events"),MetaChatEvents);
     Out->SetArrayField(TEXT("combat_events"),CombatOutcomes);
     Out->SetArrayField(TEXT("action_events"),ActionOutcomes);
+    Out->SetNumberField(TEXT("inventory_failure_serial"),Session->GetInventoryFailureSerial());
+    Out->SetNumberField(TEXT("inventory_failure_item"),uint32(Session->GetInventoryFailureItem()));
+    Out->SetNumberField(TEXT("inventory_failure_error"),Session->GetInventoryFailureError());
     if(LastCombatDeath)Out->SetObjectField(TEXT("combat_death"),LastCombatDeath);
     else Out->RemoveField(TEXT("combat_death"));
     Out->SetNumberField(TEXT("portal_serial"),MetaPortalSerial);Out->SetArrayField(TEXT("portal_events"),MetaPortalEvents);Out->SetBoolField(TEXT("portal_space"),MetaPortalSpace);
@@ -984,6 +1137,13 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
                 // The physics update is authoritative for passage. Motion can
                 // still say On after an auto-close or Off while a door opens.
                 R->SetBoolField(TEXT("door_open"),Obj.IsDoor()&&Obj.IsEthereal());
+                if(Obj.IsDoor())
+                {
+                    const auto* Door=Appraisals.Find(Obj.Guid);
+                    R->SetBoolField(TEXT("door_identified"),Door&&Door->bSuccess);
+                    if(Door&&Door->bSuccess)
+                    {R->SetBoolField(TEXT("door_locked"),Door->BoolProperties.FindRef(3));R->SetNumberField(TEXT("lock_difficulty"),Door->IntProperties.FindRef(38));}
+                }
                 R->SetNumberField(TEXT("distance"),FVector::Distance(Obj.Position.ToUnrealLocation(),P.ToUnrealLocation())/100);RouteObjects.Add(MakeShared<FJsonValueObject>(R));}
             continue;
         }
@@ -1069,6 +1229,19 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
         auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());
         FACEPluginSightQuery Sight(*World,PC?PC->GetPawn():nullptr);
         const FVector Eye=P.ToUnrealLocation()+FVector(0,0,120);
+        // Only the optional idle helper needs nearby player rays. Bound this
+        // independently of crowd size; RouteObjects is already distance sorted.
+        if(auto UCM=PolicyPlugin();UCM&&UCM->Running&&B(UCMServicesProfile?UCMServicesProfile:UCM->Profile,TEXT("random_helper_buffs")))
+        {
+            int32 Checked=0;
+            for(const auto& Value:RouteObjects)
+            {
+                auto J=Value->AsObject();if(N(J,TEXT("distance"))>18)break;
+                if(N(J,TEXT("object_class"))!=24||N(J,TEXT("id"))==uint32(C->GetPlayerGuid()))continue;
+                FACEWorldObject Obj;J->SetBoolField(TEXT("line_of_sight"),C->GetWorldObject(int32(uint32(N(J,TEXT("id")))),Obj)&&Sight.Clear(Eye,SightPoint(Dat,Obj,Sight)));
+                if(++Checked>=32)break;
+            }
+        }
         Out->SetNumberField(TEXT("movement_blocked_serial"),MovementBlockedSerial);
         if(auto UCM=PolicyPlugin();UCM&&UCM->Running&&bRouteJoinRequested)
         {
@@ -1146,7 +1319,6 @@ void UACEPluginSubsystem::UpdateCombatTransition(FACEClientPlugin& P)
     if(Now-P.CombatTransitionStarted>=15)
     {
         auto I=P.CombatTransitionIntent;P.CombatTransitionIntent.Reset();P.NextAction=0;P.NextDecision=0;
-        if(IdleMana)IdleManaFailed=true;
         ReportActivityFailure(P,I,P.WaitingAttackCancel?TEXT("Attack cancellation was not confirmed; equipment left unchanged")
             :TEXT("Combat stance was not confirmed; action deferred"));return;
     }
@@ -1374,11 +1546,15 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
         if(Owned&&TargetValue>0&&TargetValue<=MAX_uint32&&FMath::FloorToDouble(TargetValue)==TargetValue&&C->GetWorldObject(int32(uint32(TargetValue)),Target)
             &&(IsOwnedPluginItem(Target)||Target.IsSelectableWorldObject())&&ACEInventoryRules::IsUsable(Item.ItemUseable))
         {
+            if((Item.ObjectDescriptionFlags&0x20000)&&(!LootItemAvailable(C,Item,true)||Item.Structure<=0))
+            {ReportActivityFailure(P,I,TEXT("Lockpick is unavailable or exhausted"));return true;}
             if (Item.ItemType & ACEItemType::ManaStone)
             {
+                if(!LootItemAvailable(C,Item,true)) { ReportActivityFailure(P,I,TEXT("Mana supply is unavailable or offered in trade")); return true; }
                 const auto* Stone=Appraisals.Find(Id); const auto* Source=Appraisals.Find(Target.Guid);
                 if (!Stone || !Stone->bSuccess) { ReportActivityFailure(P,I,TEXT("Inspect the mana stone before using it")); return true; }
-                if (!Stone->IntProperties.Contains(107) && (!LootItemAvailable(C,Target) || !Source || !Source->bSuccess
+                const bool Empty=(Item.ItemCurrentMana!=-1?Item.ItemCurrentMana:Stone->IntProperties.FindRef(107))<=0;
+                if (Empty && (!LootItemAvailable(C,Target) || !Source || !Source->bSuccess
                     || Source->IntProperties.FindRef(107)<=0 || Source->IntProperties.FindRef(108)<=0
                     || Target.Guid==Id || (Target.ItemType&(ACEItemType::ManaStone|ACEItemType::Container))))
                 { ReportActivityFailure(P,I,TEXT("Mana source must be an unequipped, unretained owned item with mana, outside trade")); return true; }
@@ -1390,10 +1566,33 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
         else ReportActivityFailure(P,I,TEXT("Item or target is unavailable for use"));
         return true;
     }
+    if(Action==TEXT("cast_item"))
+    {
+        const auto Snapshot=Found?PluginItemSnapshot(Item)->AsObject():nullptr;
+        const bool Equipped=Found&&(Item.WielderId==C->GetPlayerGuid()||(Item.CurrentWieldedLocation&&Item.ParentGuid==C->GetPlayerGuid()));
+        bool Available=false;const TSharedPtr<FJsonObject>* Spell=nullptr;
+        if(!P.Permissions.Contains(TEXT("inventory"))||!Equipped||!Snapshot
+            ||!Snapshot->TryGetBoolField(TEXT("innate_spell_available"),Available)||!Available
+            ||!Snapshot->TryGetObjectField(TEXT("innate_spell"),Spell)||N(I,TEXT("spell"))!=Item.SpellDID)
+        {ReportActivityFailure(P,I,TEXT("Casting implement or its activation requirements changed"));return true;}
+        const double RawTarget=N(I,TEXT("target"));const int32 Target=RawTarget>0&&RawTarget<=MAX_uint32&&FMath::FloorToDouble(RawTarget)==RawTarget?int32(uint32(RawTarget)):0;FACEWorldObject Monster;
+        const bool Self=Target==C->GetPlayerGuid()&&B(*Spell,TEXT("beneficial"))&&B(*Spell,TEXT("caster_target"))&&N(*Spell,TEXT("duration"))==0;
+        const bool Debuff=!B(*Spell,TEXT("beneficial"))&&!B(*Spell,TEXT("caster_target"))&&N(*Spell,TEXT("duration"))>0;
+        if(!Self&&(!Debuff||!C->GetWorldObject(Target,Monster)||!Monster.IsAttackable()||Monster.bIsPlayer||Monster.PetOwnerId
+            ||Monster.bDying||DefeatedTargets.Contains(Target)||!HasClearCombatSight(Monster)))
+        {ReportActivityFailure(P,I,TEXT("Item spell target is unavailable or obstructed"));return true;}
+        if(!PrepareCombatAction(P,I,8))return true;
+        if(Debuff)ObserveTargetSpellCast(Item.SpellDID,Target);
+        ConfigureCastMotion(P,I,Item.SpellDID,true);
+        PendingResourceRefresh.Add(Id);TrackActionWait(P,TEXT("use"));
+        C->SendUseWithTarget(Id,Target);P.NextAction=Now+3;return true;
+    }
     if(Action==TEXT("use_item"))
     {
         if(Owned&&ACEInventoryRules::IsUsable(Item.ItemUseable))
         {
+            if((Item.ItemType&ACEItemType::ManaStone)&&!LootItemAvailable(C,Item,true))
+            {ReportActivityFailure(P,I,TEXT("Mana supply is unavailable or offered in trade"));return true;}
             PendingManaRefresh=(Item.ItemType&ACEItemType::ManaStone)!=0;
             if(PendingManaRefresh)PendingResourceRefresh.Add(Id);
             // The server's summoning cooldown quality identifies the same
@@ -1690,6 +1889,12 @@ bool UACEPluginSubsystem::GetTargetEffectTimer(int32 Target,int32 Spell,double& 
 
 void UACEPluginSubsystem::ObserveMetaChat(const FString& Text,const FString& Sender,int32 Type)
 {
+    if(Type==0x18&&Sender.IsEmpty()&&UCMCraft&&UCMCraft->Pending&&UCMCraft->Preparation.IsEmpty())
+        if(auto Policy=PolicyPlugin();Policy&&Policy->Running&&UCMCraft->Catalog.Recipes.IsValidIndex(UCMCraft->PendingRecipe))
+        {
+            const auto& R=UCMCraft->Catalog.Recipes[UCMCraft->PendingRecipe];
+            if(!R.FailMessage.IsEmpty()&&Text.TrimStartAndEnd()==R.FailMessage.TrimStartAndEnd())UCMCraft->FailureMessage=true;
+        }
     if(Type==0x18&&Sender.IsEmpty()&&AutoCraft&&AutoCraft->Pending&&AutoCraft->Preparation.IsEmpty())
         if(auto Craft=Find(TEXT("autocraft"));Craft&&Craft->Running&&AutoCraft->Catalog.Recipes.IsValidIndex(AutoCraft->PendingRecipe))
         {
@@ -1737,7 +1942,7 @@ void UACEPluginSubsystem::ObserveMetaChat(const FString& Text,const FString& Sen
                 // falls back to the ordinary UseDone path.
                 CompleteConfirmedBuff();
             }
-            if(Text==TEXT("Your spell fizzled.")){PendingSpellFizzled=true;FastCastOwner.Empty();FastCastStarted=false;}
+            if(Text==TEXT("Your spell fizzled.")){PendingSpellFizzled=true;FastCastOwner.Empty();OptionalCastOwner.Empty();FastCastStarted=false;}
         }
         const double Now=FPlatformTime::Seconds();
         if(Text==TEXT("Your spell fizzled."))PendingDebuffCasts.RemoveAll([this](const auto& Value)
@@ -1805,6 +2010,7 @@ void UACEPluginSubsystem::ExtendInventorySnapshot(const TSharedPtr<FJsonObject>&
     for(const auto& Skill:V.Skills){Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.Base));Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.Current));Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.AdvancementClass));}
     Eligibility=HashCombine(Eligibility,GetTypeHash(V.MaxHealth));Eligibility=HashCombine(Eligibility,GetTypeHash(V.MaxStamina));Eligibility=HashCombine(Eligibility,GetTypeHash(V.MaxMana));
     Eligibility=HashCombine(Eligibility,GetTypeHash(V.HeritageGroup));
+    Eligibility=HashCombine(Eligibility,GetTypeHash(V.EffectiveAllegianceRank));
     for(int32 Id:{1,3,5})Eligibility=HashCombine(Eligibility,GetTypeHash(V.GetVitalBase(Id)));
     for(const auto& Pair:V.StatQualityInts)Eligibility=HashCombine(Eligibility,HashCombine(GetTypeHash(Pair.Key),GetTypeHash(Pair.Value)));
     for(const auto& Pair:V.QualityBools)Eligibility=HashCombine(Eligibility,HashCombine(GetTypeHash(Pair.Key),GetTypeHash(Pair.Value)));
@@ -1840,7 +2046,20 @@ void UACEPluginSubsystem::ObserveItemUse(int32 Source,int32 Target)
     Event->SetStringField(TEXT("type"),TEXT("use"));Event->SetStringField(TEXT("stage"),TEXT("requested"));
     Event->SetNumberField(TEXT("source"),uint32(Source));Event->SetNumberField(TEXT("target"),uint32(Target?Target:Source));
     FACEWorldObject Item;auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
-    if(C->GetWorldObject(Source,Item))Event->SetNumberField(TEXT("wcid"),Item.WeenieClassId);
+    if(C->GetWorldObject(Source,Item))
+    {
+        Event->SetNumberField(TEXT("wcid"),Item.WeenieClassId);
+        if((Item.ItemType&ACEItemType::ManaStone)&&IsOwnedPluginItem(Item))
+        {
+            // Manual use, Action Deck and UCM must refresh the same resource
+            // data. A charge's depleted/destroyed state is not a new appraisal.
+            PendingResourceRefresh.Add(Source);
+            PendingManaRefresh=true;
+            FACEWorldObject Recipient;
+            if(Target!=C->GetPlayerGuid()&&C->GetWorldObject(Target,Recipient)&&IsOwnedPluginItem(Recipient))
+                PendingResourceRefresh.Add(Target);
+        }
+    }
     if(Target&&C->GetWorldObject(Target,Item))Event->SetNumberField(TEXT("target_wcid"),Item.WeenieClassId);
     EmitPluginAction(Event);
 }
