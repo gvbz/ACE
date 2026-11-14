@@ -1,10 +1,12 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Personal/PersonalFarTerrain.h"
 #include "Personal/PersonalSkyHorizon.h"
 #include "ACEDatSubsystem.h"
 #include "ACERuntimeOptions.h"
 #include "Dat/ACESetupMeshBuilder.h"
 #include "Engine/GameInstance.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 
 namespace
@@ -212,22 +214,40 @@ bool FPersonalSkyHorizonTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Index out of range: nothing added"), Mesh.Extend(), 0);
 	}
 
-	// The other sky objects are left alone, and the option turns the stars layer off.
+	// The other sky objects are left alone, and the stars layer is extended only with
+	// Night Sky To Horizon and the far terrain both on.
 	{
+		// A separate settings file: this test must not change player preferences.
+		TGuardValue<FString> SettingsPath(GGameUserSettingsIni, FPaths::ProjectSavedDir() / TEXT("Automation/PersonalSkyHorizonFixture.ini"));
+		FConfigFile FixtureConfig; FixtureConfig.NoSave = false; FixtureConfig.bCanSaveAllSections = true;
+		GConfig->SetFile(GGameUserSettingsIni, &FixtureConfig);
+
 		FSkyHorizonMesh Mesh;
 		Mesh.AddHalfCube(Half, 0.0);
 		const int32 Count = Mesh.Vertices.Num();
-		const float Saved = ACERuntimeOptions::Get(PersonalSkyHorizon::OptionKey);
-		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 1.f);
-		PersonalSkyHorizon::ExtendSection(0x010015F0u, Mesh.Vertices, Mesh.Triangles, Mesh.Normals, Mesh.UVs, Mesh.Colors);
-		TestEqual(TEXT("Dome is not extended"), Mesh.Vertices.Num(), Count);
+		// Vertices in the mesh after the section is offered for the given gfx id.
+		auto After = [&Mesh, Count](uint32 GfxId)
+		{
+			FSkyHorizonMesh Copy = Mesh;
+			PersonalSkyHorizon::ExtendSection(GfxId, Copy.Vertices, Copy.Triangles, Copy.Normals, Copy.UVs, Copy.Colors);
+			return Copy.Vertices.Num() - Count;
+		};
+		TestEqual(TEXT("Nothing saved: stars are extended"), After(PersonalSkyHorizon::StarsGfxId), 8);
+		TestEqual(TEXT("Dome is not extended"), After(0x010015F0u), 0);
 		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 0.f);
-		PersonalSkyHorizon::ExtendSection(PersonalSkyHorizon::StarsGfxId, Mesh.Vertices, Mesh.Triangles, Mesh.Normals, Mesh.UVs, Mesh.Colors);
-		TestEqual(TEXT("Option off: stars are not extended"), Mesh.Vertices.Num(), Count);
+		TestEqual(TEXT("Option off: stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);
 		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 1.f);
-		PersonalSkyHorizon::ExtendSection(PersonalSkyHorizon::StarsGfxId, Mesh.Vertices, Mesh.Triangles, Mesh.Normals, Mesh.UVs, Mesh.Colors);
-		TestEqual(TEXT("Option on: stars are extended"), Mesh.Vertices.Num(), Count + 8);
-		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, Saved);
+		TestEqual(TEXT("Option on: stars are extended"), After(PersonalSkyHorizon::StarsGfxId), 8);
+
+		ACERuntimeOptions::Set(PersonalFarTerrain::OptionKey, 0.f);
+		TestEqual(TEXT("Far terrain off: stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);
+		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 0.f);
+		TestEqual(TEXT("Far terrain off, option off: stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);
+		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 1.f);
+		ACERuntimeOptions::Set(PersonalFarTerrain::OptionKey, 1.f);
+		TestEqual(TEXT("Far terrain on again: stars are extended"), After(PersonalSkyHorizon::StarsGfxId), 8);
+		GConfig->SetFloat(TEXT("ACE.Presentation"), PersonalFarTerrain::RadiusKey, 0.f, GGameUserSettingsIni);
+		TestEqual(TEXT("Saved radius 0 (off in older settings): stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);
 	}
 
 	// Real DAT files: the stars layer the client builds.

@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Personal/PersonalFarTerrain.h"
 #include "Personal/PersonalFarTerrainBake.h"
 #include "Personal/PersonalFarTerrainMesh.h"
 #include "ACERuntimeOptions.h"
@@ -269,13 +270,52 @@ bool FPersonalFarTerrainShellTest::RunTest(const FString& Parameters)
 	TGuardValue<FString> SettingsPath(GGameUserSettingsIni, FPaths::ProjectSavedDir() / TEXT("Automation/PersonalFarTerrainFixture.ini"));
 	FConfigFile FixtureConfig; FixtureConfig.NoSave = false; FixtureConfig.bCanSaveAllSections = true;
 	GConfig->SetFile(GGameUserSettingsIni, &FixtureConfig);
-	TestEqual(TEXT("Default radius"), PersonalFarTerrainMesh::RadiusSetting(), 48);
-	ACERuntimeOptions::Set(TEXT("PersonalFarTerrainRadius"), 0.f);
-	TestEqual(TEXT("0 turns it off"), PersonalFarTerrainMesh::RadiusSetting(), 0);
-	ACERuntimeOptions::Set(TEXT("PersonalFarTerrainRadius"), 500.f);
-	TestEqual(TEXT("Setting is limited to 96"), PersonalFarTerrainMesh::RadiusSetting(), 96);
-	ACERuntimeOptions::Set(TEXT("PersonalFarTerrainRadius"), 63.6f);
-	TestEqual(TEXT("Setting is a whole number of landblocks"), PersonalFarTerrainMesh::RadiusSetting(), 64);
+	using namespace PersonalFarTerrain;
+	const ACERuntimeOptions::FOption* Row = nullptr;
+	for (const ACERuntimeOptions::FOption& Option : ACERuntimeOptions::Values)
+	{
+		if (FCString::Strcmp(Option.Key, RadiusKey) == 0)
+		{
+			Row = &Option;
+		}
+	}
+	if (!TestNotNull(TEXT("Radius option row"), Row))
+	{
+		return false;
+	}
+	// The slider's range is the row's range: the smallest radius is also the default.
+	const int32 Smallest = FMath::RoundToInt(Row->Min);
+	TestTrue(TEXT("Radius 0 cannot be chosen"), Smallest > 0);
+	TestEqual(TEXT("The default is the smallest radius"), FMath::RoundToInt(Row->Default), Smallest);
+	TestEqual(TEXT("The largest radius is what the mesh allows"), FMath::RoundToInt(Row->Max), PersonalFarTerrainMesh::MaxRadius);
+	TestTrue(TEXT("Nothing saved: on"), IsOn());
+	TestEqual(TEXT("Nothing saved: the smallest radius"), Radius(), Smallest);
+
+	// What an older version saved. ACERuntimeOptions::Set would limit it, so write the file itself.
+	auto SaveRadius = [](float Value) { GConfig->SetFloat(TEXT("ACE.Presentation"), RadiusKey, Value, GGameUserSettingsIni); };
+	SaveRadius(0.f);
+	TestFalse(TEXT("Saved 0: off, as before the check box"), IsOn());
+	TestEqual(TEXT("Saved 0: the radius is still within the range"), Radius(), Smallest);
+	for (const float Saved : { 1.f, 42.f, 43.f, 48.f, 96.f, 31.858f, 63.6f, 500.f })
+	{
+		SaveRadius(Saved);
+		TestTrue(*FString::Printf(TEXT("Saved %g: on"), Saved), IsOn());
+		TestEqual(*FString::Printf(TEXT("Saved %g: a whole number within the range"), Saved), Radius(),
+			FMath::Clamp(FMath::RoundToInt(Saved), Smallest, PersonalFarTerrainMesh::MaxRadius));
+	}
+
+	// The slider cannot save a radius below its range, so it cannot turn the far terrain off.
+	ACERuntimeOptions::Set(RadiusKey, 0.f);
+	TestTrue(TEXT("Slider at its lowest: on"), IsOn());
+	TestEqual(TEXT("Slider at its lowest: the smallest radius"), Radius(), Smallest);
+
+	// The check box.
+	ACERuntimeOptions::Set(OptionKey, 0.f);
+	TestFalse(TEXT("Check box off: off"), IsOn());
+	ACERuntimeOptions::Set(OptionKey, 1.f);
+	TestTrue(TEXT("Check box on: on"), IsOn());
+	SaveRadius(0.f);
+	TestFalse(TEXT("Check box on, saved 0: off"), IsOn());
 	return !HasAnyErrors();
 }
 #endif

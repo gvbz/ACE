@@ -26,7 +26,8 @@ inline constexpr FOption Values[] = {
  {TEXT("DynamicLightingQuality"),TEXT("Dynamic lights"),2,0,2},
  {TEXT("CameraAlignToSlope"),TEXT("Align camera to slope"),1,0,1},
  {TEXT("EffectLightLimit"),TEXT("Effect light limit"),8,0,64},
- {TEXT("PersonalFarTerrainRadius"),TEXT("Far Terrain Radius"),48,0,96}, // personal: far-terrain
+ {TEXT("PersonalFarTerrain"),TEXT("Far Terrain"),1,0,1}, // personal: far-terrain
+ {TEXT("PersonalFarTerrainRadius"),TEXT("Far Terrain Radius"),43,43,96}, // personal: far-terrain
  {TEXT("PersonalFarTerrainTextures"),TEXT("Far Terrain Textures"),1,0,1}, // personal: far-textures
  {TEXT("PersonalSkyHorizon"),TEXT("Night Sky To Horizon"),1,0,1}, // personal: sky-horizon
  {TEXT("LandscapeRadius"),TEXT("Landscape Radius"),5,5,25}

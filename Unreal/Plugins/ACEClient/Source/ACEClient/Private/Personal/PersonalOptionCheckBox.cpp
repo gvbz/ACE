@@ -1,4 +1,5 @@
 #include "Personal/PersonalOptionCheckBox.h"
+#include "Personal/PersonalFarTerrain.h"
 #include "Personal/PersonalSkyHorizon.h"
 #include "ACEHoverTooltipWidget.h"
 #include "ACERuntimeOptions.h"
@@ -37,9 +38,10 @@ void UPersonalOptionCheckBox::Changed(bool bChecked)
 		{
 			GConfig->Flush(false, GGameUserSettingsIni);
 		}
-		if (OptionKey == PersonalSkyHorizon::OptionKey)
+		if (OptionKey == PersonalSkyHorizon::OptionKey || OptionKey == PersonalFarTerrain::OptionKey)
 		{
-			// The sky meshes are made when the sky is built, so build it again.
+			// The sky meshes are made when the sky is built, and the stars layer
+			// depends on both options, so build the sky again.
 			PersonalSkyHorizon::RebuildSky();
 		}
 	}

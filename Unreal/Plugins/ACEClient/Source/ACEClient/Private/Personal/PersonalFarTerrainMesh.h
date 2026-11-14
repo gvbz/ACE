@@ -56,7 +56,4 @@ namespace PersonalFarTerrainMesh
 
 	/** World position of the mesh origin for a center landblock. */
 	FVector Origin(FIntPoint Center, float WorldScale);
-
-	/** The Far Terrain Radius setting in landblocks. 0 means off. */
-	int32 RadiusSetting();
 }

@@ -1,4 +1,5 @@
 #include "Personal/PersonalSkyHorizon.h"
+#include "Personal/PersonalFarTerrain.h"
 #include "ACERuntimeOptions.h"
 #include "ACESkyDomeActor.h"
 #include "Algo/Sort.h"
@@ -162,7 +163,8 @@ int32 PersonalSkyHorizon::ExtendRim(TArray<FVector>& Vertices, TArray<int32>& Tr
 void PersonalSkyHorizon::ExtendSection(uint32 GfxId, TArray<FVector>& Vertices, TArray<int32>& Triangles,
 	TArray<FVector>& Normals, TArray<FVector2D>& UVs, TArray<FLinearColor>& Colors)
 {
-	if (GfxId != StarsGfxId || ACERuntimeOptions::Get(OptionKey) <= 0.5f)
+	// Without the far terrain nothing covers the lower sky, so the sky stays as authored.
+	if (GfxId != StarsGfxId || ACERuntimeOptions::Get(OptionKey) <= 0.5f || !PersonalFarTerrain::IsOn())
 	{
 		return;
 	}

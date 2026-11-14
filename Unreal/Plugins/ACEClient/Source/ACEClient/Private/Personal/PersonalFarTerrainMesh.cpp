@@ -1,7 +1,6 @@
 #include "Personal/PersonalFarTerrainMesh.h"
 #include "Personal/PersonalFarTerrainBake.h"
 #include "Personal/PersonalFarTerrainDetail.h"
-#include "ACERuntimeOptions.h"
 #include "ACETypes.h"
 #include "Dat/ACELandblockMeshBuilder.h"
 
@@ -90,11 +89,6 @@ namespace PersonalFarTerrainMesh
 FVector Origin(FIntPoint Center, float WorldScale)
 {
 	return FACEPosition::AceVectorToUnreal(FVector(Center.X * double(LandblockSizeAc), Center.Y * double(LandblockSizeAc), 0.), WorldScale);
-}
-
-int32 RadiusSetting()
-{
-	return FMath::Clamp(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("PersonalFarTerrainRadius"))), 0, MaxRadius);
 }
 
 void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,

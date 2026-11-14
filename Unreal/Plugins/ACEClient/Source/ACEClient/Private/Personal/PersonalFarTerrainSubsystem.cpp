@@ -1,4 +1,5 @@
 #include "Personal/PersonalFarTerrainSubsystem.h"
+#include "Personal/PersonalFarTerrain.h"
 #include "Personal/PersonalFarTerrainMesh.h"
 #include "ACEClientSubsystem.h"
 #include "ACEDatSubsystem.h"
@@ -316,7 +317,7 @@ void UPersonalFarTerrainSubsystem::Update()
 	UGameInstance* Game = World ? World->GetGameInstance() : nullptr;
 	UACEDatSubsystem* Dat = Game ? Game->GetSubsystem<UACEDatSubsystem>() : nullptr;
 	const UACEClientSubsystem* Client = Game ? Game->GetSubsystem<UACEClientSubsystem>() : nullptr;
-	const int32 Radius = PersonalFarTerrainMesh::RadiusSetting();
+	const int32 Radius = PersonalFarTerrain::IsOn() ? PersonalFarTerrain::Radius() : 0;
 	if (Radius <= 0 || !Dat || !Client)
 	{
 		SetShown(false);
