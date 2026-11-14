@@ -138,6 +138,7 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  ShowFrameRate->SetWidgetStyle(RoundToggle);ShowFrameRate->SetContent(Label(TEXT("Show FPS overlay")));Box->AddChild(Fixed(ShowFrameRate,272,20));
  Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain Textures")),TEXT("PersonalFarTerrainTextures"),TEXT("Draw the far terrain within about 2.7 km with the terrain textures. Off leaves it at flat colors. Changes apply and save immediately.")),272,20)); // personal: far-textures
  AddValue(TEXT("PersonalFarTerrainRadius")); ValueSliders[TEXT("PersonalFarTerrainRadius")]->SetStepSize(1.f); // personal: far-terrain
+ Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Night Sky To Horizon")),TEXT("PersonalSkyHorizon"),TEXT("Continue the night sky below eye level, down to the far terrain. Removes the bright strip at the horizon from sunset to dawn. Changes apply and save immediately.")),272,20)); // personal: sky-horizon
  Resolution=Combo(TEXT("Resolution")); Resolution->Rename(TEXT("DisplayResolution"));
  Resolution->OnOpening.AddDynamic(this,&UACEVideoSettingsWidget::RefreshResolutions);
  UACEHoverTooltipWidget::SetWidgetTooltip(Resolution,FText::FromString(TEXT("Resolution for fullscreen and windowed modes. Borderless fills the desktop at its native resolution.")));

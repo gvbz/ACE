@@ -28,6 +28,7 @@
 #include "ShaderCompiler.h"
 #include "RenderingThread.h"
 #include "ImageUtils.h"
+#include "ACERuntimeOptions.h" // personal: sky-horizon
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACERetailWeatherTest, "ACE.RetailParity.Weather",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
@@ -37,6 +38,7 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
     auto Quality=SavedQuality; Quality.SetFromSingleQualityLevel(3);
     Scalability::SetQualityLevels(Quality);
     ON_SCOPE_EXIT { Scalability::SetQualityLevels(SavedQuality); };
+    const float SkyHorizonSaved=ACERuntimeOptions::Get(TEXT("PersonalSkyHorizon")); ACERuntimeOptions::Set(TEXT("PersonalSkyHorizon"),0.f); ON_SCOPE_EXIT { ACERuntimeOptions::Set(TEXT("PersonalSkyHorizon"),SkyHorizonSaved); }; // personal: sky-horizon
     FString Directory = TEXT("C:/Turbine/Asheron's Call");
     FParse::Value(FCommandLine::Get(), TEXT("RetailDatDir="), Directory);
     const auto Values = UWorld::InitializationValues().AllowAudioPlayback(false)

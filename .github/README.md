@@ -18,6 +18,9 @@ with a few added options. The original README is in the repository root.
 - Far terrain textures: the far terrain within about 2.7 km is drawn
   with the same terrain textures as the loaded terrain (`Far Terrain
   Textures` toggle, on by default).
+- Sky horizon: the night sky continues below eye level, so no bright
+  strip shows between the far terrain and the sky from sunset to dawn
+  (`Night Sky To Horizon` toggle, on by default).
 
 Added code is in `Personal` folders and files named `Personal*`. Edits
 in existing files are marked `// personal:`.

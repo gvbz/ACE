@@ -28,6 +28,7 @@ inline constexpr FOption Values[] = {
  {TEXT("EffectLightLimit"),TEXT("Effect light limit"),8,0,64},
  {TEXT("PersonalFarTerrainRadius"),TEXT("Far Terrain Radius"),48,0,96}, // personal: far-terrain
  {TEXT("PersonalFarTerrainTextures"),TEXT("Far Terrain Textures"),1,0,1}, // personal: far-textures
+ {TEXT("PersonalSkyHorizon"),TEXT("Night Sky To Horizon"),1,0,1}, // personal: sky-horizon
  {TEXT("LandscapeRadius"),TEXT("Landscape Radius"),5,5,25}
 };
 ACECLIENT_API float Get(const TCHAR* Key);

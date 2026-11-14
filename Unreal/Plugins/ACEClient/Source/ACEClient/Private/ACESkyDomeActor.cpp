@@ -24,6 +24,7 @@
 #include "HAL/IConsoleManager.h"
 #include "SceneInterface.h"
 #include "UObject/UObjectIterator.h"
+#include "Personal/PersonalSkyHorizon.h" // personal: sky-horizon
 
 namespace
 {
@@ -470,6 +471,7 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 				Verts[v] = Part.BindTransform.TransformPosition(Verts[v]);
 				Norms[v] = Part.BindTransform.TransformVectorNoScale(Norms[v]).GetSafeNormal();
 			}
+			PersonalSkyHorizon::ExtendSection(GfxId, Verts, Triangles, Norms, UVs, Colors); // personal: sky-horizon
 
 			// GameSky draws the authored polygons in DAT order without depth writes.
 			// The shared builder already converts winding. Reversing it here exposes
