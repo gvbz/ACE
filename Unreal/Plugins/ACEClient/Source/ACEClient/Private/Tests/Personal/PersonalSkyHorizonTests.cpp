@@ -215,7 +215,7 @@ bool FPersonalSkyHorizonTest::RunTest(const FString& Parameters)
 	}
 
 	// The other sky objects are left alone, and the stars layer is extended only with
-	// Night Sky To Horizon and the far terrain both on.
+	// Far Terrain Horizon and the far terrain both on.
 	{
 		// A separate settings file: this test must not change player preferences.
 		TGuardValue<FString> SettingsPath(GGameUserSettingsIni, FPaths::ProjectSavedDir() / TEXT("Automation/PersonalSkyHorizonFixture.ini"));
@@ -232,7 +232,11 @@ bool FPersonalSkyHorizonTest::RunTest(const FString& Parameters)
 			PersonalSkyHorizon::ExtendSection(GfxId, Copy.Vertices, Copy.Triangles, Copy.Normals, Copy.UVs, Copy.Colors);
 			return Copy.Vertices.Num() - Count;
 		};
-		TestEqual(TEXT("Nothing saved: stars are extended"), After(PersonalSkyHorizon::StarsGfxId), 8);
+		TestEqual(TEXT("Nothing saved: stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);
+		ACERuntimeOptions::Set(PersonalFarTerrain::OptionKey, 1.f);
+		TestEqual(TEXT("Far terrain on, option not saved: stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);
+		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 1.f);
+		TestEqual(TEXT("Both on: stars are extended"), After(PersonalSkyHorizon::StarsGfxId), 8);
 		TestEqual(TEXT("Dome is not extended"), After(0x010015F0u), 0);
 		ACERuntimeOptions::Set(PersonalSkyHorizon::OptionKey, 0.f);
 		TestEqual(TEXT("Option off: stars are not extended"), After(PersonalSkyHorizon::StarsGfxId), 0);

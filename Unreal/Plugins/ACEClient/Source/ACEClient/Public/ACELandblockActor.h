@@ -92,6 +92,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "ACE|Terrain")
 	bool IsSceneryComplete() const { return PendingScenery.Num() == 0 && !bRegionDescCollectPending; }
+	bool IsNearSceneryShown() const { return bFullResDetail && bSceneryQueued && IsSceneryComplete(); } // personal: far-scenery
 
 	/**
 	 * Toggle collision on the outdoor heightfield only (scenery/buildings stay collidable).

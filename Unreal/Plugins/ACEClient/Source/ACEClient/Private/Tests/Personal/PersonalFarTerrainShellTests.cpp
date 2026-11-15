@@ -288,8 +288,10 @@ bool FPersonalFarTerrainShellTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Radius 0 cannot be chosen"), Smallest > 0);
 	TestEqual(TEXT("The default is the smallest radius"), FMath::RoundToInt(Row->Default), Smallest);
 	TestEqual(TEXT("The largest radius is what the mesh allows"), FMath::RoundToInt(Row->Max), PersonalFarTerrainMesh::MaxRadius);
-	TestTrue(TEXT("Nothing saved: on"), IsOn());
+	TestFalse(TEXT("Nothing saved: off"), IsOn());
 	TestEqual(TEXT("Nothing saved: the smallest radius"), Radius(), Smallest);
+	ACERuntimeOptions::Set(OptionKey, 1.f);
+	TestTrue(TEXT("Check box on, no radius saved: on"), IsOn());
 
 	// What an older version saved. ACERuntimeOptions::Set would limit it, so write the file itself.
 	auto SaveRadius = [](float Value) { GConfig->SetFloat(TEXT("ACE.Presentation"), RadiusKey, Value, GGameUserSettingsIni); };

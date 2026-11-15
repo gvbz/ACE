@@ -1,0 +1,80 @@
+#pragma once
+
+#include "CoreMinimal.h"
+
+/** Personal far scenery: the rules for which landblocks and objects are drawn. No state; lengths in any one unit. */
+namespace PersonalFarScenery
+{
+	/** The client draws its own scenery within this many landblocks of the player's. */
+	inline constexpr int32 NearRing = 2;
+	/** Far scenery ends here: past it the far terrain is smoothed and objects would not stand on it. */
+	inline constexpr int32 LastRing = 8;
+	inline constexpr int32 WorldLandblocks = 255;
+
+	/** Check box "Far Terrain Objects". */
+	inline constexpr const TCHAR* OptionKey = TEXT("PersonalFarScenery");
+	/** Slider "Far Terrain Objects Radius", in landblocks. */
+	inline constexpr const TCHAR* RadiusKey = TEXT("PersonalFarSceneryRadius");
+	/** Check box "Hide Far Terrain with Fog". */
+	inline constexpr const TCHAR* FogKey = TEXT("PersonalFarSceneryFog");
+
+	/**
+	 * Far objects are drawn: the check box and the far terrain are on.
+	 * Console variable personal.FarScenery.Draw: -1 the check box, 0 off, 1 on. The far terrain is needed either way.
+	 */
+	bool IsOn();
+	/** Outermost ring with far objects. Console variable personal.FarScenery.Radius: 0 the slider, else that ring. */
+	int32 Radius();
+	/** No far objects past the fog end. Console variable personal.FarScenery.FogRule: -1 the check box, 0 no, 1 yes. */
+	bool HideWithFog();
+
+	/** Console variable personal.FarScenery.SizeFactor: draw distance per unit of object height. */
+	float SizeFactor();
+
+	/** Landblocks between Block and Center, the larger of the two directions. */
+	inline int32 Ring(FIntPoint Block, FIntPoint Center)
+	{
+		return FMath::Max(FMath::Abs(Block.X - Center.X), FMath::Abs(Block.Y - Center.Y));
+	}
+
+	/** How far away an object of this height and scale is still drawn. At factor 400 it is then about 4 pixels tall. */
+	inline float DrawDistance(float Height, float Scale, float Factor)
+	{
+		return Height * Scale * Factor;
+	}
+
+	/** The closest a landblock in this ring can be to the player. */
+	inline float NearEdge(int32 InRing, float BlockSize)
+	{
+		return FMath::Max(InRing - 1, 0) * BlockSize;
+	}
+
+	/** False for an object type that cannot be seen anywhere in a landblock of this ring: it is not created there. */
+	inline bool InReach(float Distance, int32 InRing, float BlockSize)
+	{
+		return Distance >= NearEdge(InRing, BlockSize);
+	}
+
+	/** The outermost ring whose near edge is inside the fog end, at most LastRing. Past the fog end everything is the fog color. */
+	inline int32 FogRing(float FogEnd, float BlockSize)
+	{
+		return FMath::Clamp(1 + FMath::FloorToInt32(FMath::Max(FogEnd, 0.f) / BlockSize), 0, LastRing);
+	}
+
+	/**
+	 * True for a landblock of the world that has far scenery while the player is in Center.
+	 * Ring NearRing is in the set too: prepared and hidden, ready for when the client's own scenery leaves it.
+	 */
+	inline bool IsWanted(FIntPoint Block, FIntPoint Center, int32 OuterRing)
+	{
+		const int32 Rings = Ring(Block, Center);
+		return Rings >= NearRing && Rings <= FMath::Min(OuterRing, LastRing)
+			&& Block.X >= 0 && Block.Y >= 0 && Block.X < WorldLandblocks && Block.Y < WorldLandblocks;
+	}
+
+	/** Handoff: the far objects of a landblock are shown unless the client's own scenery is there, complete and shown. */
+	inline bool ShowFar(int32 InRing, bool bNearShown)
+	{
+		return InRing > NearRing || !bNearShown;
+	}
+}

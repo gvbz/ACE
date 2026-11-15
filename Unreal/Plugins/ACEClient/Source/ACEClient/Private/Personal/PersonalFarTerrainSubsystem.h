@@ -31,6 +31,9 @@ public:
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 	virtual void Deinitialize() override;
 
+	/** The world data, shared with the far scenery. Null until it is loaded; it loads when the far terrain is first shown. */
+	PersonalFarTerrainBake::FBakePtr GetBake() const { return Bake; }
+
 private:
 	void Update();
 	/** True when the bake is loaded. Starts the load on first use. */

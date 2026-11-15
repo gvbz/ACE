@@ -335,11 +335,12 @@ void UPersonalFarTerrainSubsystem::Update()
 			}
 		}
 	}
-	// Outdoors only: not at the login screen, in portal space, or inside a building or dungeon.
+	// Not at the login screen, in portal space or in a dungeon. Inside a building it stays, for the view
+	// out of doors and windows (the client's own rule for keeping the land: NeedsExteriorTerrain).
 	const uint32 Cell = uint32(Client->GetPlayerPosition().CellId);
 	const uint32 CellIndex = Cell & 0xFFFFu;
 	const UACETerrainPresenterComponent* Terrain = Presenter.Get();
-	if (!Terrain || Terrain->LoadRadius <= 0 || CellIndex == 0 || CellIndex >= 0x100u
+	if (!Terrain || Terrain->LoadRadius <= 0 || CellIndex == 0 || !Terrain->NeedsExteriorTerrain(Cell)
 		|| Dat->IsInPortalSpace() || !Terrain->IsLandblockSpawned(Cell))
 	{
 		SetShown(false);

@@ -13,7 +13,7 @@
 namespace
 {
 	constexpr uint32 FarTerrainCacheMagic = 0x54464150; // "PAFT"
-	constexpr uint32 FarTerrainCacheVersion = 4;
+	constexpr uint32 FarTerrainCacheVersion = 5;
 	constexpr int32 BakeVertexDim = FACELandblockMeshBuilder::VertexDim;
 
 	/**
@@ -71,6 +71,7 @@ void FPersonalFarTerrainBake::Init()
 	HeightIndex.Init(0, Dim * Dim);
 	TerrainCode.Init(0, Dim * Dim);
 	TerrainRaw.Init(0, Dim * Dim);
+	SceneType.Init(0, Dim * Dim);
 	for (TArray<float>& Level : Levels) Level.Reset();
 	ColorPixels.Reset();
 }
@@ -105,6 +106,7 @@ void FPersonalFarTerrainBake::AddLandblock(int32 BlockX, int32 BlockY, const FAC
 			HeightIndex[Corner] = Land.Height[Vertex];
 			TerrainRaw[Corner] = uint8(Terrain & 0x7F);
 			TerrainCode[Corner] = CodeOfRaw(TerrainRaw[Corner]);
+			SceneType[Corner] = uint8(Terrain >> 11);
 		}
 	}
 }
@@ -177,7 +179,7 @@ bool FPersonalFarTerrainBake::Save(const FString& Path, uint64 Key) const
 		return false;
 	}
 	TArray<uint8> Bytes;
-	Bytes.Reserve(2 * Dim * Dim + 2048);
+	Bytes.Reserve(3 * Dim * Dim + 2048);
 	FMemoryWriter Writer(Bytes);
 	uint32 Magic = FarTerrainCacheMagic, Version = FarTerrainCacheVersion, Size = Dim;
 	Writer << Magic << Version << Key << Size;
@@ -185,13 +187,14 @@ bool FPersonalFarTerrainBake::Save(const FString& Path, uint64 Key) const
 	Writer.Serialize(const_cast<FColor*>(Palette), sizeof(Palette));
 	Writer.Serialize(const_cast<uint8*>(HeightIndex.GetData()), HeightIndex.Num());
 	Writer.Serialize(const_cast<uint8*>(TerrainRaw.GetData()), TerrainRaw.Num());
+	Writer.Serialize(const_cast<uint8*>(SceneType.GetData()), SceneType.Num());
 	return FFileHelper::SaveArrayToFile(Bytes, *Path);
 }
 
 bool FPersonalFarTerrainBake::Load(const FString& Path, uint64 Key)
 {
 	constexpr int64 HeaderBytes = 3 * sizeof(uint32) + sizeof(uint64) + sizeof(HeightTable) + sizeof(Palette);
-	constexpr int64 DataBytes = int64(Dim) * Dim * 2;
+	constexpr int64 DataBytes = int64(Dim) * Dim * 3;
 	TArray<uint8> Bytes;
 	if (!FFileHelper::LoadFileToArray(Bytes, *Path, FILEREAD_Silent) || Bytes.Num() != HeaderBytes + DataBytes)
 	{
@@ -210,9 +213,11 @@ bool FPersonalFarTerrainBake::Load(const FString& Path, uint64 Key)
 	Reader.Serialize(Palette, sizeof(Palette));
 	Reader.Serialize(HeightIndex.GetData(), HeightIndex.Num());
 	Reader.Serialize(TerrainRaw.GetData(), TerrainRaw.Num());
+	Reader.Serialize(SceneType.GetData(), SceneType.Num());
 	for (int32 I = 0; I < TerrainRaw.Num(); ++I)
 	{
 		TerrainRaw[I] &= 0x7F;
+		SceneType[I] &= 0x1F;
 		TerrainCode[I] = CodeOfRaw(TerrainRaw[I]);
 	}
 	return !Reader.IsError();

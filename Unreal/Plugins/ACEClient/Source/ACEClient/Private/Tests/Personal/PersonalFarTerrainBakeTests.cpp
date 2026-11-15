@@ -18,9 +18,9 @@ bool FPersonalFarTerrainBakeTest::RunTest(const FString& Parameters)
 	for (int32 I = 0; I < 81; ++I)
 	{
 		Land.Height[I] = uint8(I);
-		Land.Terrain[I] = uint16((I % 32) << 2);
+		Land.Terrain[I] = uint16(((I % 32) << 2) | ((I % 29) << 11));
 	}
-	Land.Terrain[10] = uint16((5 << 2) | 1);
+	Land.Terrain[10] = uint16((5 << 2) | 1 | (31 << 11));
 
 	auto BakePtr = MakeUnique<FPersonalFarTerrainBake>();
 	FPersonalFarTerrainBake& Bake = *BakePtr;
@@ -44,6 +44,10 @@ bool FPersonalFarTerrainBakeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("All 81 corner heights of a landblock"), WrongHeights, 0);
 	TestEqual(TEXT("All 81 corner colors, with the road"), WrongColors, 0);
 	TestEqual(TEXT("Neighbors are untouched"), Bake.HeightAt(33, 32), 0.f);
+	// Scene type (far scenery): the terrain word comes back with road, terrain type and scene type.
+	TestEqual(TEXT("Terrain word of a corner"), int32(Bake.TerrainWordAt(24 + 3, 32 + 5)), int32(Land.Terrain[3 * 9 + 5]));
+	TestEqual(TEXT("Terrain word of a road corner with the highest scene type"), int32(Bake.TerrainWordAt(24 + 1, 32 + 1)), int32(Land.Terrain[10]));
+	TestEqual(TEXT("Terrain word outside the landblock"), int32(Bake.TerrainWordAt(33, 32)), 0);
 
 	Bake.AddLandblock(254, 254, Land);
 	TestEqual(TEXT("Last landblock reaches the last corner"), Bake.HeightAt(Dim - 1, Dim - 1), 160.f);
@@ -87,6 +91,7 @@ bool FPersonalFarTerrainBakeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Cache loads with the same key"), Loaded.Load(Path, 42));
 	TestTrue(TEXT("Loaded heights match"), Loaded.HeightIndex == Bake.HeightIndex
 		&& FMemory::Memcmp(Loaded.HeightTable, Bake.HeightTable, sizeof(Bake.HeightTable)) == 0);
+	TestTrue(TEXT("Loaded scene types match"), Loaded.SceneType == Bake.SceneType && Loaded.TerrainRaw == Bake.TerrainRaw);
 	TestTrue(TEXT("Loaded terrain and colors match"), Loaded.TerrainCode == Bake.TerrainCode
 		&& FMemory::Memcmp(Loaded.Palette, Bake.Palette, sizeof(Bake.Palette)) == 0);
 	TestFalse(TEXT("Cache from other DAT files is rejected"), Loaded.Load(Path, 43));

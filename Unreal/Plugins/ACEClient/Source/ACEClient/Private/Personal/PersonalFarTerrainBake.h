@@ -27,6 +27,8 @@ struct FPersonalFarTerrainBake
 	TArray<uint8> TerrainCode;
 	/** Per corner: the low 7 bits of the DAT terrain word (road in bits 0-1, terrain type in bits 2-6). */
 	TArray<uint8> TerrainRaw;
+	/** Per corner: the scene type, bits 11 to 15 of the DAT terrain word. Far scenery places objects with it. */
+	TArray<uint8> SceneType;
 	/** Heights in AC units. */
 	float HeightTable[256] = {};
 	/** One color (sRGB) per terrain code. */
@@ -38,7 +40,10 @@ struct FPersonalFarTerrainBake
 
 	FPersonalFarTerrainBake();
 	void Init();
-	bool IsValid() const { return HeightIndex.Num() == Dim * Dim && TerrainCode.Num() == Dim * Dim && TerrainRaw.Num() == Dim * Dim; }
+	bool IsValid() const
+	{
+		return HeightIndex.Num() == Dim * Dim && TerrainCode.Num() == Dim * Dim && TerrainRaw.Num() == Dim * Dim && SceneType.Num() == Dim * Dim;
+	}
 	bool HasLevels() const { return Levels[LevelCount - 2].Num() > 0; }
 
 	/** X and Y in cells from the world's low corner. Outside the world the edge value is used. */
@@ -47,6 +52,8 @@ struct FPersonalFarTerrainBake
 	FColor ColorAt(int32 X, int32 Y) const { return Palette[TerrainCode[Index(X, Y)]]; }
 	/** Terrain palette code of the cell whose low corner is (X, Y): the texture loaded terrain draws there. */
 	uint32 PalCodeAt(int32 X, int32 Y) const;
+	/** The DAT terrain word of a corner: road, terrain type and scene type. Its other bits are 0. */
+	uint16 TerrainWordAt(int32 X, int32 Y) const { return uint16(TerrainRaw[Index(X, Y)] | (SceneType[Index(X, Y)] << 11)); }
 	/** Terrain code for the low 7 bits of a DAT terrain word. */
 	static uint8 CodeOfRaw(uint8 Raw) { return (Raw & 0x3) != 0 ? RoadCode : uint8((Raw >> 2) & 0x1F); }
 

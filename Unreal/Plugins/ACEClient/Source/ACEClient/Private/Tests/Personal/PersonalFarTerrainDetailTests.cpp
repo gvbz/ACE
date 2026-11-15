@@ -212,7 +212,9 @@ bool FPersonalFarTerrainDetailTest::RunTest(const FString& Parameters)
 		TGuardValue<FString> SettingsPath(GGameUserSettingsIni, FPaths::ProjectSavedDir() / TEXT("Automation/PersonalFarTerrainDetailFixture.ini"));
 		FConfigFile FixtureConfig; FixtureConfig.NoSave = false; FixtureConfig.bCanSaveAllSections = true;
 		GConfig->SetFile(GGameUserSettingsIni, &FixtureConfig);
-		TestTrue(TEXT("Far Terrain Textures is on by default"), Enabled());
+		TestFalse(TEXT("Far Terrain Textures is off by default"), Enabled());
+		ACERuntimeOptions::Set(TEXT("PersonalFarTerrainTextures"), 1.f);
+		TestTrue(TEXT("Far Terrain Textures on"), Enabled());
 		ACERuntimeOptions::Set(TEXT("PersonalFarTerrainTextures"), 0.f);
 		TestFalse(TEXT("Far Terrain Textures off"), Enabled());
 		ACERuntimeOptions::Set(TEXT("PersonalFarTerrainTextures"), 1.f);
