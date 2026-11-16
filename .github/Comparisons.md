@@ -20,7 +20,7 @@ Raises the point the third person camera turns around, so the view looks over th
 
 ## Free Camera Restriction
 
-Lets the camera zoom out to the same distance at every angle. With it off, the zoom limit depends on the camera angle, as in the client. Setting: `Free Camera Restriction`. Both pictures are zoomed out as far as the setting allows, at the same angle.
+Lets the camera zoom out to the same distance at every angle. With it off, the zoom limit depends on the camera angle, as in the client. Setting: `Free Camera Restriction`. The first picture shows retail zoom distance restriction, the second shows with it off.
 
 | Off | On |
 |---|---|
