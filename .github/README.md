@@ -38,6 +38,10 @@ with a few added options. The original README is in the repository root.
 - The far terrain options stay on inside buildings, for the view out of
   doors and windows, and turn off in dungeons.
 
+How each change was built: [Plan_History_git.md](Plan_History_git.md)
+
+Screenshots of each change, on and off: [Comparisons.md](Comparisons.md)
+
 Added code is in `Personal` folders and files named `Personal*`. Edits
 in existing files are marked `// personal:`.
 
