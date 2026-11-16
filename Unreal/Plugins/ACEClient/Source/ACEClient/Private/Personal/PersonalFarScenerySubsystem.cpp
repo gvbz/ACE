@@ -412,25 +412,13 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 	{
 		// A building is a plain component with the client's shell material, as in the client
 		// (AACELandblockActor::TrySpawnOneScenery): that material is not made for instances.
-		// With it, dark panels in its door and window openings: no rooms are drawn behind them out here.
-		const TObjectPtr<UStaticMesh>* Found = PanelMeshes.Find(SetupId);
-		UStaticMesh* Panel = Found ? Found->Get() : nullptr;
-		for (int32 Index = 0; Index < Transforms.Num() * (Panel ? 2 : 1); ++Index)
+		// Its openings stay open, as in the client; far windows (Far Terrain Rooms) fills them.
+		for (const FTransform& Transform : Transforms)
 		{
-			const bool bPanel = Index >= Transforms.Num();
-			const FTransform& Transform = Transforms[Index % Transforms.Num()];
 			UStaticMeshComponent* Shell = NewObject<UStaticMeshComponent>(Actor);
 			Shell->SetupAttachment(Actor->GetRootComponent());
-			Shell->SetStaticMesh(bPanel ? Panel : Mesh);
-			if (bPanel)
-			{
-				Shell->SetMaterial(0, PanelMaterial);
-				Shell->ComponentTags.Add(TEXT("PersonalFarPanel"));
-			}
-			else
-			{
-				Dat.BindSetupStaticMeshMaterials(Shell, DatId, WorldScale, bCollisionKey, PlacementId, /*bParticleGfx*/ false, /*bStencilHoleClip*/ true);
-			}
+			Shell->SetStaticMesh(Mesh);
+			Dat.BindSetupStaticMeshMaterials(Shell, DatId, WorldScale, bCollisionKey, PlacementId, /*bParticleGfx*/ false, /*bStencilHoleClip*/ true);
 			Shell->SetMobility(EComponentMobility::Movable);
 			Shell->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 			Shell->SetGenerateOverlapEvents(false);
@@ -447,7 +435,7 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 			}
 			Shell->RegisterComponent();
 			++Unit.Components;
-			Unit.Instances += bPanel ? 0 : 1;
+			++Unit.Instances;
 			Unit.Triangles += Shell->GetStaticMesh()->GetNumTriangles(0);
 		}
 		return;
@@ -694,10 +682,6 @@ bool UPersonalFarScenerySubsystem::MakeMesh(UACEDatSubsystem& Dat, uint32 SetupI
 		const bool bBuilding = PersonalFarSceneryPlacement::TypeKind(SetupId) == PersonalFarSceneryPlacement::EKind::Building;
 		Mesh = Dat.GetOrCreateSetupStaticMesh(PersonalFarSceneryPlacement::TypeId(SetupId), WorldScale, /*bEnableCollision*/ true,
 			PersonalFarSceneryPlacement::TypePlacement(SetupId), /*bParticleGfx*/ false, /*bStencilHoleClip*/ bBuilding, /*bOutdoorLit*/ !bBuilding);
-		if (bBuilding && Mesh)
-		{
-			PanelMeshes.Add(SetupId, PersonalFarSceneryMeshes::MakePanelMesh(Dat, this, PersonalFarSceneryPlacement::TypeId(SetupId), WorldScale, PanelMaterial));
-		}
 	}
 	const double Seconds = FPlatformTime::Seconds() - Start;
 	if (Seconds > 0.005)
@@ -1099,7 +1083,6 @@ void UPersonalFarScenerySubsystem::Stream(UACEDatSubsystem& Dat, const PersonalF
 		MeshMade.Reset();
 		Levels.Reset();
 		LevelMeshes.Reset();
-		PanelMeshes.Reset();
 	}
 	for (auto It = Blocks.CreateIterator(); It; ++It)
 	{

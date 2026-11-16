@@ -254,7 +254,104 @@ static UStaticMesh* BuildMesh(UObject* Outer, const TArray<const FSection*>& Dra
 	return Mesh;
 }
 
-UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId, float WorldScale, TObjectPtr<UMaterialInterface>& InOutMaterial, TArray<float>* OutAreas)
+float OpeningArea(const TArray<FVector>& Vertices, float WorldScale)
+{
+	FVector Cross = FVector::ZeroVector;
+	for (int32 I = 1; I + 1 < Vertices.Num(); ++I)
+	{
+		Cross += FVector::CrossProduct(Vertices[I] - Vertices[0], Vertices[I + 1] - Vertices[0]);
+	}
+	return float(Cross.Size() * 0.5 / FMath::Square(double(FMath::Max(WorldScale, 1.f))));
+}
+
+void OpeningKinds(const FACEBuiltSetupMesh& Built, float WorldScale, TArray<PersonalFarWindows::EKind>& OutKinds, TArray<PersonalFarWindows::FOpening>* OutOpenings,
+	const PersonalFarWindows::FDoorRule& Door)
+{
+	const double Scale = FMath::Max(WorldScale, 1.f);
+	TArray<PersonalFarWindows::FOpening> Openings;
+	for (const FACEBuiltSetupPart& Part : Built.Parts)
+	{
+		for (const FACEBuiltSetupPortal& Polygon : Part.Portals)
+		{
+			if (Polygon.Vertices.Num() < 3)
+			{
+				continue;
+			}
+			// In the building's own space: a building stands upright wherever it is placed.
+			TArray<FVector> Corners;
+			double Low = MAX_dbl, High = -MAX_dbl, Wide = 0.;
+			for (const FVector& Vertex : Polygon.Vertices)
+			{
+				Corners.Add(Part.BindTransform.TransformPosition(Vertex));
+				Low = FMath::Min(Low, Corners.Last().Z);
+				High = FMath::Max(High, Corners.Last().Z);
+			}
+			FVector Cross = FVector::ZeroVector;
+			for (int32 I = 0; I < Corners.Num(); ++I)
+			{
+				for (int32 J = I + 1; J < Corners.Num(); ++J) Wide = FMath::Max(Wide, FVector::Dist2D(Corners[I], Corners[J]));
+				if (I > 0 && I + 1 < Corners.Num()) Cross += FVector::CrossProduct(Corners[I] - Corners[0], Corners[I + 1] - Corners[0]);
+			}
+			PersonalFarWindows::FOpening& Opening = Openings.AddDefaulted_GetRef();
+			Opening.Area = OpeningArea(Polygon.Vertices, WorldScale);
+			Opening.Width = float(Wide / Scale);
+			Opening.Height = float((High - Low) / Scale);
+			Opening.Bottom = float(Low / Scale);
+			Opening.bFlat = FMath::Abs(Cross.GetSafeNormal().Z) > 0.7;
+		}
+	}
+	const float Lowest = PersonalFarWindows::LowestOpening(Openings);
+	OutKinds.Reset(Openings.Num());
+	for (const PersonalFarWindows::FOpening& Opening : Openings)
+	{
+		OutKinds.Add(PersonalFarWindows::KindOf(Opening, Lowest, Door));
+	}
+	if (OutOpenings)
+	{
+		*OutOpenings = MoveTemp(Openings);
+	}
+}
+
+void SetPanelColor(UTexture2D* Texture, FColor Color)
+{
+	if (!Texture || !Texture->GetPlatformData() || Texture->GetPlatformData()->Mips.Num() == 0)
+	{
+		return;
+	}
+	Color.A = 255;
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	FMemory::Memcpy(Mip.BulkData.Lock(LOCK_READ_WRITE), &Color, sizeof(FColor));
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+}
+
+bool MakePanelMaterial(UMaterialInterface* Parent, UObject* Outer, TObjectPtr<UMaterialInterface>& OutMaterial, TObjectPtr<UTexture2D>& OutTexture)
+{
+	UTexture2D* Dark = Parent ? UTexture2D::CreateTransient(1, 1, PF_B8G8R8A8) : nullptr;
+	UMaterialInstanceDynamic* Material = (Dark && Dark->GetPlatformData() && Dark->GetPlatformData()->Mips.Num() > 0) ? UMaterialInstanceDynamic::Create(Parent, Outer) : nullptr;
+	if (!Material)
+	{
+		return false;
+	}
+	Dark->CompressionSettings = TC_EditorIcon;
+	Dark->SRGB = true;
+	Dark->NeverStream = true;
+	SetPanelColor(Dark, PersonalFarWindows::DoorColor());
+	Material->SetTextureParameterValue(TEXT("ACETexture"), Dark);
+	Material->SetTextureParameterValue(TEXT("SlateUI"), Dark);
+	Material->SetTextureParameterValue(TEXT("Texture"), Dark);
+	Material->SetScalarParameterValue(TEXT("OpacityMul"), 1.f);
+	Material->SetScalarParameterValue(TEXT("DiffuseStrength"), 1.f);
+	Material->SetScalarParameterValue(TEXT("AuthoredLuminosity"), 0.f);
+	Material->SetScalarParameterValue(TEXT("EmissiveStrength"), 0.f);
+	OutMaterial = Material;
+	OutTexture = Dark;
+	return true;
+}
+
+
+
+UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId, float WorldScale, const FPanelLook& Look, TArray<float>* OutAreas, int32 OnlyPortalIndex, const TArray<PersonalFarWindows::EKind>* InKinds)
 {
 	const FACEBuiltSetupMesh* Built = Dat.FindSetupMesh(ModelId, WorldScale, 0);
 	FACEDatTextureResolver* Textures = Dat.GetTextureResolver();
@@ -263,10 +360,18 @@ UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId
 		return nullptr;
 	}
 	// The openings of a building are not in its drawn sections: the client's builder keeps them apart as
-	// Part.Portals (FACESetupMeshBuilder, BSP PORT polygons). Each becomes a panel seen from both sides.
-	FSection Panel;
+	// Part.Portals (FACESetupMeshBuilder, BSP PORT polygons). Each becomes a panel seen from both sides,
+	// in the section of its kind (far windows: window, door, open entrance, flat).
+	TArray<PersonalFarWindows::EKind> Kinds;
+	OpeningKinds(*Built, WorldScale, Kinds);
+	if (InKinds && InKinds->Num() == Kinds.Num())
+	{
+		Kinds = *InKinds;
+	}
+	FSection Panels[PersonalFarWindows::KindCount];
 	uint32 WallSurface = 0;
 	bool bWallWrap = false;
+	int32 At = 0;
 	for (const FACEBuiltSetupPart& Part : Built->Parts)
 	{
 		for (const FACEBuiltMeshSection& Section : Part.Sections)
@@ -286,22 +391,17 @@ UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId
 			{
 				continue;
 			}
-			// A very large opening (a hall's open side, a great arch) gets no panel: a dark sheet that size
-			// shows from far away in daylight, and looks worse than seeing through.
-			FVector Cross = FVector::ZeroVector;
-			for (int32 I = 1; I + 1 < Opening.Vertices.Num(); ++I)
-			{
-				Cross += FVector::CrossProduct(Opening.Vertices[I] - Opening.Vertices[0], Opening.Vertices[I + 1] - Opening.Vertices[0]);
-			}
-			const float Area = float(Cross.Size() * 0.5 / FMath::Square(double(FMath::Max(WorldScale, 1.f))));
-			if (OutAreas)
-			{
-				OutAreas->Add(Area);
-			}
-			if (Area > PanelMaxArea)
+			const PersonalFarWindows::EKind Kind = Kinds[At++];
+			if (OnlyPortalIndex != INDEX_NONE && Opening.PortalIndex != OnlyPortalIndex)
 			{
 				continue;
 			}
+			if (OutAreas)
+			{
+				OutAreas->Add(OpeningArea(Opening.Vertices, WorldScale));
+			}
+			// An opening over 12 m2 is drawn with the open entrances (only the test colors give it a panel).
+			FSection& Panel = Panels[Kind == PersonalFarWindows::EKind::None ? int32(PersonalFarWindows::EKind::Entrance) : int32(Kind)];
 			const int32 Base = Panel.Vertices.Num();
 			for (const FVector& Vertex : Opening.Vertices)
 			{
@@ -315,44 +415,51 @@ UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId
 			}
 		}
 	}
-	if (Panel.Triangles.Num() == 0)
+	TArray<const FSection*> Drawn;
+	TArray<int32> DrawnKinds;
+	for (int32 Kind = 0; Kind < PersonalFarWindows::KindCount; ++Kind)
+	{
+		if (Panels[Kind].Triangles.Num() > 0)
+		{
+			Drawn.Add(&Panels[Kind]);
+			DrawnKinds.Add(Kind);
+		}
+	}
+	if (Drawn.Num() == 0)
 	{
 		return nullptr;
 	}
-	if (!InOutMaterial)
+	if (Look.Materials.Num() != PersonalFarWindows::KindCount)
 	{
-		// One dark material for every panel: the client's outdoor material (it takes the world's distance fog
-		// from the shared parameter collection) with a 1 x 1 grey texture.
+		// One material per kind for every panel: the client's outdoor material (it takes the world's distance fog
+		// from the shared parameter collection), each with its own 1 x 1 texture. All start as the same flat dark grey.
 		UMaterialInstanceDynamic* Wall = WallSurface != 0 ? Cast<UMaterialInstanceDynamic>(Dat.GetOrCreateOutdoorLitMaterial(WallSurface, bWallWrap)) : nullptr;
 		UMaterialInterface* Base = Wall ? Wall->Parent.Get() : nullptr;
-		UTexture2D* Dark = Base ? UTexture2D::CreateTransient(1, 1, PF_B8G8R8A8) : nullptr;
-		UMaterialInstanceDynamic* Material = (Dark && Dark->GetPlatformData() && Dark->GetPlatformData()->Mips.Num() > 0) ? UMaterialInstanceDynamic::Create(Base, Outer) : nullptr;
-		if (!Material)
+		if (!Base)
 		{
 			return nullptr;
 		}
-		Dark->CompressionSettings = TC_EditorIcon;
-		Dark->SRGB = true;
-		Dark->NeverStream = true;
-		FTexture2DMipMap& Mip = Dark->GetPlatformData()->Mips[0];
-		// Flat dark grey.
-		const FColor Color(110, 110, 110, 255);
-		FMemory::Memcpy(Mip.BulkData.Lock(LOCK_READ_WRITE), &Color, sizeof(FColor));
-		Mip.BulkData.Unlock();
-		Dark->UpdateResource();
-		Material->SetTextureParameterValue(TEXT("ACETexture"), Dark);
-		Material->SetTextureParameterValue(TEXT("SlateUI"), Dark);
-		Material->SetTextureParameterValue(TEXT("Texture"), Dark);
-		Material->SetScalarParameterValue(TEXT("OpacityMul"), 1.f);
-		Material->SetScalarParameterValue(TEXT("DiffuseStrength"), 1.f);
-		Material->SetScalarParameterValue(TEXT("AuthoredLuminosity"), 0.f);
-		Material->SetScalarParameterValue(TEXT("EmissiveStrength"), 0.f);
-		InOutMaterial = Material;
+		TArray<TObjectPtr<UMaterialInterface>> NewMaterials;
+		TArray<TObjectPtr<UTexture2D>> NewTextures;
+		for (int32 Kind = 0; Kind < PersonalFarWindows::KindCount; ++Kind)
+		{
+			TObjectPtr<UMaterialInterface> Material;
+			TObjectPtr<UTexture2D> Dark;
+			if (!MakePanelMaterial(Base, Outer, Material, Dark))
+			{
+				return nullptr;
+			}
+			NewMaterials.Add(Material);
+			NewTextures.Add(Dark);
+		}
+		Look.Materials = MoveTemp(NewMaterials);
+		Look.Textures = MoveTemp(NewTextures);
 	}
-	TArray<const FSection*> Drawn;
-	Drawn.Add(&Panel);
 	TArray<UMaterialInterface*> Materials;
-	Materials.Add(InOutMaterial);
+	for (const int32 Kind : DrawnKinds)
+	{
+		Materials.Add(Look.Materials[Kind]);
+	}
 	return BuildMesh(Outer, Drawn, Materials);
 }
 }

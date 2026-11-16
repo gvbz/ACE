@@ -28,6 +28,11 @@ with a few added options. The original README is in the repository root.
   strip shows between the far terrain and the sky from sunset to dawn
   (`Far Terrain Horizon` toggle, off by default). It applies with the
   far terrain on.
+- Far terrain rooms: far buildings show the rooms behind their windows
+  and other openings, with the rooms' own lights at night, and their
+  doors get dark panels until the door itself is there (`Far Terrain
+  Rooms` toggle, off by default). It applies with the far terrain
+  objects on.
 - The far terrain options stay on inside buildings, for the view out of
   doors and windows, and turn off in dungeons.
 

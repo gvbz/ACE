@@ -33,6 +33,7 @@ inline constexpr FOption Values[] = {
  {TEXT("PersonalFarTerrainTextures"),TEXT("Far Terrain Textures"),0,0,1}, // personal: far-textures
  {TEXT("PersonalSkyHorizon"),TEXT("Far Terrain Horizon"),0,0,1}, // personal: sky-horizon
  {TEXT("PersonalFarSceneryFog"),TEXT("Hide Far Terrain with Fog"),0,0,1}, // personal: far-scenery
+ {TEXT("PersonalFarWindows"),TEXT("Far Terrain Rooms"),0,0,1}, // personal: far-windows
  {TEXT("LandscapeRadius"),TEXT("Landscape Radius"),5,5,25}
 };
 ACECLIENT_API float Get(const TCHAR* Key);

@@ -54,5 +54,6 @@ public class ACEClient : ModuleRules
 		RuntimeDependencies.Add("$(PluginDir)/Docs/UI/Resolved/*.json", StagedFileType.NonUFS);
         RuntimeDependencies.Add("$(PluginDir)/ClientMods/...", StagedFileType.UFS);
         RuntimeDependencies.Add("$(PluginDir)/Docs/Plugins/...", StagedFileType.NonUFS);
+        RuntimeDependencies.Add("$(PluginDir)/Data/Personal/...", StagedFileType.NonUFS); // personal: far-windows
 	}
 }

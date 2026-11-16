@@ -598,7 +598,7 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Nothing is hidden without near scenery"), First.Hidden, 0);
 	TestTrue(TEXT("Sawato has far objects"), First.Instances > 10000 && First.Components > 300 && First.Triangles > 1000000);
 	{
-		int32 Components = 0, Instances = 0, WithPhysics = 0, WithShadow = 0, Culled = 0, Shells = 0, ShellsWithoutMaterial = 0, Panels = 0, PanelsWrong = 0;
+		int32 Components = 0, Instances = 0, WithPhysics = 0, WithShadow = 0, Culled = 0, Shells = 0, ShellsWithoutMaterial = 0, Panels = 0;
 		for (const auto& Pair : Far->Units)
 		{
 			if (const AActor* Actor = Pair.Value.Actor.Get())
@@ -611,15 +611,10 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 					const UInstancedStaticMeshComponent* AsInstances = Cast<UInstancedStaticMeshComponent>(Component);
 					if (Component->ComponentHasTag(TEXT("PersonalFarPanel")))
 					{
-						// The dark panels in a building's door and window openings.
+						// Far scenery draws no panels (far windows does, with Far Terrain Rooms).
 						++Panels;
-						PanelsWrong += (Component->GetStaticMesh() && Component->GetStaticMesh()->GetNumTriangles(0) > 0
-							&& Component->GetMaterial(0) && Component->GetMaterial(0) == Far->PanelMaterial) ? 0 : 1;
 					}
-					else
-					{
-						Instances += AsInstances ? AsInstances->GetInstanceCount() : 1;
-					}
+					Instances += AsInstances ? AsInstances->GetInstanceCount() : 1;
 					if (!AsInstances && !Component->ComponentHasTag(TEXT("PersonalFarPanel")))
 					{
 						++Shells;
@@ -656,34 +651,8 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("The landblocks around Sawato have stabs and buildings"), StabTypes > 0 && BuildingItems > 0);
 		TestTrue(TEXT("Buildings are drawn, one plain component each"), Shells > 0 && Shells <= BuildingItems);
 		TestEqual(TEXT("Every building has its mesh and materials"), ShellsWithoutMaterial, 0);
-		TestTrue(TEXT("Buildings with openings have a panel component, at most one each"), Panels > 0 && Panels <= Shells);
-		TestEqual(TEXT("Every panel has a mesh and the shared dark material"), PanelsWrong, 0);
-		// Opening sizes: very large ones get no panel.
-		{
-			int32 Small = 0, Medium = 0, Large = 0, Huge = 0, Wrong = 0;
-			float Largest = 0.f;
-			for (const auto& Pair : Far->PanelMeshes)
-			{
-				TArray<float> Areas;
-				TObjectPtr<UMaterialInterface> Material = Far->PanelMaterial;
-				const UStaticMesh* Again = PersonalFarSceneryMeshes::MakePanelMesh(*Dat, Far, PersonalFarSceneryPlacement::TypeId(Pair.Key), WorldScale, Material, &Areas);
-				bool bAnyFilled = false;
-				for (const float Area : Areas)
-				{
-					(Area <= 4.f ? Small : (Area <= PersonalFarSceneryMeshes::PanelMaxArea ? Medium : (Area <= 30.f ? Large : Huge)))++;
-					Largest = FMath::Max(Largest, Area);
-					bAnyFilled = bAnyFilled || Area <= PersonalFarSceneryMeshes::PanelMaxArea;
-				}
-				Wrong += ((Again != nullptr) == bAnyFilled && (Pair.Value != nullptr) == bAnyFilled) ? 0 : 1;
-			}
-			TestEqual(TEXT("A building type has a panel mesh exactly when it has an opening within the size limit"), Wrong, 0);
-			AddInfo(FString::Printf(TEXT("Openings around Sawato by area: %d up to 4 m2, %d up to %.0f m2 (filled), %d up to 30 m2, %d larger (not filled); largest %.1f m2"),
-				Small, Medium, PersonalFarSceneryMeshes::PanelMaxArea, Large, Huge, Largest));
-		}
-		int32 PanelTypes = 0;
-		for (const auto& Pair : Far->PanelMeshes) PanelTypes += Pair.Value ? 1 : 0;
-		AddInfo(FString::Printf(TEXT("Rings 2 to 8 around Sawato: %d stab types in landblocks, %d buildings placed, %d drawn, %d with panels; %d of %d building types have openings"),
-			StabTypes, BuildingItems, Shells, Panels, PanelTypes, Far->PanelMeshes.Num()));
+		TestEqual(TEXT("Far scenery draws no panels in building openings"), Panels, 0);
+		AddInfo(FString::Printf(TEXT("Rings 2 to 8 around Sawato: %d stab types in landblocks, %d buildings placed, %d drawn"), StabTypes, BuildingItems, Shells));
 
 		// A landblock with a building where one is known, else a plain one.
 		const FIntPoint Block = BuildingBlock.X >= 0 ? BuildingBlock : Sawato + FIntPoint(3, 0);

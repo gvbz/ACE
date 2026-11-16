@@ -205,11 +205,6 @@ private:
 	PersonalFarSceneryMeshes::FSourcePtr MeshSource;
 	UPROPERTY()
 	TMap<uint64, FPersonalFarSceneryLevelMesh> LevelMeshes;
-	/** Dark panels for the door and window openings of a building type, by type key. Null: it has none. */
-	UPROPERTY()
-	TMap<uint32, TObjectPtr<UStaticMesh>> PanelMeshes;
-	UPROPERTY()
-	TObjectPtr<UMaterialInterface> PanelMaterial;
 
 	TWeakObjectPtr<UACETerrainPresenterComponent> Presenter;
 	FTimerHandle UpdateTimer;

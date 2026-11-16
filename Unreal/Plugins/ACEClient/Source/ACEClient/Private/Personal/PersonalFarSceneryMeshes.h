@@ -2,10 +2,14 @@
 
 #include "CoreMinimal.h"
 #include "Dat/ACEDatDatabase.h"
+#include "Personal/PersonalFarWindows.h"
 
 class UACEDatSubsystem;
 class UMaterialInterface;
+class UMaterialInstanceDynamic;
 class UStaticMesh;
+class UTexture2D;
+struct FACEBuiltSetupMesh;
 
 /**
  * Personal far scenery: the DAT's lower-detail models of an object type (GfxObj degrade tables),
@@ -69,13 +73,37 @@ namespace PersonalFarSceneryMeshes
 	 */
 	UStaticMesh* MakeStaticMesh(UACEDatSubsystem& Dat, UObject* Outer, const TArray<FSection>& Sections, TArray<UMaterialInterface*>& OutMaterials);
 
+	/** The materials of the opening panels, one per kind (PersonalFarWindows::EKind), each with its own 1 x 1 texture. Owned by the far windows subsystem. */
+	struct FPanelLook
+	{
+		TArray<TObjectPtr<UMaterialInterface>>& Materials;
+		TArray<TObjectPtr<UTexture2D>>& Textures;
+	};
+
 	/**
-	 * Game thread: dark panels for the door and window openings of a building. The client's building mesh leaves
-	 * those polygons out, because the rooms show behind them; a far building has no rooms.
-	 * Null when the building has no openings to fill. InOutMaterial: the one material all panels share, made on first use.
-	 * OutAreas: the area of every opening found, in square meters, filled or not.
+	 * Game thread: panels for the openings of a building (far windows: door panels, and every opening in the test colors).
+	 * The client's building mesh leaves those polygons out, because the rooms show behind them.
+	 * Null when the building has no such openings. One section per kind of opening it has (PersonalFarWindows::EKind;
+	 * an opening over 12 m2 in the open-entrance section), each with the material of that kind.
+	 * Look: the materials all panels share, one per kind, made on first use.
+	 * OutAreas: the area of every opening found, in square meters.
+	 * OnlyPortalIndex: when set, only the openings with that index in the building's portal list (one mesh per opening).
+	 * InKinds: the kinds to use, in model order (after the overrides); else the rule.
 	 */
-	UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId, float WorldScale, TObjectPtr<UMaterialInterface>& InOutMaterial, TArray<float>* OutAreas = nullptr);
-	/** Openings larger than this, in square meters, get no panel. */
-	inline constexpr float PanelMaxArea = 12.f;
+	UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId, float WorldScale, const FPanelLook& Look, TArray<float>* OutAreas = nullptr,
+		int32 OnlyPortalIndex = INDEX_NONE, const TArray<PersonalFarWindows::EKind>* InKinds = nullptr);
+	/** Openings larger than this, in square meters, are of their own kind. */
+	inline constexpr float PanelMaxArea = PersonalFarWindows::MaxArea;
+	/** Area of an opening polygon in square meters. */
+	float OpeningArea(const TArray<FVector>& Vertices, float WorldScale);
+	/**
+	 * The kind of every opening of a building, in the order of its parts and their portal polygons (those with 3 corners or more).
+	 * OutOpenings: their sizes, in the same order.
+	 */
+	void OpeningKinds(const FACEBuiltSetupMesh& Built, float WorldScale, TArray<PersonalFarWindows::EKind>& OutKinds,
+		TArray<PersonalFarWindows::FOpening>* OutOpenings = nullptr, const PersonalFarWindows::FDoorRule& Door = PersonalFarWindows::FDoorRule());
+	/** A panel material: an instance of Parent (the parent of the client's outdoor lit material) with its own 1 x 1 texture. False when it cannot be made. */
+	bool MakePanelMaterial(UMaterialInterface* Parent, UObject* Outer, TObjectPtr<UMaterialInterface>& OutMaterial, TObjectPtr<UTexture2D>& OutTexture);
+	/** Rewrite the one pixel of a panel material's texture. */
+	void SetPanelColor(UTexture2D* Texture, FColor Color);
 }

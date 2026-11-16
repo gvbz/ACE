@@ -1,0 +1,24 @@
+# Far windows overrides shipped with the client (Far Terrain Rooms), read first. Saved/Personal/FarWindowsOverrides.txt adds to it and wins;
+# personal.FarWindows.Mark door|open|clear writes there. Building type, opening (its order in the model, as the survey numbers them), door or open.
+# Made in game by gvbz, 2026-11-15.
+0x0100081C 1 open
+0x0100081C 2 open
+0x01000DFF 6 open
+0x01000DFF 8 door
+0x01000E40 2 open
+0x01000E4D 1 open
+0x01000E4D 2 open
+0x01001117 1 open
+0x01001117 2 open
+0x01001161 1 open
+0x01001161 2 open
+0x010014C3 1 open
+0x01002294 0 open
+0x01003646 0 door
+0x01003904 0 open
+0x01003904 1 open
+0x01003906 8 door
+0x01003906 9 door
+0x01003906 10 door
+0x01003906 11 door
+0x01004C88 0 open
