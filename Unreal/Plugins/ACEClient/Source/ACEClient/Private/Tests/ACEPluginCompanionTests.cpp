@@ -192,11 +192,13 @@ bool FACEPluginCompanionTest::RunTest(const FString&)
     TestFalse(TEXT("Unknown row rejected"),H->ClickPluginRow(P->Id,TEXT("absent")));
     TestTrue(TEXT("Duplicate rows rejected"),!H->ApplyCompanionOutput(*P,J(TEXT(R"({"ui":[{"id":"x","text":"a"},{"id":"x","text":"b"}]})")),Error));
     auto Markers=J(TEXT(R"({"markers":[{"id":12,"shape":"arrow","color":"green"}],"action":"waypoint","target":12})"));
+    H->SetWaypointOption(TEXT("arrow"),false);
     TestTrue(TEXT("Markers and waypoint accepted"),H->ApplyCompanionOutput(*P,Markers,Error));TestEqual(TEXT("Visible marker exists"),H->GetPluginMarkers().Num(),1);
     H->NextPluginMarkerDraw=0;H->DrawPluginMarkers();
     TestTrue(TEXT("World marker creates packaged-game geometry"),H->PluginMarkerMesh&&H->PluginMarkerMesh->GetProcMeshSection(0)&&H->PluginMarkerMesh->GetProcMeshSection(0)->ProcVertexBuffer.Num()>0);
     if(H->PluginMarkerMesh)TestEqual(TEXT("Markers cannot block movement"),H->PluginMarkerMesh->GetCollisionEnabled(),ECollisionEnabled::NoCollision);
     FVector2D Destination;uint32 LB=0;TestTrue(TEXT("Waypoint destination set"),H->GetWaypoint(Destination,LB));
+    TestFalse(TEXT("Background plugin waypoint leaves the player's arrow hidden"),H->WaypointOption(TEXT("arrow")));
     Session.WorldObjects[12].bDying=true;TestTrue(TEXT("Dead object markers disappear"),H->GetPluginMarkers().IsEmpty());Session.WorldObjects[12].bDying=false;
     auto Peer=MakeShared<FACEClientPlugin>();Peer->Id=TEXT("peer");Peer->Companion=true;Peer->Running=true;Peer->Enabled=true;Peer->Permissions={TEXT("messaging")};H->Plugins.Add(Peer);
     TestTrue(TEXT("Message accepted"),H->ApplyCompanionOutput(*P,J(TEXT(R"({"messages":[{"to":"peer","topic":"kill","text":"12"}]})")),Error));

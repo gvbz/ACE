@@ -1,48 +1,19 @@
-# AC:Unreal / AC:VR release 157
+# AC:Unreal / AC:VR release 158
 
-Windows desktop, PC VR, native Linux x86_64, standalone Quest, and the Android
-phone/tablet preview share **2026.11.13.157**. Android version code: 157.
-Quest installer revision: 10. These notes cover changes since v156.
+Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.15.158**.
 
-## UCM recovery, combat and automation
+## Waypoint
 
-- Improve buff and equipment-mana recovery on ACE and GDLE. Delayed or unrelated
-  action replies no longer complete or cancel the wrong activity, and appraisal
-  waits yield so other work can continue.
-- Read GDLE equipment mana changes immediately and prefer usable mana stones
-  before configured charges. Failed buff items no longer block the entire cycle.
-- Support innate wand recovery spells and choose debuff sources across learned
-  spells, wand activation, grenades and weapon procs. Wait for confirmed effects.
-- Improve thrown-weapon offhand selection and preserve damage choices when
-  saving and reloading profiles.
-- Add optional automatic fellowship management with tell-based recruitment,
-  waiting lists, reservations and member votes.
-- Integrate automatic supply crafting into UCM, including intermediate recipes,
-  stock targets, protected ingredients and recovery priority. Custom servers can
-  import their own validated recipe catalogs through Auto Craft.
-- Add configured lockpick support for route doors, optional idle helper buffs,
-  and optional vTank-style casting movement.
-- Improve meta sequencing and item-specific result tracking for giving, looting,
-  salvage, summoning and crafting; unrelated failures no longer interrupt jobs.
+- Import a GoArrow `locations.xml` file from **NAV → Import locations**. Waypoint opens the searchable location list and reports how many entries it loaded. If an import fails, it shows the error and keeps the previous atlas.
+- Search by name or type, then **Point arrow** at a destination or choose **Find route** for walking and portal directions. Locations with the same name show their coordinates. Reimport atlases saved in v157 or earlier to include their portal exits.
+- The floating arrow respects its saved on/off setting across sessions and destination updates.
 
-## Profiles, plugins and vendors
+## Dungeon lighting
 
-- Expand vTank profile and regex compatibility, including conditional and
-  balancing groups, named captures and lookbehind; fix case-sensitive matching
-  caches and preserve Classic expression metadata during import/export.
-- Update Lua developer documentation for the added actions and snapshot fields.
-- Restore retail affordability checks in normal vendor windows. Single-item and
-  cart purchases require sufficient carried coin value; rejected purchases keep
-  the cart and do not start the hourglass. Item Tools' explicit bank option remains.
+- Torches and other light fixtures illuminate nearby dungeon walls, floors, scenery, and characters. Turning in place keeps torch brightness stable, including when a torch behind the camera lights the floor ahead.
+- With **Dynamic lights** set to **Full** on desktop, dungeon fixtures have their own lights. **Low** and **Medium** shadows use two nearby shadow casters. **High** and **Cinematic** allow every fixture to cast shadows.
+- Enable **Uniform dungeon lighting** directly below **Custom object highlighting** for evenly lit interiors. The option applies immediately and saves across sessions. Torch lighting is the default.
 
-## Verification and scope
+## Server source
 
-Validation covers automated Editor and packaged Windows/native Linux regressions,
-APK contents/signatures, and an isolated Windows upgrade. Live-server acceptance
-and physical Quest/phone testing remain unverified for this release. Optional new
-automation defaults off in native profiles; imported vTank settings retain their
-own values. Custom recipe/grenade data and server permissions remain requirements.
-The Quest installer includes Diagnose-Quest.cmd for startup diagnostics.
-
-Packages exclude retail DATs, personal settings, server data and generated
-MeshCache files. Android phones/tablets remain a preview APK.
+- Merged ACEmulator upstream through `aadedb3d6`, including .NET package and server build metadata updates.

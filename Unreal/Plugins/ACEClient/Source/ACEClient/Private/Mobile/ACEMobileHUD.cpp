@@ -113,7 +113,7 @@ void UACEMobileWidget::RefreshHUDPanels()
         if(P->Id!=Id || !P->Enabled || !WantsHUDPlugin(Id))continue;
         if(Id==TEXT("waypoint"))
         {
-            if(Host->WaypointOption(TEXT("arrow")))Ids.Add(TEXT("waypoint.arrow"));
+            if(Host->ShouldShowWaypointArrow())Ids.Add(TEXT("waypoint.arrow"));
             if(Host->WaypointOption(TEXT("dungeon_overlay")))Ids.Add(TEXT("waypoint.dungeon"));
         }
         else Ids.Add(Id);

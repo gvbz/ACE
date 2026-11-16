@@ -407,7 +407,7 @@ public:
 	bool TryGetSetupPhysics(uint32 SetupId, float& OutStepUpHeight, float& OutHeight, float& OutRadius, uint32& OutDefaultAnimationId, float* OutStepDownHeight = nullptr,
 		FVector3f* OutSelectionOriginAc = nullptr, float* OutSelectionRadiusAc = nullptr);
 	/** Setup defaults used by the PhysicsScript/sound runtime. */
-	bool TryGetSetupRuntimeMetadata(uint32 SetupId, uint32& OutDefaultScriptId, uint32& OutScriptTableId, uint32& OutSoundTableId);
+	bool TryGetSetupRuntimeMetadata(uint32 SetupId, uint32& OutDefaultScriptId, uint32& OutScriptTableId, uint32& OutSoundTableId, bool* OutHasPointLight = nullptr);
 	bool GetSetupCollisionShapes(uint32 SetupId, TArray<FACEDatCollisionShape>& OutShapes, bool& bHasPhysicsBSP);
 	bool GetSetupMovementSpheres(uint32 SetupId, TArray<FACEDatCollisionShape>& OutSpheres);
 
@@ -517,8 +517,9 @@ public:
 	UMaterialInterface* GetOrCreateStaticMeshMaterial(uint32 SurfaceId, bool bWrapTexture = false);
 	/** Outdoor landblock scenery (plants / stabs) — DefaultLit so CSM casts onto and from them. */
 	UMaterialInterface* GetOrCreateOutdoorLitMaterial(uint32 SurfaceId, bool bWrapTexture = false);
-	UMaterialInterface* GetOrCreateEnvCellMaterial(uint32 SurfaceId, bool bWrapTexture = false);
+	UMaterialInterface* GetOrCreateEnvCellMaterial(uint32 SurfaceId, bool bWrapTexture = false, bool bEnclosed = false);
 	void SetInteriorAmbient(const FLinearColor& Color);
+	void RefreshDungeonLighting();
 	void SetInteriorUsesOutdoorAmbient(bool bUseOutdoor);
 	/**
 	 * Particle GfxObj materials — never opaque solid swatches (those look like emitter squares).
@@ -536,8 +537,9 @@ public:
 	/** Dedicated retail CreatureMode vertex lighting, isolated from world fog and materials. */
 	UMaterialInterface* CreateExaminationMaterial(UMaterialInterface* Source, UObject* Outer);
 	UMaterialInterface* GetUniformInteriorMaterial(UMaterialInterface* Source);
+	UMaterialInterface* GetDungeonObjectMaterial(UMaterialInterface* Source);
 	UMaterialInterface* GetWorldObjectMaterial(UMaterialInterface* Source);
-	void UpdateWorldObjectLighting(UMaterialInstanceDynamic* Material, bool bInterior);
+	void UpdateWorldObjectLighting(UMaterialInstanceDynamic* Material, bool bInterior, bool bEnclosed = false);
 	/** Land cell TexMerge bake → MID (cached by PCode). */
 	UMaterialInterface* GetOrCreateLandMaterial(uint32 PCode, const TArray<FColor>& Pixels, int32 Width, int32 Height,
 		FACETerrainBlendCache::FBlendPtr SharedBlend = nullptr);
@@ -784,7 +786,7 @@ private:
 		uint32 Animation = 0, Script = 0, ScriptTable = 0, SoundTable = 0;
 		TArray<FACEDatCollisionShape> Shapes;
 		TArray<FACEDatCollisionShape> MovementSpheres;
-		bool bPhysicsBSP = false, bValid = false;
+		bool bPhysicsBSP = false, bValid = false, bHasPointLight = false;
 		uint64 LastUse = 0;
 	};
 	const FSetupRuntimeMetadata* FindSetupRuntimeMetadata(uint32 SetupId);
@@ -991,7 +993,7 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<uint32, TObjectPtr<UMaterialInstanceDynamic>> TexturedMaterialCache;
-    struct FSurfaceMaterialRecord {TWeakObjectPtr<UMaterialInstanceDynamic> Material;uint64 LastUse=0;};
+    struct FSurfaceMaterialRecord {TWeakObjectPtr<UMaterialInstanceDynamic> Material;uint64 LastUse=0;float Luminosity=0.f;};
     TMap<uint64,FSurfaceMaterialRecord> SurfaceMaterials;
     uint64 SurfaceMaterialClock=0;
     void ResetSurfaceMaterialCache(TMap<uint32,TObjectPtr<UMaterialInstanceDynamic>>& Cache,uint32 Kind);
@@ -1037,8 +1039,10 @@ private:
 	TMap<uint8, TObjectPtr<UMaterialInterface>> ExaminationMaterialBases;
 	UPROPERTY() TMap<uint8, TObjectPtr<UMaterialInterface>> InteriorObjectMaterialBases;
 	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInterface>> InteriorObjectMaterials;
+	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInterface>> DungeonObjectMaterials;
 	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInstanceDynamic>> WorldObjectMaterials;
-	TMap<TWeakObjectPtr<UMaterialInstanceDynamic>, bool> WorldLightingInstances;
+	enum class EObjectLightEnvironment : uint8 { Outdoors, Interior, Dungeon };
+	TMap<TWeakObjectPtr<UMaterialInstanceDynamic>, EObjectLightEnvironment> WorldLightingInstances;
 
 	UPROPERTY(Transient)
 	TMap<uint64, TObjectPtr<UTexture2D>> ResolvedTextureCache;

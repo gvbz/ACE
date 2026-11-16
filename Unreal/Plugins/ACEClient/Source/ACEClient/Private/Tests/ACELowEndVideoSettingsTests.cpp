@@ -10,6 +10,8 @@
 #include "ACESkyDomeActor.h"
 #include "UI/ACEVideoSettingsWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/CheckBox.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/ComboBoxString.h"
 #include "Components/Slider.h"
 #include "Components/DirectionalLightComponent.h"
@@ -18,6 +20,8 @@
 #include "Camera/CameraActor.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/SkyLight.h"
+#include "Components/SkyLightComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -112,6 +116,13 @@ bool FACELowEndVideoSettingsTest::RunTest(const FString&)
     auto* Sky=World->SpawnActor<AACESkyDomeActor>();
     FACEDatSkyTimeOfDay Key; Key.DirBright=.8f; Key.DirPitch=55; Key.DirHeading=90;
     Key.DirColor=Key.AmbColor=0xFFFFFFFF; Key.AmbBright=.35f;
+    Dat->SetIndoorEnvironment(true); Dat->SetBuildingInteriorFill(false);
+    Sky->UpdateWorldLighting(Key,Key,0,.5f);
+    auto* SkyComponent=Sky->AmbientSkyLightActor ? Sky->AmbientSkyLightActor->GetLightComponent() : nullptr;
+    if (!TestNotNull(TEXT("Scene skylight initialized"),SkyComponent)) return false;
+    TestEqual(TEXT("Sealed dungeon receives no outdoor skylight"),SkyComponent->Intensity,0.f);
+    Dat->SetIndoorEnvironment(false); Sky->UpdateWorldLighting(Key,Key,0,.5f);
+    TestTrue(TEXT("Leaving the dungeon restores outdoor skylight"),SkyComponent->Intensity>0.f);
     auto* Options=CreateWidget<UACEVideoSettingsWidget>(GI); Options->TakeWidget();
     auto* Shadow=Cast<UComboBoxString>(Options->WidgetTree->FindWidget(TEXT("ShadowQuality")));
     auto* Dynamic=Cast<UComboBoxString>(Options->WidgetTree->FindWidget(TEXT("DynamicLightingQuality")));
@@ -198,17 +209,36 @@ bool FACELowEndVideoSettingsTest::RunTest(const FString&)
     LightLimit->SetValue(0);Apply();
     TestEqual(TEXT("Zero limit disables effect lights"),Lights->GetVisibleLightCount(),0);
     LightLimit->SetValue(8);Apply();
+    auto* Uniform=Cast<UCheckBox>(Options->WidgetTree->FindWidget(TEXT("UniformDungeonLighting")));
+    if (!TestNotNull(TEXT("Config exposes uniform dungeon lighting"),Uniform)) return false;
+    TestFalse(TEXT("Torchlight is the default"),Uniform->IsChecked());
+    Uniform->SetIsChecked(true); Uniform->OnCheckStateChanged.Broadcast(true);
+    TestTrue(TEXT("Uniform mode is immediate"),ACERuntimeOptions::UniformDungeonLighting());
+    for (auto* Light:DoorLights()) TestTrue(TEXT("Dungeon preference preserves outdoor doorway lights"),Light->IsVisible());
+    const auto* Dungeon=Dat->GetOrBuildEnvCellMesh(0x01D9010B,100);
+    if (!TestTrue(TEXT("Reported room has surfaces"),Dungeon && !Dungeon->Sections.IsEmpty())) return false;
+    const auto& Surface=Dungeon->Sections[0];
+    auto* Wall=Cast<UMaterialInstanceDynamic>(Dat->GetOrCreateEnvCellMaterial(Surface.SurfaceId,Surface.bWrapTexture,true));
+    if (!TestNotNull(TEXT("Dungeon wall material created after enabling"),Wall)) return false;
+    TestEqual(TEXT("Newly streamed dungeon shell is uniform"),Wall->K2_GetScalarParameterValue(TEXT("EmissiveStrength")),1.f);
+    auto* Occupant=UMaterialInstanceDynamic::Create(Wall->GetMaterial(),GI);
+    Dat->UpdateWorldObjectLighting(Occupant,true,true);
+    TestEqual(TEXT("Entering a uniform dungeon lights the character evenly"),Occupant->K2_GetScalarParameterValue(TEXT("EmissiveStrength")),1.f);
     Shadow->SetSelectedIndex(0); Dynamic->SetSelectedIndex(0);
     TestTrue(TEXT("Editing lighting enables Apply"),Options->HasPendingChanges());
     TestEqual(TEXT("Changing selection waits for Apply"),ACERuntimeOptions::DynamicLightingQuality(),2);
     Options->ResetVideo(); TestEqual(TEXT("Reset discards pending lighting change"),Dynamic->GetSelectedIndex(),2);
     Shadow->SetSelectedIndex(0); Dynamic->SetSelectedIndex(0); Apply();
     FConfigFile Saved; Saved.Read(GGameUserSettingsIni); float SavedLights=-1; int32 SavedShadows=-1;
+    float SavedUniform=-1.f;
+    Saved.GetFloat(TEXT("ACE.Presentation"),TEXT("UniformDungeonLighting"),SavedUniform);
+    TestEqual(TEXT("Uniform dungeon preference reaches disk"),SavedUniform,1.f);
     Saved.GetFloat(TEXT("ACE.Presentation"),TEXT("DynamicLightingQuality"),SavedLights);
     Saved.GetInt(TEXT("ScalabilityGroups"),TEXT("sg.ShadowQuality"),SavedShadows);
     TestEqual(TEXT("Lighting Off persisted to disk"),SavedLights,0.f);
     TestEqual(TEXT("Shadows Off persisted to disk"),SavedShadows,0);
     auto* Reopened=CreateWidget<UACEVideoSettingsWidget>(GI); Reopened->TakeWidget();
+    TestTrue(TEXT("Reopened config restores uniform preference"),CastChecked<UCheckBox>(Reopened->WidgetTree->FindWidget(TEXT("UniformDungeonLighting")))->IsChecked());
     TestEqual(TEXT("Reopened lighting dropdown restores Off"),Cast<UComboBoxString>(Reopened->WidgetTree->FindWidget(TEXT("DynamicLightingQuality")))->GetSelectedIndex(),0);
     TestEqual(TEXT("Reopened shadow dropdown restores Off"),Cast<UComboBoxString>(Reopened->WidgetTree->FindWidget(TEXT("ShadowQuality")))->GetSelectedIndex(),0);
     Room->LoadEnvCell(0x7D64010C,FVector::ZeroVector,100);
@@ -216,6 +246,9 @@ bool FACELowEndVideoSettingsTest::RunTest(const FString&)
     Room->SetSunCastShadow(true);
     TestTrue(TEXT("Suppressing doorway shadows preserves requested outdoor casting"),Room->CellMesh->CastShadow);
     Options->DefaultsVideo(); Apply();
+    TestFalse(TEXT("Defaults restores torchlit dungeons"),ACERuntimeOptions::UniformDungeonLighting());
+    TestTrue(TEXT("Already loaded wall receives torch lighting again"),Wall->K2_GetScalarParameterValue(TEXT("EmissiveStrength"))<1.f);
+    TestTrue(TEXT("Already present character receives torch lighting again"),Occupant->K2_GetScalarParameterValue(TEXT("EmissiveStrength"))<1.f);
     TestEqual(TEXT("Defaults restores full dynamic lighting"),Lights->GetVisibleLightCount(),World->GetFeatureLevel()<=ERHIFeatureLevel::ES3_1?4:8);
     for(auto* Source:Sources) Source->GetOwner()->SetActorLocation(FVector(2200,0,100));
     Dynamic->SetSelectedIndex(1); Apply(); TestEqual(TEXT("Low excludes effect lighting beyond 15m"),Lights->GetVisibleLightCount(),0);

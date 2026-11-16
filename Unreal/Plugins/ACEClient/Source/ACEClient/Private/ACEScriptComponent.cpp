@@ -8,6 +8,7 @@
 #include "ACECharacterAppearanceComponent.h"
 #include "ACEWorldEntityActor.h"
 #include "ACERegionSceneryActor.h"
+#include "ACEEnvCellActor.h"
 #include "ACEEffectLightSubsystem.h"
 #include "ACEPlayerController.h"
 #include "ACELandblockActor.h"
@@ -181,7 +182,11 @@ void UACEScriptComponent::InitializeFromObject(const FACEWorldObject& Object, fl
 	SetupSoundTableId = 0;
 	if (UACEDatSubsystem* Dat = GetDat())
 	{
-		Dat->TryGetSetupRuntimeMetadata(SetupId, SetupDefaultScript, SetupScriptTableId, SetupSoundTableId);
+		bool bHasPointLight = false;
+		Dat->TryGetSetupRuntimeMetadata(SetupId, SetupDefaultScript, SetupScriptTableId, SetupSoundTableId, &bHasPointLight);
+		const auto* Room = Scenery ? Cast<AACEEnvCellActor>(Scenery->GetOwner()) : nullptr;
+		// The placed fixture supplies this flame's scene light. Keep its particles visible.
+		if (Room && !Room->bSeenOutside && bHasPointLight) bAllowInferredParticleLights = false;
 	}
 	// ObjectCreate/UpdateObject often omit PeTable (0). Players/creatures still need
 	// 0x34000004 so TargetEffects (HealthUpYellow from pools, buffs) resolve.

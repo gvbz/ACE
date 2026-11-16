@@ -251,8 +251,6 @@ void SACEPluginDesktop::Tick(const FGeometry& G,double Time,float Delta)
     const bool Constrain=ACERuntimeOptions::Get(TEXT("ConstrainUIWindows"))>.5f;
     const bool BoundsChanged=Constrain!=ConstrainWindows||!G.GetLocalSize().Equals(ViewSize);
     ConstrainWindows=Constrain;ViewSize=G.GetLocalSize();
-    if(auto* Arrow=Windows.Find(TEXT("waypoint.arrow"));Arrow&&Arrow->Open&&Host.IsValid())
-        Arrow->Widget->SetVisibility(Host->IsWaypointUnlocked()?EVisibility::Visible:EVisibility::HitTestInvisible);
     if(auto* Map=Windows.Find(TEXT("waypoint.dungeon"));Map&&Map->Open&&Host.IsValid())
     {
         const auto P=Host->WaypointPlayerPosition();
@@ -322,7 +320,11 @@ void SACEPluginDesktop::Hide(const FString& Id,bool Remember)
     if(auto* W=Windows.Find(Id))
     {
         const bool Focused=W->Widget->HasKeyboardFocus()||W->Widget->HasFocusedDescendants();
-        if(Host.IsValid()&&Remember)Host->SavePluginWindowVisibility(Id,false);
+        if(Host.IsValid()&&Remember)
+        {
+            if(Id==TEXT("waypoint.arrow"))Host->SetWaypointOption(TEXT("arrow"),false);
+            else Host->SavePluginWindowVisibility(Id,false);
+        }
         W->Open=false;W->Widget->SetVisibility(EVisibility::Collapsed);
         if(Focused)FSlateApplication::Get().SetAllUserFocusToGameViewport();
     }
@@ -335,14 +337,21 @@ void SACEPluginDesktop::Toggle(const FString& Id)
     for(auto P:Host->Plugins)if((P->Id==Id || (Id.StartsWith(TEXT("waypoint."))&&P->Id==TEXT("waypoint")) || (Id==TEXT("ucm.log")&&P->Id==TEXT("ucm")))&&(P->Enabled||Id==TEXT("ucm.log")))Plugin=P;
     if(!Plugin&&!Manager)return;
     FACEPluginStyle::Use(Host.Get());
+    const bool Arrow=Id==TEXT("waypoint.arrow");
+    if(Arrow&&!Host->ShouldShowWaypointArrow())return;
+    TAttribute<EVisibility> OpenVisibility(EVisibility::Visible);
+    if(Arrow)OpenVisibility.BindLambda([H=Host]()
+    {
+        if(!H.IsValid()||!H->ShouldShowWaypointArrow())return EVisibility::Collapsed;
+        return H->IsWaypointUnlocked()?EVisibility::Visible:EVisibility::HitTestInvisible;
+    });
     if(auto* W=Windows.Find(Id))
     {
         if(W->Open)Hide(Id);
-        else {Host->SavePluginWindowVisibility(Id,true);W->Open=true;W->Widget->SetVisibility(EVisibility::Visible);Raise(Id);}
+        else {Host->SavePluginWindowVisibility(Id,true);W->Open=true;W->Widget->SetVisibility(OpenVisibility);Raise(Id);}
         return;
     }
     FWindow W;W.Id=Id;W.Position=Host->GetPluginWindowPosition(Id,FVector2D(84+24*(Windows.Num()-1),80+24*(Windows.Num()-1)));W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(780,700));
-    const bool Arrow=Id==TEXT("waypoint.arrow");
     const bool Dungeon=Id==TEXT("waypoint.dungeon");
     W.MapOverlay=Dungeon;
     const bool Ledger=UACEPluginSubsystem::IsLedger(Id);
@@ -360,9 +369,9 @@ void SACEPluginDesktop::Toggle(const FString& Id)
         .CanManipulate([H=Host,Id]{return H.IsValid()&&H->CanManipulatePluginWindow(Id);})
         .Move([this,Id](FVector2D D,bool Save){Move(Id,D,Save);})
         .Resize(Arrow?TFunction<void(FVector2D,bool)>():TFunction<void(FVector2D,bool)>([this,Id](FVector2D D,bool Save){Resize(Id,D,Save);}))
-        .Raise([this,Id](){Raise(Id);}).Close([this,Id,Manager,Arrow](){if(Manager&&ManagerOnly){Host->TogglePanel();return;}Hide(Id);if(Arrow)Host->SetWaypointOption(TEXT("arrow"),false);})[Manager?Host->MakePanel():Dungeon?Host->MakeWaypointDungeonOverlay():Arrow?Host->MakeWaypointPanel(false,true):Host->MakePanel(Id)];
+        .Raise([this,Id](){Raise(Id);}).Close([this,Id,Manager](){if(Manager&&ManagerOnly){Host->TogglePanel();return;}Hide(Id);})[Manager?Host->MakePanel():Dungeon?Host->MakeWaypointDungeonOverlay():Arrow?Host->MakeWaypointPanel(false,true):Host->MakePanel(Id)];
     if(Dungeon)W.Widget->SetVisibility(EVisibility::Collapsed); // Tick validates the current cell before showing it.
-    if(Arrow)W.Widget->SetVisibility(TAttribute<EVisibility>::CreateLambda([H=Host](){return H.IsValid()&&H->WaypointOption(TEXT("arrow"))?(H->IsWaypointUnlocked()?EVisibility::Visible:EVisibility::HitTestInvisible):EVisibility::Collapsed;}));
+    if(Arrow)W.Widget->SetVisibility(OpenVisibility);
     Canvas->AddSlot().Expose(W.Slot).Alignment(FVector2D::ZeroVector).ZOrder(++TopOrder)[W.Widget.ToSharedRef()];Layout(W);Windows.Add(Id,W);
     Host->SavePluginWindowVisibility(Id,true);
 }
@@ -383,9 +392,9 @@ void SACEPluginDesktop::Refresh()
     if(Enabled.Contains(TEXT("waypoint")))
     {
         Enabled.Add(TEXT("waypoint.map"));Enabled.Add(TEXT("waypoint.arrow"));Enabled.Add(TEXT("waypoint.dungeon"));
-        const bool Show=Host->WaypointOption(TEXT("arrow"));
+        const bool Show=Host->ShouldShowWaypointArrow();
         if(Show && !IsOpen(TEXT("waypoint.arrow")))Toggle(TEXT("waypoint.arrow"));
-        else if(!Show && IsOpen(TEXT("waypoint.arrow")))Hide(TEXT("waypoint.arrow"));
+        else if(!Show && IsOpen(TEXT("waypoint.arrow")))Hide(TEXT("waypoint.arrow"),false);
         const bool Pin=Host->WaypointOption(TEXT("dungeon_overlay"));
         if(Pin&&!IsOpen(TEXT("waypoint.dungeon")))Toggle(TEXT("waypoint.dungeon"));
         else if(!Pin&&IsOpen(TEXT("waypoint.dungeon")))Hide(TEXT("waypoint.dungeon"));
@@ -457,6 +466,11 @@ void UACEPluginSubsystem::TogglePluginWindow(const FString& Id)
 {
     if(auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());PC && PC->IsMobileActive() && PC->MobileWidget)
     {
+        if(Id==TEXT("waypoint.arrow"))
+        {
+            if(PC->MobileWidget->IsHUDPluginVisible(Id))SetWaypointOption(TEXT("arrow"),false);
+            return;
+        }
         const FName Page(*(TEXT("Plugin:")+Id));
         if(PC->MobileWidget->Panel==Page)PC->MobileWidget->ClosePanel();
         else if(PC->MobileWidget->IsHUDPluginVisible(Id))PC->MobileWidget->ToggleHUDPlugin(Id);
@@ -478,13 +492,14 @@ bool UACEPluginSubsystem::WasPluginWindowOpen(const FString& Id) const
     // Preserve ledger preferences from versions before ordinary windows saved
     // visibility. Arrow/pinned-map visibility remains owned by waypoint options.
     if(IsLedger(Id))return LedgerOption(Id,TEXT("visible"));
+    if(Id==TEXT("waypoint.arrow"))return WaypointOption(TEXT("arrow"));
     const TSharedPtr<FJsonObject>* Visible=nullptr;bool Open=false;
     if(Settings&&Settings->TryGetObjectField(TEXT("_window_visibility"),Visible))(*Visible)->TryGetBoolField(Id,Open);
     return Open;
 }
 void UACEPluginSubsystem::SavePluginWindowVisibility(const FString& Id,bool Open)
 {
-    if(!Settings)return;
+    if(!Settings||Id==TEXT("waypoint.arrow"))return;
     if(IsLedger(Id)){SetLedgerOption(Id,TEXT("visible"),Open);return;}
     const TSharedPtr<FJsonObject>* Existing=nullptr;
     auto Visible=Settings->TryGetObjectField(TEXT("_window_visibility"),Existing)?*Existing:MakeShared<FJsonObject>();

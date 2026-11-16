@@ -296,6 +296,10 @@ bool FACEMobileTouchTest::RunTest(const FString&)
     Touch->ClosePanel();Touch->RefreshHUDPanels();
     TestTrue(TEXT("Enabled ledgers remain on screen outside a modal"),Touch->IsHUDPluginVisible(TEXT("huntledger")) && Touch->IsHUDPluginVisible(TEXT("supplyledger")) && !Touch->IsBlockingMovement());
     TestTrue(TEXT("Waypoint arrow is hosted on the mobile HUD"),Touch->IsHUDPluginVisible(TEXT("waypoint.arrow")));
+    RailHost->SetWaypointOption(TEXT("arrow"),false);Touch->RefreshHUDPanels();
+    TestFalse(TEXT("Refreshing the mobile HUD removes the disabled arrow"),Touch->IsHUDPluginVisible(TEXT("waypoint.arrow")));
+    RailHost->SetWaypointOption(TEXT("arrow"),true);Touch->RefreshHUDPanels();
+    TestTrue(TEXT("Re-enabling the mobile arrow restores it"),Touch->IsHUDPluginVisible(TEXT("waypoint.arrow")));
     TestTrue(TEXT("Plugin host recognizes a visible mobile readout"),RailHost->IsPluginWindowOpen(TEXT("huntledger")));
     RailHost->TogglePluginWindow(TEXT("huntledger"));
     TestTrue(TEXT("Hiding a visible readout does not open a modal"),!Touch->IsHUDPluginVisible(TEXT("huntledger")) && Touch->Panel.IsNone());

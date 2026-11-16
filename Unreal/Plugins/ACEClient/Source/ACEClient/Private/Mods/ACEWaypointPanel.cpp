@@ -1,5 +1,6 @@
 #include "Mods/ACEPluginStyle.h"
 #include "Mods/ACEWaypoint.h"
+#include "Mods/SACEWaypointAtlas.h"
 #include "ACEDungeonMapContours.h"
 #include "Mods/ACEWaypointTiles.h"
 #include "Mods/ACEPluginSubsystem.h"
@@ -16,7 +17,9 @@
 #include "UObject/StrongObjectPtr.h"
 #include "Serialization/JsonSerializer.h"
 #include "Misc/FileHelper.h"
+#include "Misc/DefaultValueHelper.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "XmlFile.h"
 #include "Widgets/SLeafWidget.h"
 #include "Widgets/SCompoundWidget.h"
@@ -64,12 +67,59 @@ TArray<ACEWaypoint::FRoutePoint> UACEPluginSubsystem::GetWaypointMapRoute(bool D
     if(!P||!P->Enabled||!Client||Client->GetSessionState()!=EACESessionState::InWorld)return {};
     return ACEWaypoint::MapRoute(RuntimeRoute?RuntimeRoute:P->Profile,WaypointPlayerPosition(),Dungeon,RoutePoint);
 }
-bool UACEPluginSubsystem::WaypointOption(const FString& Key,bool Default) const
-{auto P=Find(TEXT("waypoint"));bool B;return P && P->Profile->TryGetBoolField(Key,B)?B:Default;}
-void UACEPluginSubsystem::SetWaypointOption(const FString& Key,bool Value)
+namespace
 {
-    if(auto P=Find(TEXT("waypoint")))
-    {P->Profile->SetBoolField(Key,Value);SaveProfile(P->Id,P->ProfileName,ProfileJson(P->Id),false);}
+FString ArrowPreferenceFile(const UACEPluginSubsystem& Host)
+{
+    return Host.UserDirectory()/TEXT("Waypoint/floating-arrow.txt");
+}
+}
+void UACEPluginSubsystem::LoadWaypointArrowPreference()
+{
+    const FString File=ArrowPreferenceFile(*this);
+    FString Choice;
+    if(IFileManager::Get().FileExists(*File))
+    {
+        bShowWaypointArrow=FFileHelper::LoadFileToString(Choice,*File)&&Choice.TrimStartAndEnd()==TEXT("visible");
+        return;
+    }
+    auto P=Find(TEXT("waypoint"));
+    bShowWaypointArrow=false;
+    if(!P)return;
+    // Before the dedicated preference, the profile and desktop window could
+    // disagree. Honor an existing opt-out from either source.
+    bool ProfileVisible=true,WindowVisible=true;
+    P->Profile->TryGetBoolField(TEXT("arrow"),ProfileVisible);
+    const TSharedPtr<FJsonObject>* Windows=nullptr;
+    if(Settings && Settings->TryGetObjectField(TEXT("_window_visibility"),Windows))
+        (*Windows)->TryGetBoolField(TEXT("waypoint.arrow"),WindowVisible);
+    bShowWaypointArrow=ProfileVisible&&WindowVisible;
+    if(!bShowWaypointArrow)
+    {
+        // A concurrent client might already have saved a deliberate choice.
+        FFileHelper::SaveStringToFile(TEXT("hidden"),*File,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,
+            &IFileManager::Get(),FILEWRITE_NoReplaceExisting);
+        if(FFileHelper::LoadFileToString(Choice,*File))bShowWaypointArrow=Choice.TrimStartAndEnd()==TEXT("visible");
+    }
+}
+bool UACEPluginSubsystem::WaypointOption(const FString& Key,bool Default) const
+{
+    if(Key==TEXT("arrow"))return bShowWaypointArrow;
+    auto P=Find(TEXT("waypoint"));bool B;return P && P->Profile->TryGetBoolField(Key,B)?B:Default;
+}
+bool UACEPluginSubsystem::SetWaypointOption(const FString& Key,bool Value)
+{
+    auto P=Find(TEXT("waypoint"));if(!P)return false;
+    if(Key==TEXT("arrow"))
+    {
+        bShowWaypointArrow=Value;
+        if(FFileHelper::SaveStringToFile(Value?TEXT("visible"):TEXT("hidden"),*ArrowPreferenceFile(*this),
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))return true;
+        Notice=TEXT("Could not save floating arrow visibility for the next login.");
+        return false;
+    }
+    P->Profile->SetBoolField(Key,Value);
+    return SaveProfile(P->Id,P->ProfileName,ProfileJson(P->Id),false);
 }
 bool UACEPluginSubsystem::SetWaypoint(const FString& Text)
 {
@@ -106,7 +156,7 @@ void UACEPluginSubsystem::SetWaypoint(FVector2D Point,uint32 Dungeon)
     if(auto P=Find(TEXT("waypoint")))
     {
         P->Profile->SetNumberField(TEXT("east"),Point.X);P->Profile->SetNumberField(TEXT("north"),Point.Y);
-        P->Profile->SetNumberField(TEXT("dungeon_landblock"),Dungeon);P->Profile->SetBoolField(TEXT("arrow"),true);
+        P->Profile->SetNumberField(TEXT("dungeon_landblock"),Dungeon);
         // The arrow/map already display the destination. Do not broadcast it
         // through Notice, which also appears in unrelated plugin windows.
         const FString PreviousNotice=Notice;
@@ -122,12 +172,26 @@ bool UACEPluginSubsystem::GetWaypoint(FVector2D& Point,uint32& Dungeon) const
 void UACEPluginSubsystem::ClearWaypoint()
 {if(auto P=Find(TEXT("waypoint"))){P->Profile->RemoveField(TEXT("east"));P->Profile->RemoveField(TEXT("north"));SaveProfile(P->Id,P->ProfileName,ProfileJson(P->Id),false);}}
 
-bool UACEPluginSubsystem::ImportWaypointLocations(const FString& Path)
+namespace
 {
-    // Import data only. Never load or execute the Decal DLL next to the atlas.
-    const int64 Size=IFileManager::Get().FileSize(*Path);FString Source;
-    if(Size<=0 || Size>16*1024*1024 || !FFileHelper::LoadFileToString(Source,*Path))
-    {Notice=TEXT("Choose a readable GoArrow locations.xml file, no larger than 16 MB.");return false;}
+bool ReadAtlasCoordinate(const FString& Text,double& Value)
+{
+    return FDefaultValueHelper::ParseDouble(Text,Value) && FMath::IsFinite(Value) && FMath::Abs(Value)<=102.;
+}
+}
+bool UACEPluginSubsystem::ImportWaypointLocations(const FString& FilePath)
+{
+    FString Path=FilePath.TrimStartAndEnd().TrimQuotes();
+    if(Path.IsEmpty()){Notice=TEXT("Enter the full path to GoArrow's locations.xml.");return false;}
+    FPaths::NormalizeFilename(Path);
+    // An imported file lives on the player's filesystem, outside the cooked content mount.
+    TUniquePtr<IFileHandle> Input(FPlatformFileManager::Get().GetPlatformPhysical().OpenRead(*Path));
+    if(!Input){Notice=FString::Printf(TEXT("Could not open %s. Check the file path and read permissions."),*Path);return false;}
+    const int64 Size=Input->Size();
+    if(Size<=0 || Size>16*1024*1024){Notice=TEXT("Choose a non-empty GoArrow locations.xml file of up to 16 MB.");return false;}
+    TArray<uint8> Bytes;Bytes.SetNumUninitialized(int32(Size));
+    if(!Input->Read(Bytes.GetData(),Size)){Notice=TEXT("Could not finish reading the atlas. Try importing again.");return false;}
+    FString Source;FFileHelper::BufferToString(Source,Bytes.GetData(),Bytes.Num());
     FXmlFile Xml(Source,EConstructMethod::ConstructFromBuffer);const auto* Root=Xml.GetRootNode();
     if(!Xml.IsValid() || !Root || Root->GetTag()!=TEXT("locations") || Root->GetChildrenNodes().Num()>20000)
     {Notice=TEXT("Expected GoArrow locations.xml (<locations> with <loc> entries). Existing locations were preserved.");return false;}
@@ -137,30 +201,46 @@ bool UACEPluginSubsystem::ImportWaypointLocations(const FString& Path)
         if(Node->GetTag()!=TEXT("loc"))continue;
         const FString Name=Node->GetAttribute(TEXT("name")),Type=Node->GetAttribute(TEXT("type"));double NS=0,EW=0;
         if(Name==TEXT("GAVersion"))continue;
-        if(Name.IsEmpty()||Name.Len()>256||!LexTryParseString(NS,*Node->GetAttribute(TEXT("NS")))||!LexTryParseString(EW,*Node->GetAttribute(TEXT("EW")))||!FMath::IsFinite(NS)||!FMath::IsFinite(EW)||FMath::Abs(NS)>102||FMath::Abs(EW)>102)
+        if(Name.IsEmpty()||Name.Len()>256||!ReadAtlasCoordinate(Node->GetAttribute(TEXT("NS")),NS)||!ReadAtlasCoordinate(Node->GetAttribute(TEXT("EW")),EW))
         {Notice=TEXT("Atlas contains invalid coordinates or names. Existing locations were preserved.");return false;}
-        auto O=MakeShared<FJsonObject>();O->SetStringField(TEXT("name"),Name);O->SetStringField(TEXT("type"),Type.Left(64));O->SetNumberField(TEXT("east"),EW);O->SetNumberField(TEXT("north"),NS);Records.Add(MakeShared<FJsonValueObject>(O));
+        auto O=MakeShared<FJsonObject>();O->SetStringField(TEXT("name"),Name);O->SetStringField(TEXT("type"),Type.Left(64));O->SetNumberField(TEXT("east"),EW);O->SetNumberField(TEXT("north"),NS);
+        const FString ExitEast=Node->GetAttribute(TEXT("exitEW")),ExitNorth=Node->GetAttribute(TEXT("exitNS"));
+        if((!ExitEast.IsEmpty() || !ExitNorth.IsEmpty()) && !Node->GetAttribute(TEXT("use")).Equals(TEXT("False"),ESearchCase::IgnoreCase))
+        {
+            if(!ReadAtlasCoordinate(ExitEast,EW)||!ReadAtlasCoordinate(ExitNorth,NS))
+            {Notice=FString::Printf(TEXT("Invalid exit coordinates for %s. Existing locations were preserved."),*Name);return false;}
+            O->SetNumberField(TEXT("exitEast"),EW);O->SetNumberField(TEXT("exitNorth"),NS);
+        }
+        Records.Add(MakeShared<FJsonValueObject>(O));
     }
     if(Records.IsEmpty()){Notice=TEXT("No locations found. Existing locations were preserved.");return false;}
-    auto Data=MakeShared<FJsonObject>();Data->SetArrayField(TEXT("locations"),Records);FString Json;FJsonSerializer::Serialize(Data,TJsonWriterFactory<>::Create(&Json));
+    auto Data=MakeShared<FJsonObject>();Data->SetBoolField(TEXT("includesRouting"),true);Data->SetArrayField(TEXT("locations"),Records);
+    FString Json;FJsonSerializer::Serialize(Data,TJsonWriterFactory<TCHAR,TCondensedJsonPrintPolicy<TCHAR>>::Create(&Json));
+    if(FTCHARToUTF8(*Json).Length()>16*1024*1024){Notice=TEXT("The imported atlas exceeds the 16 MB storage limit.");return false;}
     const FString Directory=UserDirectory()/TEXT("Waypoint");IFileManager::Get().MakeDirectory(*Directory,true);
     const FString File=Directory/TEXT("locations.json"),Temp=File+TEXT(".tmp");
     if(!FFileHelper::SaveStringToFile(Json,*Temp,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)||!IFileManager::Get().Move(*File,*Temp,true))
     {Notice=TEXT("Could not save the imported atlas.");return false;}
-    bWaypointLocationsLoaded=false;++WaypointLocationsRevision;GetWaypointLocations();
+    WaypointItinerary.Reset();bWaypointLocationsLoaded=false;++WaypointLocationsRevision;GetWaypointLocations();
     Notice=FString::Printf(TEXT("Imported %d locations. Atlas data may differ on custom servers."),Records.Num());return true;
 }
 const TArray<FACEWaypointLandmark>& UACEPluginSubsystem::GetWaypointLocations()
 {
-    if(bWaypointLocationsLoaded)return WaypointLocations;bWaypointLocationsLoaded=true;WaypointLocations.Reset();
+    if(bWaypointLocationsLoaded)return WaypointLocations;bWaypointLocationsLoaded=true;WaypointLocations.Reset();bWaypointAtlasHasRoutingData=false;
     const FString File=UserDirectory()/TEXT("Waypoint/locations.json");FString Json;TSharedPtr<FJsonObject> Data;
     if(IFileManager::Get().FileSize(*File)>16*1024*1024 || !FFileHelper::LoadFileToString(Json,*File) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json),Data)||!Data)return WaypointLocations;
     const TArray<TSharedPtr<FJsonValue>>* Records=nullptr;if(!Data->TryGetArrayField(TEXT("locations"),Records)||Records->Num()>20000)return WaypointLocations;
+    Data->TryGetBoolField(TEXT("includesRouting"),bWaypointAtlasHasRoutingData);
     for(const auto& V:*Records)
     {
         const TSharedPtr<FJsonObject>* O=nullptr;if(!V->TryGetObject(O))continue;FACEWaypointLandmark M;double EW,NS;
         if((*O)->TryGetStringField(TEXT("name"),M.Name)&&(*O)->TryGetStringField(TEXT("type"),M.Type)&&(*O)->TryGetNumberField(TEXT("east"),EW)&&(*O)->TryGetNumberField(TEXT("north"),NS)&&FMath::IsFinite(EW)&&FMath::IsFinite(NS)&&FMath::Abs(EW)<=102&&FMath::Abs(NS)<=102)
-        {M.Name=M.Name.Left(256);M.Coordinates=FVector2D(EW,NS);WaypointLocations.Add(M);}
+        {
+            M.Name=M.Name.Left(256);M.Coordinates=FVector2D(EW,NS);
+            if((*O)->TryGetNumberField(TEXT("exitEast"),EW)&&(*O)->TryGetNumberField(TEXT("exitNorth"),NS)&&FMath::IsFinite(EW)&&FMath::IsFinite(NS)&&FMath::Abs(EW)<=102&&FMath::Abs(NS)<=102)
+                M.TravelExit=FVector2D(EW,NS);
+            WaypointLocations.Add(MoveTemp(M));
+        }
     }
     return WaypointLocations;
 }
@@ -205,7 +285,12 @@ class SWaypointArrow : public SLeafWidget
 {
 public:
     SLATE_BEGIN_ARGS(SWaypointArrow){} SLATE_ARGUMENT(UACEPluginSubsystem*,Host) SLATE_END_ARGS()
-    void Construct(const FArguments& A){Host=A._Host;FACEPluginStyle::Use(A._Host,TEXT("waypoint.arrow"));SetVisibility(EVisibility::HitTestInvisible);}
+    void Construct(const FArguments& A)
+    {
+        Host=A._Host;FACEPluginStyle::Use(A._Host,TEXT("waypoint.arrow"));
+        SetVisibility(TAttribute<EVisibility>::CreateLambda([H=Host]
+        {return H.IsValid()&&H->ShouldShowWaypointArrow()?EVisibility::HitTestInvisible:EVisibility::Collapsed;}));
+    }
     FVector2D ComputeDesiredSize(float)const override{return FVector2D(260,190);}
     void Tick(const FGeometry& G,double T,float D)override{SLeafWidget::Tick(G,T,D);Invalidate(EInvalidateWidgetReason::Paint);}
     int32 OnPaint(const FPaintArgs&,const FGeometry& G,const FSlateRect&,FSlateWindowElementList& Out,int32 L,const FWidgetStyle&,bool)const override
@@ -607,28 +692,47 @@ public:
         }
         else
         {
-            Body->AddSlot().AutoHeight()[SNew(SBox).HeightOverride(190)[SNew(SWaypointArrow).Host(Host.Get())]];
+            Body->AddSlot().AutoHeight()[WaypointLabel(TEXT("GoArrow atlas"),18)];
+            Body->AddSlot().AutoHeight()[SAssignNew(AtlasPath,SACEPluginEditableTextBox).Tag(TEXT("Waypoint.AtlasPath")).Style(&PanelStyle->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).HintText(FText::FromString(TEXT("Full path to GoArrow locations.xml")))];
+            Body->AddSlot().AutoHeight().Padding(0,4)[SNew(SHorizontalBox)
+                +SHorizontalBox::Slot().AutoWidth()[WaypointButton(TEXT("Import locations"),[this]
+                {
+                    if(!Host.IsValid())return;
+                    const bool Imported=Host->ImportWaypointLocations(AtlasPath->GetText().ToString());
+                    Status=Host->Notice;
+                    if(Imported)OpenAtlas(Status);
+                })]
+                +SHorizontalBox::Slot().AutoWidth().Padding(4,0)[SNew(SBox)
+                    .IsEnabled_Lambda([this]{return Host.IsValid()&&!Host->GetWaypointLocations().IsEmpty();})
+                    [WaypointButton(TEXT("Browse locations"),[this]{OpenAtlas(FString());})]]];
+            Body->AddSlot().AutoHeight()[SNew(SACEPluginText).AutoWrapText(true).ColorAndOpacity(Accent)
+                .Text_Lambda([this]{return FText::FromString(Status);})];
+            Body->AddSlot().AutoHeight()[SNew(SWaypointArrow).Host(Host.Get())];
             Body->AddSlot().AutoHeight().Padding(0,8)[Check(TEXT("distance"),TEXT("Show distance to destination"),true)];
             Body->AddSlot().AutoHeight()[Check(TEXT("arrow"),TEXT("Show floating arrow"),true)];
             Body->AddSlot().AutoHeight().Padding(0,8)[WaypointLabel(TEXT("Use the game UI lock or hold Quick-show pinned windows to move the arrow."),13)];
             Body->AddSlot().AutoHeight()[WaypointButton(TEXT("Open map"),[this]{if(Host.IsValid())ChildSlot[Host->MakeWaypointPanel(true,false,ShowTitle)];})];
-            Body->AddSlot().AutoHeight().Padding(0,12)[WaypointLabel(TEXT("GoArrow atlas (optional)"),18)];
-            Body->AddSlot().AutoHeight()[SAssignNew(AtlasPath,SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).HintText(FText::FromString(TEXT("Full path to GoArrow locations.xml")))];
-            Body->AddSlot().AutoHeight().Padding(0,6)[WaypointButton(TEXT("Import locations"),[this]{if(Host.IsValid()){Host->ImportWaypointLocations(AtlasPath->GetText().ToString().TrimStartAndEnd());Status=Host->Notice;}})];
             Body->AddSlot().AutoHeight().Padding(0,12)[WaypointLabel(TEXT("Click coordinates in chat or enter them above. The arrow shows your current coordinates. Unlock the game UI and drag its title to move it; its position is saved."),15)];
         }
-        Body->AddSlot().AutoHeight()[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",14)).ColorAndOpacity(Accent).AutoWrapText(true)
+        if(A._Map)Body->AddSlot().AutoHeight()[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",14)).ColorAndOpacity(Accent).AutoWrapText(true)
             .Text_Lambda([this]{return FText::FromString(Status);})];
         TSharedRef<SWidget> Content=Body;
         if(!A._Map)Content=SNew(SScrollBox)+SScrollBox::Slot()[Body];
-        ChildSlot[SNew(SBorder).BorderImage(&PanelStyle->Background).Padding(18)[Content]];
+        SettingsContent=SNew(SBorder).BorderImage(&PanelStyle->Background).Padding(18)[Content];
+        ChildSlot[SettingsContent.ToSharedRef()];
     }
 private:
     TWeakObjectPtr<UACEPluginSubsystem> Host;TSharedPtr<SEditableTextBox> Entry,AtlasPath;TSharedPtr<SWaypointMap> Map;FString Status;bool ShowTitle=true;
+    TSharedPtr<SWidget> SettingsContent;
+    void OpenAtlas(const FString& Message)
+    {
+        if(Host.IsValid())ChildSlot[MakeWaypointAtlas(Host.Get(),Message,FSimpleDelegate::CreateSP(this,&SWaypointPanel::BackToSettings))];
+    }
+    void BackToSettings(){ChildSlot[SettingsContent.ToSharedRef()];}
     void Navigate(const FString& S){if(Host.IsValid())Status=Host->SetWaypoint(S)?TEXT("Destination set"):Host->Notice;}
     TSharedRef<SWidget> Check(const FString& Key,const FString& Caption,bool Default)
-    {return SNew(SCheckBox).Style(&FACEPluginStyle::Current()->Check).Padding(6).IsChecked_Lambda([this,Key,Default]{return Host.IsValid()&&Host->WaypointOption(Key,Default)?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
-        .OnCheckStateChanged_Lambda([this,Key](ECheckBoxState V){if(Host.IsValid())Host->SetWaypointOption(Key,V==ECheckBoxState::Checked);})[WaypointLabel(Caption)];}
+    {return SNew(SCheckBox).Tag(Key==TEXT("arrow")?FName(TEXT("Waypoint.ShowFloatingArrow")):NAME_None).Style(&FACEPluginStyle::Current()->Check).Padding(6).IsChecked_Lambda([this,Key,Default]{return Host.IsValid()&&Host->WaypointOption(Key,Default)?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
+        .OnCheckStateChanged_Lambda([this,Key](ECheckBoxState V){if(Host.IsValid()&&!Host->SetWaypointOption(Key,V==ECheckBoxState::Checked))Status=Host->Notice;})[WaypointLabel(Caption)];}
 };
 }
 TSharedRef<SWidget> UACEPluginSubsystem::MakeWaypointPanel(bool bMap,bool bArrowOnly,bool bShowTitle)

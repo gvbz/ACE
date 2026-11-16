@@ -2,6 +2,11 @@
 #include "ACEProfiling.h"
 #include "ACERuntimeOptions.h"
 #include "ACELandblockActor.h"
+#include "ACEEnvCellActor.h"
+#include "ACEClientSubsystem.h"
+#include "ACEPlayerController.h"
+#include "ACEDatSubsystem.h"
+#include "Engine/GameInstance.h"
 #include "Camera/PlayerCameraManager.h"
 #include "CollisionQueryParams.h"
 #include "Components/ActorComponent.h"
@@ -17,14 +22,27 @@ static TAutoConsoleVariable<int32> CVarEffectLightBudget(TEXT("ace.FXLightBudget
 	TEXT("Maximum simultaneous particle/script scene lights per desktop world (0 disables them, capped at 64)."));
 static TAutoConsoleVariable<int32> CVarEffectLightBudgetMobile(TEXT("ace.FXLightBudgetMobile"), 4,
 	TEXT("Maximum simultaneous particle/script scene lights per mobile world (0 disables them, capped at 64)."));
+static TAutoConsoleVariable<int32> CVarDungeonFixtureMode(TEXT("ace.DungeonFixtureMode"), -1,
+	TEXT("Full desktop dungeon lights: -1 follows shadow quality. For comparisons, 0 shares the effect budget, 1 lights all with two shadows, 2 shadows all."));
 static TAutoConsoleVariable<float> CVarEffectLightMaxDistance(TEXT("ace.FXLightMaxDistance"), 3500.f,
-	TEXT("Maximum camera distance in cm for particle/script scene lights; fades over the outer 20 percent."));
+	TEXT("Maximum scene-light distance in cm (from the player in dungeons, otherwise the camera). Fades over the outer 20 percent."));
 
 namespace
 {
 	constexpr double SelectionInterval = .05;
 	constexpr double ParticleSubmissionLifetime = .25;
 	constexpr float OverlapIntensityBudget = 12.f;
+
+	double OverlapWeight(const FACEEffectLightRequest& A, const FACEEffectLightRequest& B)
+	{
+		const double Range = double(A.Radius) + B.Radius;
+		const double Margin = FMath::Max(1., .25 * FMath::Min(double(A.Radius), double(B.Radius)));
+		const double DistSq = FVector::DistSquared(A.Position, B.Position);
+		if (DistSq >= FMath::Square(Range + Margin)) return 0.;
+		if (DistSq <= FMath::Square(Range)) return 1.;
+		const double T = (Range + Margin - FMath::Sqrt(DistSq)) / Margin;
+		return T*T*(3.-2.*T);
+	}
 
 	bool IsValidRequest(const FACEEffectLightRequest& Request)
 	{
@@ -89,11 +107,32 @@ UACEEffectLightSubsystem::FSourceState& UACEEffectLightSubsystem::FindOrAddSourc
 	return State;
 }
 
-bool UACEEffectLightSubsystem::IsSourceUsable(UActorComponent* Source) const
+bool UACEEffectLightSubsystem::IsSourceUsable(UActorComponent* Source, const FACEBuiltEnvCellMesh* PlayerCell) const
 {
 	if (!IsValid(Source) || Source->IsBeingDestroyed() || Source->GetWorld() != GetWorld()) return false;
 	const AActor* Owner = Source->GetOwner();
-	return IsValid(Owner) && !Owner->IsActorBeingDestroyed() && !Owner->IsHidden();
+	if (!IsValid(Owner) || Owner->IsActorBeingDestroyed()) return false;
+	const auto* Room = Cast<AACEEnvCellActor>(Owner);
+	if (ACERuntimeOptions::UniformDungeonLighting())
+	{
+		const auto* FixtureRoom = Room ? Room : Cast<AACEEnvCellActor>(Owner->GetOwner());
+		if (FixtureRoom && !FixtureRoom->bSeenOutside) return false;
+	}
+	// The camera can look through a doorway from a different cell than the player.
+	if (!Owner->IsHidden()) return true;
+	// A hidden fixture mount can still cast light onto a wall in the player's visible cells.
+	if (!Room || !PlayerCell) return false;
+	const uint32 Id = uint32(Room->EnvCellId);
+	return Id == PlayerCell->EnvCellId || ((Id >> 16) == (PlayerCell->EnvCellId >> 16) &&
+		PlayerCell->VisibleCells.Contains(uint16(Id)));
+}
+
+void UACEEffectLightSubsystem::SetCellLights(UActorComponent* Source, TArray<FACEEffectLightRequest> Fixtures)
+{
+	RemoveSource(Source);
+	Fixtures.RemoveAll([](const auto& R){ return !IsValidRequest(R); });
+	if (IsValid(Source) && Source->GetWorld()==GetWorld() && !Fixtures.IsEmpty())
+		FindOrAddSource(Source).Fixtures=MoveTemp(Fixtures);
 }
 
 void UACEEffectLightSubsystem::SubmitParticles(UActorComponent* Source, TConstArrayView<FACEEffectLightRequest> Requests)
@@ -129,6 +168,8 @@ void UACEEffectLightSubsystem::ReleaseSourceSlots(UActorComponent* Source, bool 
 	for (int32 I = 0; I < Assignments.Num(); ++I)
 	{
 		const FLightKey& Key = Assignments[I];
+		// Removing an emitter leaves the room's persistent fixtures alone.
+		if (Key.bFixture && !(bParticles && bScript)) continue;
 		if (Key.Source.Get() == Source && (Key.bScript ? bScript : bParticles)
 			&& (!EmitterId || Key.EmitterId == *EmitterId))
 		{
@@ -147,7 +188,7 @@ void UACEEffectLightSubsystem::RemoveParticles(UActorComponent* Source)
 		ReleaseSourceSlots(Source, true, false);
 		State->Particles.Reset();
 		bSelectionDirty = true;
-		if (!State->bScriptEnabled) Sources.Remove(Key);
+		if (!State->bScriptEnabled && State->Fixtures.IsEmpty()) Sources.Remove(Key);
 	}
 }
 
@@ -159,7 +200,7 @@ void UACEEffectLightSubsystem::RemoveEmitter(UActorComponent* Source, uint32 Emi
 		if (State->Particles.RemoveAll([EmitterId](const auto& Request) { return Request.EmitterId == EmitterId; }) == 0) return;
 		ReleaseSourceSlots(Source, true, false, &EmitterId);
 		bSelectionDirty = true;
-		if (State->Particles.IsEmpty() && !State->bScriptEnabled) Sources.Remove(Key);
+		if (State->Particles.IsEmpty() && State->Fixtures.IsEmpty() && !State->bScriptEnabled) Sources.Remove(Key);
 	}
 }
 
@@ -184,7 +225,7 @@ void UACEEffectLightSubsystem::SetScriptLight(UActorComponent* Source, bool bEna
 			ReleaseSourceSlots(Source, false, true);
 			State->bScriptEnabled = false;
 			bSelectionDirty = true;
-			if (State->Particles.IsEmpty()) Sources.Remove(Key);
+			if (State->Particles.IsEmpty() && State->Fixtures.IsEmpty()) Sources.Remove(Key);
 		}
 		return;
 	}
@@ -199,6 +240,7 @@ const FACEEffectLightRequest* UACEEffectLightSubsystem::FindRequest(const FLight
 {
 	const FSourceState* State = Sources.Find(Key.Source);
 	if (!State) return nullptr;
+	if (Key.bFixture) return State->Fixtures.IsValidIndex(Key.EmitterId) ? &State->Fixtures[Key.EmitterId] : nullptr;
 	if (Key.bScript) return State->bScriptEnabled ? &State->Script : nullptr;
 	return State->Particles.FindByPredicate([&Key](const auto& Request) { return Request.EmitterId == Key.EmitterId; });
 }
@@ -275,19 +317,22 @@ UPointLightComponent* UACEEffectLightSubsystem::CreatePoolLight()
 	return Light;
 }
 
-void UACEEffectLightSubsystem::SelectLights(int32 Budget, const FVector* ViewPosition, float MaxDistance)
+void UACEEffectLightSubsystem::SelectLights(int32 Budget, const FVector* ViewPosition, float MaxDistance, const FACEBuiltEnvCellMesh* PlayerCell)
 {
 	TArray<FChoice> Candidates;
+	const int32 FixtureMode = LastFixtureMode;
+	int32 IndependentCandidateCount = 0;
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
 	const APawn* LocalPawn = PC ? PC->GetPawn() : nullptr;
 	for (const auto& Pair : Sources)
 	{
-		if (!IsSourceUsable(Pair.Key.Get())) continue;
-		auto Add = [&](const FACEEffectLightRequest& Request, bool bScript)
+		if (!IsSourceUsable(Pair.Key.Get(), PlayerCell)) continue;
+		auto Add = [&](FACEEffectLightRequest Request, bool bScript, bool bFixture=false, uint32 Index=0)
 		{
-			if (!IsValidRequest(Request) || DistanceFade(Request.Position, ViewPosition, MaxDistance) <= 0.f) return;
+			if (bFixture) Request.Position = Pair.Key->GetOwner()->GetActorTransform().TransformPosition(Request.Position);
+			if (!IsValidRequest(Request) || (!(bFixture && FixtureMode) && DistanceFade(Request.Position, ViewPosition, MaxDistance) <= 0.f)) return;
 			FChoice Choice;
-			Choice.Key = {Pair.Key, Request.EmitterId, bScript};
+			Choice.Key = {Pair.Key, bFixture ? Index : Request.EmitterId, bScript, bFixture};
 			Choice.Request = Request;
 			Choice.Order = Pair.Value.Order;
 			// Both carried weapons get first claim on the existing pool. Camera
@@ -297,11 +342,13 @@ void UACEEffectLightSubsystem::SelectLights(int32 Budget, const FVector* ViewPos
 			Choice.Rank = ViewPosition ? FVector::Distance(Request.Position, *ViewPosition) : 0.;
 			if (Assignments.Contains(Choice.Key)) Choice.Rank *= .85;
 			Candidates.Add(Choice);
+			if (bFixture && FixtureMode) ++IndependentCandidateCount;
 		};
 		// An explicit authored light overrides the inferred material hint on the
 		// same source, regardless of which hook happened to submit first.
 		if (Pair.Value.bScriptEnabled) Add(Pair.Value.Script, true);
 		else for (const auto& Request : Pair.Value.Particles) Add(Request, false);
+		for (int32 I=0; I<Pair.Value.Fixtures.Num(); ++I) Add(Pair.Value.Fixtures[I], false, true, I);
 	}
 	Candidates.Sort([](const FChoice& A, const FChoice& B)
 	{
@@ -313,30 +360,70 @@ void UACEEffectLightSubsystem::SelectLights(int32 Budget, const FVector* ViewPos
 	});
 	TArray<FChoice, TInlineAllocator<64>> Chosen;
 	TSet<TWeakObjectPtr<UActorComponent>> ChosenSources;
+	int32 EffectCount=0, IndependentFixtures=0;
 	for (const FChoice& Choice : Candidates)
 	{
-		if (Chosen.Num() >= Budget) break;
-		if (ChosenSources.Contains(Choice.Key.Source) || IsPortalOccluded(Choice)) continue;
+		if (EffectCount >= Budget && IndependentFixtures == IndependentCandidateCount) break;
+		const bool bIndependent=Choice.Key.bFixture && FixtureMode;
+		if (!bIndependent && EffectCount >= Budget) continue;
+		if ((!Choice.Key.bFixture && ChosenSources.Contains(Choice.Key.Source)) || IsPortalOccluded(Choice)) continue;
 		Chosen.Add(Choice);
+		if (bIndependent) ++IndependentFixtures; else ++EffectCount;
 		ChosenSources.Add(Choice.Key.Source);
 	}
 	for (int32 I = 0; I < Assignments.Num(); ++I)
 		if (!Chosen.ContainsByPredicate([&](const FChoice& Choice) { return Choice.Key == Assignments[I]; })) ReleaseSlot(I);
+	// A room transition or a lower budget can release slots in the middle of
+	// the pool. Keep active light components stable when trimming empty slots.
+	for (int32 I=Assignments.Num()-1; I>=0 && LightPool.Num()>Budget+IndependentFixtures; --I)
+		if (!Assignments[I].Source.IsValid())
+		{
+			if (IsValid(LightPool[I])) LightPool[I]->DestroyComponent();
+			LightPool.RemoveAtSwap(I); Assignments.RemoveAtSwap(I);
+		}
+	const bool bFullDesktop = GetWorld()->GetFeatureLevel() >= ERHIFeatureLevel::SM5 && ACERuntimeOptions::DynamicLightingQuality()==2;
+	int32 ShadowsRemaining = bFullDesktop ? 2 : 0;
 	for (const FChoice& Choice : Chosen)
 	{
-		if (Assignments.Contains(Choice.Key)) continue;
-		int32 Slot = Assignments.IndexOfByPredicate([](const FLightKey& Key) { return !Key.Source.IsValid(); });
+		int32 Slot = Assignments.Find(Choice.Key);
 		if (Slot == INDEX_NONE)
 		{
-			if (LightPool.Num() >= Budget) continue;
-			Slot = LightPool.Add(CreatePoolLight());
-			Assignments.AddDefaulted();
+			Slot = Assignments.IndexOfByPredicate([](const FLightKey& Key) { return !Key.Source.IsValid(); });
+			if (Slot == INDEX_NONE)
+			{
+				Slot = LightPool.Add(CreatePoolLight());
+				Assignments.AddDefaulted();
+			}
+			Assignments[Slot] = Choice.Key;
 		}
-		Assignments[Slot] = Choice.Key;
+		const auto* Room = Cast<AACEEnvCellActor>(Choice.Key.Source->GetOwner()->GetOwner());
+		const bool bIndoorFixture = Choice.Key.bFixture || (Room && !Room->bSeenOutside);
+		const bool bIndependent=Choice.Key.bFixture && FixtureMode;
+		const bool bShadow = bIndoorFixture && (ShadowsRemaining>0 || (bIndependent && FixtureMode==2));
+		if (bShadow && ShadowsRemaining>0) --ShadowsRemaining;
+		LightPool[Slot]->SetCastShadows(bShadow);
+		LightPool[Slot]->SetLightingChannels(!bIndoorFixture,true,false);
+		if (bIndependent)
+		{
+			// The renderer culls the attenuation sphere for each actual view. A
+			// torch around a corner can still light a visible patch of floor.
+			// Normalize fixed lights against the admitted fixtures, independently
+			// of facing and of transient spells entering the effect pool.
+			const auto& R=Choice.Request;
+			double Total=0.;
+			for (const auto& Other:Chosen)
+				if (Other.Key.bFixture) Total+=Other.Request.Intensity*OverlapWeight(R,Other.Request);
+			UPointLightComponent* Light=LightPool[Slot];
+			Light->SetWorldLocation(R.Position);
+			Light->SetLightColor(R.Color);
+			Light->SetAttenuationRadius(R.Radius);
+			Light->SetIntensity(R.Intensity*FMath::Min(1.,OverlapIntensityBudget/FMath::Max(.001,Total)));
+			Light->SetVisibility(true);
+		}
 	}
 }
 
-void UACEEffectLightSubsystem::UpdateSelectedLights(const FVector* ViewPosition, float MaxDistance)
+void UACEEffectLightSubsystem::UpdateSelectedLights(const FVector* ViewPosition, float MaxDistance, const FACEBuiltEnvCellMesh* PlayerCell)
 {
 	TArray<FACEEffectLightRequest, TInlineAllocator<64>> Requests;
 	Requests.SetNum(Assignments.Num());
@@ -344,16 +431,21 @@ void UACEEffectLightSubsystem::UpdateSelectedLights(const FVector* ViewPosition,
 	Active.Init(false, Assignments.Num());
 	for (int32 I = 0; I < Assignments.Num(); ++I)
 	{
-		const FACEEffectLightRequest* Request = FindRequest(Assignments[I]);
-		if (!Request || !IsSourceUsable(Assignments[I].Source.Get())
-			|| !IsValidRequest(*Request) || DistanceFade(Request->Position, ViewPosition, MaxDistance) <= 0.f)
+		const FLightKey& Key = Assignments[I];
+		if (Key.bFixture && LastFixtureMode) continue; // Persistent mounts updated at selection time.
+		const FACEEffectLightRequest* Request = FindRequest(Key);
+		if (Request && IsSourceUsable(Key.Source.Get(), PlayerCell))
 		{
-			if (Assignments[I].Source.IsValid()) bSelectionDirty = true;
-			ReleaseSlot(I);
-			continue;
+			Requests[I] = *Request;
+			if (Key.bFixture) Requests[I].Position = Key.Source->GetOwner()->GetActorTransform().TransformPosition(Request->Position);
+			if (IsValidRequest(Requests[I]) && DistanceFade(Requests[I].Position, ViewPosition, MaxDistance) > 0.f)
+			{
+				Active[I] = true;
+				continue;
+			}
 		}
-		Requests[I] = *Request;
-		Active[I] = true;
+		if (Key.Source.IsValid()) bSelectionDirty = true;
+		ReleaseSlot(I);
 	}
 	for (int32 I = 0; I < Assignments.Num(); ++I)
 	{
@@ -363,19 +455,7 @@ void UACEEffectLightSubsystem::UpdateSelectedLights(const FVector* ViewPosition,
 		for (int32 J = 0; J < Assignments.Num(); ++J)
 		{
 			if (!Active[J]) continue;
-			const double IntersectionDistance = double(Request.Radius) + Requests[J].Radius;
-			const double Margin = FMath::Max(1., .25 * FMath::Min(double(Request.Radius), double(Requests[J].Radius)));
-			const double DistanceSquared = FVector::DistSquared(Request.Position, Requests[J].Position);
-			if (DistanceSquared >= FMath::Square(IntersectionDistance + Margin)) continue;
-			double Weight = 1.;
-			if (DistanceSquared > FMath::Square(IntersectionDistance))
-			{
-				// Begin dimming before the spheres meet, without weakening the
-				// full intensity bound anywhere their actual lighting can overlap.
-				const double T = FMath::Clamp((IntersectionDistance + Margin - FMath::Sqrt(DistanceSquared)) / Margin, 0., 1.);
-				Weight = T * T * (3. - 2. * T);
-			}
-			OverlapIntensity += Requests[J].Intensity * Weight;
+			OverlapIntensity += Requests[J].Intensity * OverlapWeight(Request,Requests[J]);
 		}
 		const float Scale = float(FMath::Min(1., double(OverlapIntensityBudget) / FMath::Max(OverlapIntensity, .001)));
 		UPointLightComponent* Light = LightPool[I];
@@ -418,15 +498,21 @@ void UACEEffectLightSubsystem::RefreshLights(float DeltaSeconds)
 			ReleaseSourceSlots(Source, true, false);
 		}
 		if (State.bScriptEnabled) State.Script.Position = Source->GetOwner()->GetActorLocation();
-		if (State.Particles.IsEmpty() && !State.bScriptEnabled) { It.RemoveCurrent(); bSelectionDirty = true; }
+		if (State.Particles.IsEmpty() && State.Fixtures.IsEmpty() && !State.bScriptEnabled) { It.RemoveCurrent(); bSelectionDirty = true; }
 	}
 	const bool bMobile = GetWorld()->GetFeatureLevel() <= ERHIFeatureLevel::ES3_1;
 	const int32 LightingQuality = ACERuntimeOptions::DynamicLightingQuality();
 	const int32 BudgetLimit = LightingQuality == 0 ? 0 : LightingQuality == 1 ? 2 : 64;
 	const int32 Budget = FMath::Clamp(bMobile ? CVarEffectLightBudgetMobile.GetValueOnGameThread()
 		: CVarEffectLightBudget.GetValueOnGameThread(), 0, BudgetLimit);
-	// Runtime budget reductions must bound the pool itself as well as visible lights.
-	while (LightPool.Num() > Budget)
+	int32 FixtureMode=0;
+	if (!bMobile && LightingQuality==2 && !ACERuntimeOptions::UniformDungeonLighting())
+	{
+		static const auto* ShadowQuality=IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("sg.ShadowQuality"));
+		const int32 Override=CVarDungeonFixtureMode.GetValueOnGameThread();
+		FixtureMode=Override<0 ? (ShadowQuality && ShadowQuality->GetValueOnGameThread()>=3 ? 2 : 1) : FMath::Min(Override,2);
+	}
+	while (!FixtureMode && LightPool.Num() > Budget)
 	{
 		const int32 Index = LightPool.Num() - 1;
 		ReleaseSlot(Index);
@@ -438,19 +524,37 @@ void UACEEffectLightSubsystem::RefreshLights(float DeltaSeconds)
 	const float ConfiguredDistance = CVarEffectLightMaxDistance.GetValueOnGameThread();
 	const float MaxDistance = FMath::Min(LightingQuality == 1 ? 1500.f : MAX_flt,
 		FMath::IsFinite(ConfiguredDistance) ? FMath::Max(0.f, ConfiguredDistance) : 3500.f);
-	if (Budget != LastBudget || MaxDistance != LastMaxDistance)
+	if (Budget != LastBudget || MaxDistance != LastMaxDistance || FixtureMode != LastFixtureMode)
 	{
 		bSelectionDirty = true;
 		LastBudget = Budget;
 		LastMaxDistance = MaxDistance;
+		LastFixtureMode = FixtureMode;
 	}
 	// Keep source lifetimes current so re-enabling works, but do not rank
 	// candidates or allocate renderer lights while illumination is disabled.
-	if (Budget == 0) return;
+	if (Budget == 0 && !FixtureMode) return;
 	FVector ViewPosition;
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	const auto* GI = GetWorld()->GetGameInstance();
+	const auto* Client = GI ? GI->GetSubsystem<UACEClientSubsystem>() : nullptr;
+	const uint32 CellId = Client ? Client->GetPlayerPosition().CellId : 0;
+	const FACEBuiltEnvCellMesh* PlayerCell = nullptr;
+	if (uint16(CellId) >= 0x100)
+	{
+		const auto* Controller = Cast<AACEPlayerController>(PC);
+		if (const auto* Dat = GI->GetSubsystem<UACEDatSubsystem>())
+			PlayerCell = Dat->FindEnvCellMesh(CellId, Controller ? Controller->WorldScale : 100.f);
+	}
 	const FVector* View = nullptr;
-	if (PC && PC->PlayerCameraManager)
+	if (PlayerCell && !PlayerCell->CanSeeOutside() && PC && PC->GetPawn())
+	{
+		// Orbiting the camera in place must not move the distance fade,
+		// reassign the two shadow maps, or displace a nearby torch.
+		ViewPosition = PC->GetPawn()->GetActorLocation();
+		View = &ViewPosition;
+	}
+	else if (PC && PC->PlayerCameraManager)
 	{
 		FRotator ViewRotation;
 		PC->GetPlayerViewPoint(ViewPosition, ViewRotation);
@@ -460,7 +564,7 @@ void UACEEffectLightSubsystem::RefreshLights(float DeltaSeconds)
 	{
 		bSelectionDirty = false;
 		NextSelectionAt = ClockSeconds + SelectionInterval;
-		SelectLights(Budget, View, MaxDistance);
+		SelectLights(Budget, View, MaxDistance, PlayerCell);
 	}
-	UpdateSelectedLights(View, MaxDistance);
+	UpdateSelectedLights(View, MaxDistance, PlayerCell);
 }

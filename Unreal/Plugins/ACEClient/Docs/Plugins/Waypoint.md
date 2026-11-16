@@ -1,6 +1,6 @@
 # Waypoint
 
-Waypoint 0.1 is a built-in navigation plugin with no game-action permissions. It is
+Waypoint is a built-in navigation plugin with no game-action permissions. It is
 enabled by default and can be disabled in Plugins. It does not move the player.
 
 ## Navigation
@@ -24,7 +24,12 @@ The position is locally predicted, so it follows movement without waiting for a
 server position packet. Map units follow the ACE coordinate constructor / common
 Decal coordinate conversion: global metres / 240 - 101.95.
 
-Distance and the floating desktop arrow can be hidden independently. To move the
+Turn off **Show floating arrow** to hide the coordinate arrow on the HUD and in
+the Waypoint panel, including the north arrow shown when you have no destination.
+This choice persists across logins and Waypoint profiles. Chat links, map clicks,
+atlas routes and other plugins can update the destination while the arrow is hidden.
+Turn the checkbox back on to see the current heading or destination.
+**Show distance to destination** is independent. To move the
 arrow, unlock the game UI with the radar lock icon, or hold **Quick-show pinned
 windows** (Left Control by default), and drag the arrow area. The
 arrow has no background, frame or title bar, and does not intercept clicks while
@@ -92,8 +97,31 @@ are terrain maps, not overhead renders of buildings, trees or server objects.
 Town landmarks come from the existing retail map data. Nearby portals come
 from live server objects, so custom portals use their server-provided placement.
 
-For a full atlas, enter the path to an existing GoArrow **locations.xml** in
-Waypoint settings and click Import locations. The importer accepts GoArrow's
+### GoArrow destinations and directions
+
+Open **NAV**, paste the full path to GoArrow's **locations.xml**, and click
+**Import locations**. Windows “Copy as path” quotes are accepted. A successful
+import opens the searchable list and shows how many locations were loaded. An
+error appears beside the import controls and leaves the previous atlas available.
+Use **Browse locations** to reopen it after restarting the client. If you imported
+with v157 or earlier, import the XML once more to add its portal exits.
+
+Search by name or type and select a row. Each row shows its coordinates so you
+can distinguish places that share a name.
+
+- **Point arrow** aims the floating arrow directly at the selected location.
+- **Find route** uses your current outdoor position and looks for the least walking
+  distance through eligible one-way atlas transports. The arrow points to the
+  first step. After taking a portal, select the next step in the directions.
+  The current itinerary is available when you reopen the browser in the same session.
+
+Walking legs use straight-line distances within GoArrow's map regions and must
+be under 50 map units each. Directions use the imported exits. Personal recalls,
+terrain obstacles, and character-specific access requirements are outside the
+planner. You move your character and use each portal yourself.
+Region boundaries come from [GoArrow's MapRegions.xml](https://github.com/Xanius/GoArrow-VVSEdition/blob/fb7e49f0f9f4d7bd1401c5310dfcfa9fd05ed84d/GoArrow/RouteFinding/MapRegions.xml).
+
+The importer accepts GoArrow's
 `<locations><loc name="..." type="..." NS="..." EW="..."/></locations>` format.
 It does not accept the older raw CoD `<atlas>` format. Invalid input preserves the
 previous atlas. The import reads data only and does not run Decal DLLs. The
@@ -102,8 +130,9 @@ can be stale or differ on custom servers; nearby live portals remain authoritati
 
 The imported atlas is stored at `Saved/ClientPlugins/Waypoint/locations.json`.
 On Quest, use its app-private Saved location; copying a file there requires ADB.
-Destination/display preferences are under `Saved/ClientPlugins/Profiles/waypoint`;
-desktop placement is in `Saved/ClientPlugins/settings.json`.
+Waypoint saves the floating arrow choice in `Saved/ClientPlugins/Waypoint/floating-arrow.txt`.
+The destination and other display options are under `Saved/ClientPlugins/Profiles/waypoint`.
+Desktop placement is in `Saved/ClientPlugins/settings.json`.
 
 Dungeon outlines are built from cell/portal DAT geometry, incrementally while the
 map is visible. They do not spawn meshes, actors, textures or collision for unseen

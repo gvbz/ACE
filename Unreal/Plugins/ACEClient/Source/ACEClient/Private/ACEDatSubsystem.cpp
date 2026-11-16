@@ -1,4 +1,5 @@
 #include "ACEDatSubsystem.h"
+#include "ACERuntimeOptions.h"
 #include "ACEProfiling.h"
 #include "ACESpellFormula.h"
 #include "ACEClientSubsystem.h"
@@ -1307,6 +1308,7 @@ void UACEDatSubsystem::ClearLoadedState()
 	ResetSurfaceMaterialCache(EnvCellMaterialCache,3);
 	ResetSurfaceMaterialCache(OutdoorLitMaterialCache,2);
 	InteriorObjectMaterials.Reset();
+	DungeonObjectMaterials.Reset();
 	WorldObjectMaterials.Reset();
 	WorldLightingInstances.Reset();
 	InteriorObjectMaterialBases.Reset();
@@ -3428,7 +3430,8 @@ void UACEDatSubsystem::SetInteriorAmbient(const FLinearColor& Color)
 	InteriorAmbient = Ambient;
 	for (const auto& Pair : SurfaceMaterials)
 	{
-		if ((Pair.Key>>32)==3) if (auto* Mid=Pair.Value.Material.Get()) Mid->SetVectorParameterValue(TEXT("InteriorAmbient"), InteriorAmbient);
+		if ((Pair.Key>>32)==3 && !(Pair.Key & 0x80000000u))
+			if (auto* Mid=Pair.Value.Material.Get()) Mid->SetVectorParameterValue(TEXT("InteriorAmbient"), InteriorAmbient);
 	}
 }
 
@@ -3439,9 +3442,40 @@ void UACEDatSubsystem::SetInteriorUsesOutdoorAmbient(bool bUseOutdoor)
 	SetInteriorAmbient(OutdoorInteriorAmbient);
 }
 
-UMaterialInterface* UACEDatSubsystem::GetOrCreateEnvCellMaterial(uint32 SurfaceId, bool bWrapTexture)
+// A little indirect light keeps unlit corners readable. Authored vertex light
+// and local point lights supply the rest of the illumination in enclosed cells.
+static constexpr float DungeonAmbient = .14f;
+
+static float DungeonFill()
 {
-	const uint32 CacheKey = FACEDatTextureResolver::WorldTextureKey(SurfaceId, bWrapTexture);
+	return ACERuntimeOptions::UniformDungeonLighting() ? 1.f : DungeonAmbient;
+}
+
+static void ApplyDungeonSurfaceLighting(UMaterialInstanceDynamic* Material, float Luminosity)
+{
+	const float Fill = FMath::Max(DungeonFill(), Luminosity);
+	Material->SetVectorParameterValue(TEXT("InteriorAmbient"), FLinearColor(Fill, Fill, Fill));
+	// With full emissive fill, the DefaultLit portion of the surface must be zero.
+	Material->SetScalarParameterValue(TEXT("EmissiveStrength"), ACERuntimeOptions::UniformDungeonLighting() ? 1.f : Luminosity);
+}
+
+void UACEDatSubsystem::RefreshDungeonLighting()
+{
+	// The weak records include materials still in a loaded room after cache trimming.
+	for (const auto& Pair : SurfaceMaterials)
+		if ((Pair.Key >> 32) == 3 && (Pair.Key & 0x80000000u))
+			if (auto* Mid=Pair.Value.Material.Get()) ApplyDungeonSurfaceLighting(Mid, Pair.Value.Luminosity);
+	for (const auto& Pair : DungeonObjectMaterials)
+		if (auto* Mid=Cast<UMaterialInstanceDynamic>(Pair.Value.Get()))
+			Mid->SetScalarParameterValue(TEXT("EmissiveStrength"), DungeonFill());
+	for (const auto& Pair : WorldLightingInstances)
+		if (Pair.Value == EObjectLightEnvironment::Dungeon)
+			if (auto* Mid=Pair.Key.Get()) Mid->SetScalarParameterValue(TEXT("EmissiveStrength"), DungeonFill());
+}
+
+UMaterialInterface* UACEDatSubsystem::GetOrCreateEnvCellMaterial(uint32 SurfaceId, bool bWrapTexture, bool bEnclosed)
+{
+	const uint32 CacheKey = FACEDatTextureResolver::WorldTextureKey(SurfaceId, bWrapTexture) | (bEnclosed ? 0x80000000u : 0u);
 	if (auto* Cached=FindSurfaceMaterial(EnvCellMaterialCache,3,CacheKey)) return Cached;
 	if (!TextureResolver) return nullptr;
 	FACEDatSurfaceRenderFlags Surface;
@@ -3456,15 +3490,20 @@ UMaterialInterface* UACEDatSubsystem::GetOrCreateEnvCellMaterial(uint32 SurfaceI
 	if (!Base) return nullptr;
 	auto* MID = UMaterialInstanceDynamic::Create(Base, this);
 	MID->SetTextureParameterValue(TEXT("ACETexture"), Source->K2_GetTextureParameterValue(TEXT("ACETexture")));
-	MID->SetScalarParameterValue(TEXT("EmissiveStrength"), FMath::Clamp(Surface.Luminosity,0.f,1.f));
+	const float Luminosity = FMath::Clamp(Surface.Luminosity,0.f,1.f);
+	if (bEnclosed) ApplyDungeonSurfaceLighting(MID, Luminosity);
+	else
+	{
+		MID->SetScalarParameterValue(TEXT("EmissiveStrength"), Luminosity);
+		MID->SetVectorParameterValue(TEXT("InteriorAmbient"), InteriorAmbient);
+	}
 	MID->SetScalarParameterValue(TEXT("DiffuseStrength"), FMath::Clamp(Surface.Diffuse,0.f,1.f));
-	MID->SetVectorParameterValue(TEXT("InteriorAmbient"), InteriorAmbient);
 	MID->SetScalarParameterValue(TEXT("OpacityMul"), 1.f);
 	// Indoor cells use their own lighting/fog state. Outdoor fog remains enabled
 	// on landscape and scenery visible through their portals.
 	MID->SetScalarParameterValue(TEXT("FogAmount"), 0.f);
 	EnvCellMaterialCache.Add(CacheKey, MID);
-	SurfaceMaterials.Add((uint64(3)<<32)|CacheKey, {MID,++SurfaceMaterialClock});
+	SurfaceMaterials.Add((uint64(3)<<32)|CacheKey, {MID,++SurfaceMaterialClock,Luminosity});
 	return MID;
 }
 
@@ -3934,12 +3973,14 @@ UMaterialInterface* UACEDatSubsystem::CreateExaminationMaterial(UMaterialInterfa
 	return Material;
 }
 
-void UACEDatSubsystem::UpdateWorldObjectLighting(UMaterialInstanceDynamic* Material, bool bInterior)
+void UACEDatSubsystem::UpdateWorldObjectLighting(UMaterialInstanceDynamic* Material, bool bInterior, bool bEnclosed)
 {
 	if (!Material) return;
-	Material->SetScalarParameterValue(TEXT("EmissiveStrength"), bInterior ? 1.f : SceneryEmissiveScale);
+	const float Fill = bInterior ? (bEnclosed ? DungeonFill() : 1.f) : SceneryEmissiveScale;
+	Material->SetScalarParameterValue(TEXT("EmissiveStrength"), Fill);
 	Material->SetVectorParameterValue(TEXT("WorldAmbientTint"), bInterior ? FLinearColor::White : WorldAmbientTint);
-	WorldLightingInstances.Add(Material,bInterior);
+	WorldLightingInstances.Add(Material, !bInterior ? EObjectLightEnvironment::Outdoors :
+		bEnclosed ? EObjectLightEnvironment::Dungeon : EObjectLightEnvironment::Interior);
 }
 
 UMaterialInterface* UACEDatSubsystem::GetWorldObjectMaterial(UMaterialInterface* Source)
@@ -3986,6 +4027,21 @@ UMaterialInterface* UACEDatSubsystem::GetUniformInteriorMaterial(UMaterialInterf
 	Material->SetScalarParameterValue(TEXT("EmissiveStrength"), 1.f);
 	ApplyDistanceFogToMid(Material);
 	InteriorObjectMaterials.Add(Source, Material);
+	return Material;
+}
+
+UMaterialInterface* UACEDatSubsystem::GetDungeonObjectMaterial(UMaterialInterface* Source)
+{
+	if (const auto* Cached=DungeonObjectMaterials.Find(Source))
+		if (auto* Material=Cached->Get()) return Material;
+	auto* Lit=GetWorldObjectMaterial(Source);
+	if (!Lit || Lit==Source) return Source;
+	auto* Material=UMaterialInstanceDynamic::Create(Lit->GetMaterial(),this);
+	Material->CopyMaterialUniformParameters(Lit);
+	Material->SetScalarParameterValue(TEXT("EmissiveStrength"),DungeonFill());
+	Material->SetVectorParameterValue(TEXT("WorldAmbientTint"),FLinearColor::White);
+	Material->SetScalarParameterValue(TEXT("FogAmount"),0.f);
+	DungeonObjectMaterials.Add(Source,Material);
 	return Material;
 }
 
@@ -6839,8 +6895,9 @@ void UACEDatSubsystem::SetWorldEmissiveScale(float LandScale, float SceneryScale
 	{
 		if (auto* Material=It.Key().Get())
 		{
-			Material->SetScalarParameterValue(TEXT("EmissiveStrength"), It.Value() ? 1.f : SceneryEmissiveScale);
-			Material->SetVectorParameterValue(TEXT("WorldAmbientTint"), It.Value() ? FLinearColor::White : WorldAmbientTint);
+			if (It.Value() != EObjectLightEnvironment::Outdoors) continue;
+			Material->SetScalarParameterValue(TEXT("EmissiveStrength"), SceneryEmissiveScale);
+			Material->SetVectorParameterValue(TEXT("WorldAmbientTint"), WorldAmbientTint);
 		}
 		else It.RemoveCurrent();
 	}
@@ -7814,7 +7871,12 @@ UMaterialInstanceDynamic* UACEDatSubsystem::FindSurfaceMaterial(TMap<uint32,TObj
 {
     const uint64 FullKey=(uint64(Kind)<<32)|Key;
     if(auto* Material=Cache.FindRef(Key).Get())
-    {SurfaceMaterials.Add(FullKey,{Material,++SurfaceMaterialClock});return Material;}
+    {
+        auto& Record=SurfaceMaterials.FindOrAdd(FullKey);
+        Record.Material=Material;
+        Record.LastUse=++SurfaceMaterialClock;
+        return Material;
+    }
     if(auto* Record=SurfaceMaterials.Find(FullKey))if(auto* Material=Record->Material.Get())
     {Record->LastUse=++SurfaceMaterialClock;Cache.Add(Key,Material);return Material;}
     return nullptr;
@@ -7828,6 +7890,7 @@ void UACEDatSubsystem::TrimTextureResolverCaches(int32 MaxTextures, int32 MaxDec
 	// visible so daylight/fog updates still reach it after the source is collected.
 	for (auto It = WorldObjectMaterials.CreateIterator(); It; ++It) if (!It.Value().IsValid()) It.RemoveCurrent();
 	for (auto It = InteriorObjectMaterials.CreateIterator(); It; ++It) if (!It.Value().IsValid()) It.RemoveCurrent();
+	for (auto It = DungeonObjectMaterials.CreateIterator(); It; ++It) if (!It.Value().IsValid()) It.RemoveCurrent();
 	if (TextureResolver)
 	{
 		TextureResolver->TrimCaches(MaxTextures, MaxDecodedSurfaces, MaxBytes);
@@ -8285,6 +8348,12 @@ const UACEDatSubsystem::FSetupRuntimeMetadata* UACEDatSubsystem::FindSetupRuntim
 		if (ACEDatUnpack::UnpackSetupModel(Cursor, Setup))
 		{
 			Value.bValid = true;
+			for (const auto& Point : Setup.Lights)
+				if (Point.Value.Intensity > 0.f && Point.Value.Falloff > 0.f && (Point.Value.Color & 0xFFFFFFu))
+				{
+					Value.bHasPointLight = true;
+					break;
+				}
 			Value.StepUp = Setup.StepUpHeight > 0.f ? Setup.StepUpHeight : .5f;
 			Value.StepDown = Setup.StepDownHeight > 0.f ? Setup.StepDownHeight : .5f;
 			Value.Height = Setup.Height; Value.Radius = Setup.Radius;
@@ -8352,10 +8421,11 @@ bool UACEDatSubsystem::TryGetSetupPhysics(uint32 SetupId, float& OutStepUpHeight
 }
 
 bool UACEDatSubsystem::TryGetSetupRuntimeMetadata(
-	uint32 SetupId, uint32& OutDefaultScriptId, uint32& OutScriptTableId, uint32& OutSoundTableId)
+	uint32 SetupId, uint32& OutDefaultScriptId, uint32& OutScriptTableId, uint32& OutSoundTableId, bool* OutHasPointLight)
 {
 	OutDefaultScriptId = OutScriptTableId = OutSoundTableId = 0;
 	const auto* Data = FindSetupRuntimeMetadata(SetupId);
+	if (OutHasPointLight) *OutHasPointLight = Data && Data->bHasPointLight;
 	if (!Data) return false;
 	OutDefaultScriptId = Data->Script;
 	OutScriptTableId = Data->ScriptTable;

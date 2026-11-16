@@ -507,6 +507,7 @@ void UACEPluginSubsystem::Discover()
             else if(IFileManager::Get().FileExists(*(UserDirectory()/TEXT("Profiles")/Id/(Profile+TEXT(".json")))))LoadProfile(Id, Profile);
         }
     }
+    LoadWaypointArrowPreference();
     // Discovery must include disabled plugins too. Apply the allowance only to
     // enabled entries, preferring saved choices over newly installed defaults.
     const int32 Limit=GetEnabledPluginLimit();

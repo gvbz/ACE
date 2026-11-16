@@ -22,6 +22,7 @@ inline constexpr FOption Values[] = {
  {TEXT("PluginTextScale"),TEXT("Lua Plugin Text Scale"),1,.75f,2},
  {TEXT("CursorScale"),TEXT("Cursor size"),1,.5f,3},
  {TEXT("ObjectGlow"),TEXT("Custom object highlighting"),1,0,1},
+ {TEXT("UniformDungeonLighting"),TEXT("Uniform dungeon lighting"),0,0,1},
  {TEXT("ConstrainUIWindows"),TEXT("Keep UI windows on screen"),1,0,1},
  {TEXT("DynamicLightingQuality"),TEXT("Dynamic lights"),2,0,2},
  {TEXT("CameraAlignToSlope"),TEXT("Align camera to slope"),1,0,1},
@@ -41,6 +42,7 @@ ACECLIENT_API void Set(const TCHAR* Key, float Value);
 ACECLIENT_API void Apply();
 /** Applied lighting preference: 0 off, 1 reduced, 2 full. No config reads per effect. */
 ACECLIENT_API int32 DynamicLightingQuality();
+ACECLIENT_API bool UniformDungeonLighting();
 ACECLIENT_API float SoundGain(bool bAmbient);
 /** Retail EnumIDMap 25000012; actual glyph atlases from the user's DAT on every platform. */
 ACECLIENT_API uint32 ChatFontId();

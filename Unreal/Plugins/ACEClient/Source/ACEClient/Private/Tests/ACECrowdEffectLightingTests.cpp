@@ -2,6 +2,22 @@
 #include "Misc/AutomationTest.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "ACEEffectLightSubsystem.h"
+#include "ACEDatSubsystem.h"
+#include "ACEClientSubsystem.h"
+#include "ACEWorldEntityActor.h"
+#include "ACECharacterAppearanceComponent.h"
+#include "ACESession.h"
+#include "ACERuntimeOptions.h"
+#include "Misc/ConfigCacheIni.h"
+#include "ACEEnvCellActor.h"
+#include "Dat/ACEEnvCellTileCache.h"
+#include "Dat/ACEOutdoorPortalPlan.h"
+#include "RHICommandList.h"
+#include "Engine/GameInstance.h"
+#include "Misc/ScopeExit.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "ProceduralMeshComponent.h"
 #include "Camera/CameraActor.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/PointLightComponent.h"
@@ -29,6 +45,20 @@
 
 namespace ACECrowdLightingTests
 {
+    struct FDungeonPreferences
+    {
+        FString OriginalIni=GGameUserSettingsIni;
+        IConsoleVariable* Mode=IConsoleManager::Get().FindConsoleVariable(TEXT("ace.DungeonFixtureMode"));
+        int32 PreviousMode=Mode->GetInt();
+        FDungeonPreferences()
+        {
+            GGameUserSettingsIni=FPaths::ProjectSavedDir()/TEXT("Automation/DungeonFixturePreferences.ini");
+            FConfigFile Config; Config.NoSave=true; GConfig->SetFile(GGameUserSettingsIni,&Config);
+            ACERuntimeOptions::Apply();
+        }
+        ~FDungeonPreferences() { Mode->Set(PreviousMode,ECVF_SetByCode); GGameUserSettingsIni=OriginalIni; ACERuntimeOptions::Apply(); }
+    };
+
     struct FBudgetScope
     {
         IConsoleVariable* Desktop = IConsoleManager::Get().FindConsoleVariable(TEXT("ace.FXLightBudget"));
@@ -145,6 +175,410 @@ namespace ACECrowdLightingTests
             return Result;
         }
     };
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEDungeonFixtureLightTest, "ACE.Rendering.DungeonFixtureLights",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FACEDungeonFixtureLightTest::RunTest(const FString&)
+{
+    using namespace ACECrowdLightingTests;
+    FDungeonPreferences Preferences;
+    FBudgetScope Budget; Budget.Set(8);
+    FWorld F;
+    auto* GI=NewObject<UGameInstance>(GEngine);
+    GEngine->GetWorldContextFromWorldChecked(F.World).OwningGameInstance=GI;
+    F.World->SetGameInstance(GI); GI->OnWorldChanged(nullptr,F.World); GI->Init();
+    ON_SCOPE_EXIT { GI->Shutdown(); };
+    auto* Dat=GI->GetSubsystem<UACEDatSubsystem>();
+    FString Directory=TEXT("C:/Turbine/Asheron's Call");
+    FParse::Value(FCommandLine::Get(),TEXT("RetailDatDir="),Directory);
+    if (!TestTrue(TEXT("Retail dungeon DAT opens"),Dat->LoadDatDirectory(Directory))) return false;
+    constexpr uint32 CellId=0x01430100;
+    const auto* Mesh=Dat->GetOrBuildEnvCellMesh(CellId,100);
+    if (!TestNotNull(TEXT("Two-lamp room decoded"),Mesh)) return false;
+    const FString CaptureDir=FPaths::ProjectSavedDir()/TEXT("Automation/DungeonFixtureLights");
+    IFileManager::Get().MakeDirectory(*CaptureDir,true);
+    const FString TilePath=CaptureDir/TEXT("Room.acec");
+    FACEBuiltEnvCellMesh Cached;
+    if (!TestTrue(TEXT("Fixture metadata survives a tile cache reload"),
+        ACEEnvCellTileCache::Save(TilePath,*Mesh,100,1) && ACEEnvCellTileCache::Load(TilePath,Cached,100,1) && Cached.PointLights.Num()==2)) return false;
+    auto* Room=F.World->SpawnActor<AACEEnvCellActor>();
+    if (!TestTrue(TEXT("Room and fixtures streamed"),Room->LoadEnvCell(CellId,FVector::ZeroVector,100))) return false;
+    Room->SetEnvCellHiddenInGame(false);
+    F.SetView(FVector(0,-2000,160));
+    F.Lights->RefreshLights(.1f); F.Lights->RefreshLights(1.f);
+    auto Lamps=F.ActualLights();
+    if (!TestEqual(TEXT("Both DAT fixture points persist without particle submissions"),Lamps.Num(),2)) return false;
+    for (auto* Lamp : Lamps)
+    {
+        TestTrue(TEXT("Enclosed lamps cast local shadows"),Lamp->CastShadows && Lamp->LightingChannels.bChannel1 && !Lamp->LightingChannels.bChannel0);
+        TestEqual(TEXT("Authored four-metre falloff uses retail static light factor"),Lamp->AttenuationRadius,520.f);
+        TestTrue(TEXT("Lamp is at the authored elevated wall mount"),FMath::Abs(Lamp->GetComponentLocation().Z-209.f)<2.f);
+    }
+    TestTrue(TEXT("Room shell occludes local lights"),Room->CellMesh->CastShadow && Room->CellMesh->bCastDynamicShadow);
+    for (const auto& Stab : Cached.StaticObjects)
+    {
+        Dat->GetOrBuildSetupMesh(Stab.Id,100,UACEDatSubsystem::ACEPlacementResting);
+        if (!TestTrue(TEXT("Real dungeon scenery spawned"),Room->TrySpawnOneStaticObject(Dat,Stab))) return false;
+    }
+    if (!FApp::CanEverRender()) return false;
+    const FVector Mount=Lamps[0]->GetComponentLocation();
+    const FVector Eye=Mount+(FVector(0,-2000,0)-Mount).GetSafeNormal2D()*300+FVector(0,0,30);
+    auto* Target=NewObject<UTextureRenderTarget2D>(Room);
+    constexpr int32 Size=512;
+    Target->InitCustomFormat(Size,Size,PF_FloatRGBA,false);
+    auto* Capture=NewObject<USceneCaptureComponent2D>(Room);
+    Capture->TextureTarget=Target; Capture->CaptureSource=SCS_SceneColorHDRNoAlpha;
+    Capture->bCaptureEveryFrame=false; Capture->bCaptureOnMovement=false; Capture->bAlwaysPersistRenderingState=true;
+    Capture->ShowFlags.SetEyeAdaptation(false); Capture->ShowFlags.SetFog(false); Capture->ShowFlags.SetAntiAliasing(false);
+    Capture->SetWorldLocationAndRotation(Eye,(Mount-FVector(0,0,160)-Eye).Rotation()); Capture->RegisterComponent();
+    if (GShaderCompilingManager) GShaderCompilingManager->FinishAllCompilation();
+    const double ReadyDeadline=FPlatformTime::Seconds()+5.;
+    do
+    {
+        FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+        F.World->SendAllEndOfFrameUpdates(); FlushRenderingCommands();
+        if (Room->CellMesh->GetSceneProxy() && !Room->CellMesh->IsPSOPrecaching()) break;
+        FPlatformProcess::SleepNoStats(.001f);
+    } while (FPlatformTime::Seconds()<ReadyDeadline);
+    if (!TestNotNull(TEXT("Dungeon shell has a render proxy"),Room->CellMesh->GetSceneProxy())) return false;
+    auto CaptureFrame=[&](const TCHAR* Name)
+    {
+        F.World->SendAllEndOfFrameUpdates(); Capture->CaptureScene(); FlushRenderingCommands();
+        TArray<FLinearColor> Pixels;
+        Target->GameThread_GetRenderTargetResource()->ReadLinearColorPixels(Pixels,FReadSurfaceDataFlags(RCM_MinMax));
+        TArray<FColor> Display;
+        Display.Reserve(Pixels.Num());
+        for (const auto& P:Pixels) Display.Add(P.CopyWithNewOpacity(1.f).ToFColor(true));
+        if (Display.Num()==Size*Size)
+        {
+            TArray64<uint8> PNG; FImageUtils::PNGCompressImageArray(Size,Size,Display,PNG);
+            FFileHelper::SaveArrayToFile(PNG,*(CaptureDir/Name));
+        }
+        return Pixels;
+    };
+    Preferences.Mode->Set(0,ECVF_SetByCode); Budget.Set(0); F.Lights->RefreshLights(.1f);
+    const auto Ambient=CaptureFrame(TEXT("Ambient.png"));
+    Preferences.Mode->Set(2,ECVF_SetByCode); Budget.Set(8); F.Lights->RefreshLights(.1f);
+    const auto Shadow=CaptureFrame(TEXT("Shadow.png"));
+    // Same room, exposure, scenery and fixtures. Only disable the shadow maps
+    // for the control image; measure shadows cast by the real torch and room.
+    for (auto* Lamp:F.ActualLights()) Lamp->SetCastShadows(false);
+    const auto Lit=CaptureFrame(TEXT("Unshadowed.png"));
+    if (!TestTrue(TEXT("Dungeon scene captured three times"),Lit.Num()==Size*Size && Shadow.Num()==Lit.Num() && Ambient.Num()==Lit.Num())) return false;
+    int LitPixels=0, ShadowPixels=0;
+    for (int I=0; I<Lit.Num(); ++I)
+    {
+        if (Shadow[I].GetLuminance()-Ambient[I].GetLuminance()>.01f) ++LitPixels;
+        if (Lit[I].GetLuminance()-Shadow[I].GetLuminance()>.01f) ++ShadowPixels;
+    }
+    AddInfo(FString::Printf(TEXT("Dungeon 01430100: %d lit pixels, %d shadowed pixels"),LitPixels,ShadowPixels));
+    TestTrue(TEXT("Fixture illuminates visible dungeon surfaces"),LitPixels>200);
+    TestTrue(TEXT("Dungeon scenery casts visible shadows from the DAT fixtures"),ShadowPixels>100);
+    ACERuntimeOptions::Set(TEXT("UniformDungeonLighting"),1); ACERuntimeOptions::Apply();
+    F.Lights->RefreshLights(.1f);
+    TestEqual(TEXT("Uniform rooms release both local lights"),F.Lights->GetVisibleLightCount(),0);
+    const auto Uniform=CaptureFrame(TEXT("Uniform.png"));
+    ACERuntimeOptions::Set(TEXT("UniformDungeonLighting"),0); ACERuntimeOptions::Apply();
+    F.Lights->RefreshLights(.1f);
+    const auto Restored=CaptureFrame(TEXT("Restored.png"));
+    if (!TestTrue(TEXT("Both lighting modes render"),Uniform.Num()==Shadow.Num() && Restored.Num()==Shadow.Num())) return false;
+    int Brightened=0, RestoredPixels=0;
+    for (int I=0; I<Shadow.Num(); ++I)
+    {
+        Brightened += Uniform[I].GetLuminance()>Shadow[I].GetLuminance()+.02f;
+        RestoredPixels += Restored[I].Equals(Shadow[I],.005f);
+    }
+    TestTrue(TEXT("Uniform mode brightens shadowed surfaces in the loaded dungeon"),Brightened>200);
+    TestTrue(TEXT("Disabling uniform restores the same shadowed room"),RestoredPixels>Shadow.Num()*.99);
+    const FVector IntoRoom=(FVector(0,-2000,0)-Mount).GetSafeNormal2D();
+    const FVector BacklitEye=Mount+IntoRoom*100.-FVector(0,0,70);
+    const FVector FloorAhead=Mount+IntoRoom*230.-FVector(0,0,209);
+    Capture->SetWorldLocationAndRotation(BacklitEye,(FloorAhead-BacklitEye).Rotation());
+    TestTrue(TEXT("Test torch mount is behind the camera"),FVector::DotProduct(Mount-BacklitEye,Capture->GetForwardVector())<0.);
+    for (auto* Lamp:F.ActualLights()) Lamp->SetVisibility(Lamp->GetComponentLocation().Equals(Mount));
+    const auto Backlit=CaptureFrame(TEXT("OffscreenTorch.png"));
+    Preferences.Mode->Set(0,ECVF_SetByCode); Budget.Set(0); F.Lights->RefreshLights(.1f);
+    const auto Control=CaptureFrame(TEXT("OffscreenTorchOff.png"));
+    int32 BacklitPixels=0;
+    if (!TestTrue(TEXT("Backlit floor captured"),Backlit.Num()==Size*Size && Backlit.Num()==Control.Num())) return false;
+    for (int I=0; I<Control.Num(); ++I) BacklitPixels+=Backlit[I].GetLuminance()-Control[I].GetLuminance()>.01f;
+    TestTrue(TEXT("Offscreen torch still illuminates visible floor"),BacklitPixels>100);
+    Room->Destroy(); F.Lights->RefreshLights(.1f);
+    TestEqual(TEXT("Unloading the room releases its fixtures"),F.Lights->GetVisibleLightCount(),0);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEDungeonHeadingLightTest, "ACE.Rendering.DungeonTorchHeading",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FACEDungeonHeadingLightTest::RunTest(const FString&)
+{
+    using namespace ACECrowdLightingTests;
+    FDungeonPreferences Preferences;
+    FBudgetScope Budget;
+    FWorld F;
+    auto* GI=NewObject<UGameInstance>(GEngine);
+    GEngine->GetWorldContextFromWorldChecked(F.World).OwningGameInstance=GI;
+    F.World->SetGameInstance(GI); GI->OnWorldChanged(nullptr,F.World); GI->Init();
+    ON_SCOPE_EXIT { GI->Shutdown(); };
+    auto* Dat=GI->GetSubsystem<UACEDatSubsystem>();
+    FString Directory=TEXT("C:/Turbine/Asheron's Call");
+    FParse::Value(FCommandLine::Get(),TEXT("RetailDatDir="),Directory);
+    if (!TestTrue(TEXT("Dungeon DAT opens"),Dat->LoadDatDirectory(Directory))) return false;
+    FACEPosition Pose;
+    Pose.CellId=0x01D9010B; Pose.Location=FVector(31.136580,-26.668570,.006);
+    GI->GetSubsystem<UACEClientSubsystem>()->GetSession()->SetLocalPosition(Pose);
+    const auto* Cell=Dat->GetOrBuildEnvCellMesh(Pose.CellId,100);
+    if (!TestNotNull(TEXT("Reported dungeon cell decoded"),Cell)) return false;
+    const auto Neighbors=Cell->VisibleCells;
+    TArray<AACEEnvCellActor*> Rooms;
+    for (uint16 Id : Neighbors)
+    {
+        const uint32 FullId=(uint32(Pose.CellId)&0xffff0000u)|Id;
+        const auto* Neighbor=Dat->GetOrBuildEnvCellMesh(FullId,100);
+        if (!Neighbor || Neighbor->PointLights.IsEmpty()) continue;
+        auto* Room=F.World->SpawnActor<AACEEnvCellActor>();
+        if (!TestTrue(TEXT("Adjacent torch room streamed"),Room->LoadEnvCell(FullId,FVector::ZeroVector,100))) return false;
+        Rooms.Add(Room);
+    }
+    auto* Pawn=F.World->SpawnActor<APawn>();
+    auto* Root=NewObject<USceneComponent>(Pawn);
+    Pawn->SetRootComponent(Root); Root->RegisterComponent();
+    Pawn->SetActorLocation(FACEPosition::AceVectorToUnreal(Pose.Location,100));
+    F.PC->Possess(Pawn); F.PC->SetViewTarget(F.View);
+    Budget.Distance->Set(1900.f,ECVF_SetByCode);
+    for (const int32 Mode : {0,2})
+    {
+        Preferences.Mode->Set(Mode,ECVF_SetByCode);
+        Budget.Set(2);
+        TMap<FVector,TPair<float,bool>> InitialLights;
+        for (int32 Angle=0; Angle<=360; Angle+=30)
+        {
+            const FRotator Heading(0,Angle,0);
+            Pawn->SetActorRotation(Heading);
+            F.SetView(Pawn->GetActorLocation()-Heading.Vector()*500.+FVector(0,0,200));
+            for (int32 I=0; I<Rooms.Num(); ++I) Rooms[I]->SetEnvCellHiddenInGame((Angle/30+I)%2==0);
+            F.Lights->RefreshLights(.1f);
+            const auto Lamps=F.ActualLights();
+            if (Angle==0)
+            {
+                if (!TestTrue(TEXT("Nearby fixtures receive light slots"),Lamps.Num()>=2)) return false;
+                if (Mode==2) TestTrue(TEXT("All eleven authored fixtures bypass the effect cap and distance limit"),Lamps.Num()==11);
+                for (auto* Lamp:Lamps) InitialLights.Add(Lamp->GetComponentLocation(),{Lamp->Intensity,bool(Lamp->CastShadows)});
+            }
+            if (!TestEqual(TEXT("Torch count stays stable while turning"),Lamps.Num(),InitialLights.Num())) return false;
+            for (auto* Lamp:Lamps)
+            {
+                const auto* Previous=InitialLights.Find(Lamp->GetComponentLocation());
+                if (!TestTrue(TEXT("Same torch keeps its intensity and shadow assignment"),
+                    Previous && FMath::IsNearlyEqual(Previous->Key,Lamp->Intensity) && Previous->Value==bool(Lamp->CastShadows))) return false;
+            }
+        }
+    }
+    auto* ShadowQuality=IConsoleManager::Get().FindConsoleVariable(TEXT("sg.ShadowQuality"));
+    const int32 PreviousShadowQuality=ShadowQuality->GetInt();
+    ON_SCOPE_EXIT { ShadowQuality->SetWithCurrentPriority(PreviousShadowQuality); };
+    Preferences.Mode->Set(-1,ECVF_SetByCode);
+    Budget.Set(0); // The transient FX count is independent of full desktop fixtures.
+    for (const int32 Quality : {1,2,3,4})
+    {
+        ShadowQuality->SetWithCurrentPriority(Quality);
+        F.Lights->RefreshLights(.1f);
+        const auto Lamps=F.ActualLights();
+        TestEqual(TEXT("Shadow quality preserves every fixture"),Lamps.Num(),11);
+        int32 ShadowCount=0;
+        for (const auto* Lamp:Lamps) ShadowCount+=bool(Lamp->CastShadows);
+        TestEqual(TEXT("Only shadow count scales with shadow quality"),ShadowCount,Quality>=3 ? 11 : 2);
+    }
+    // Model a camera-visible room outside the occupied cell's visibility list.
+    const auto* ExtraCell=Dat->GetOrBuildEnvCellMesh(0x015D0251,100);
+    if (!TestTrue(TEXT("Additional room contains fixtures"),ExtraCell && !ExtraCell->PointLights.IsEmpty())) return false;
+    const int32 ExtraLights=ExtraCell->PointLights.Num();
+    auto* Extra=F.World->SpawnActor<AACEEnvCellActor>();
+    if (!TestTrue(TEXT("Additional fixture room streamed"),Extra->LoadEnvCell(0x015D0251,FVector::ZeroVector,100))) return false;
+    for (bool bHidden : {true,false,true})
+    {
+        Extra->SetEnvCellHiddenInGame(bHidden);
+        F.Lights->RefreshLights(.1f);
+        TestEqual(TEXT("Camera-visible room supplies lights beyond player visibility list"),
+            F.ActualLights().Num(),11+(bHidden ? 0 : ExtraLights));
+    }
+    Extra->Destroy();
+    // Keep the camera fixed and walk between two real torch mounts.
+    Preferences.Mode->Set(0,ECVF_SetByCode);
+    Budget.Set(1);
+    const auto* TorchRoom=Dat->FindEnvCellMesh(0x01D90111,100);
+    if (!TestTrue(TEXT("Adjacent room has both wall torches"),TorchRoom && TorchRoom->PointLights.Num()==2)) return false;
+    for (const auto& Torch : TorchRoom->PointLights)
+    {
+        Pawn->SetActorLocation(Torch.BlockPosition-FVector(0,0,150));
+        F.Lights->RefreshLights(.1f);
+        const auto Lamps=F.ActualLights();
+        if (!TestTrue(TEXT("Walking shifts the budget to the closer torch"),
+            Lamps.Num()==1 && Lamps[0]->GetComponentLocation().Equals(Torch.BlockPosition,1.f))) return false;
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEDungeonLightPerformanceTest, "ACE.Performance.DungeonFixtureLighting",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::PerfFilter)
+bool FACEDungeonLightPerformanceTest::RunTest(const FString&)
+{
+    using namespace ACECrowdLightingTests;
+    if (!TestTrue(TEXT("GPU timestamps and a renderer available"),FApp::CanEverRender() && GSupportsTimestampRenderQueries)) return false;
+    AddInfo(FString::Printf(TEXT("DungeonBench adapter=%s shadowQuality=%d r.ShadowQuality=%d"),*GRHIAdapterName,
+        IConsoleManager::Get().FindConsoleVariable(TEXT("sg.ShadowQuality"))->GetInt(),
+        IConsoleManager::Get().FindConsoleVariable(TEXT("r.ShadowQuality"))->GetInt()));
+    FDungeonPreferences Preferences;
+    FBudgetScope Budget; Budget.Set(8);
+    FWorld F;
+    auto* GI=NewObject<UGameInstance>(GEngine);
+    GEngine->GetWorldContextFromWorldChecked(F.World).OwningGameInstance=GI;
+    F.World->SetGameInstance(GI); GI->OnWorldChanged(nullptr,F.World); GI->Init();
+    ON_SCOPE_EXIT { GI->Shutdown(); };
+    auto* Dat=GI->GetSubsystem<UACEDatSubsystem>();
+    FString Directory=TEXT("C:/Turbine/Asheron's Call");
+    FParse::Value(FCommandLine::Get(),TEXT("RetailDatDir="),Directory);
+    if (!Dat->LoadDatDirectory(Directory)) return false;
+    auto* Pawn=F.World->SpawnActor<APawn>();
+    auto* Root=NewObject<USceneComponent>(Pawn); Pawn->SetRootComponent(Root); Root->RegisterComponent();
+    F.PC->Possess(Pawn); F.PC->SetViewTarget(F.View);
+    auto* Target=NewObject<UTextureRenderTarget2D>(Pawn);
+    const FIntPoint Size=FParse::Param(FCommandLine::Get(),TEXT("DungeonBench1440p")) ? FIntPoint(2560,1440) : FIntPoint(1920,1080);
+    Target->InitCustomFormat(Size.X,Size.Y,PF_FloatRGBA,false);
+    auto* Capture=NewObject<USceneCaptureComponent2D>(Pawn);
+    Capture->TextureTarget=Target; Capture->FOVAngle=90; Capture->CaptureSource=SCS_SceneColorHDRNoAlpha;
+    Capture->bCaptureEveryFrame=false; Capture->bCaptureOnMovement=false; Capture->bAlwaysPersistRenderingState=true;
+    Capture->ShowFlags.SetEyeAdaptation(false); Capture->ShowFlags.SetFog(false);
+    Capture->RegisterComponent();
+    constexpr int32 Frames=24;
+    struct FTiming { FRenderQueryRHIRef Start, End; };
+    TArray<FTiming> Queries;
+    for (int32 I=0; I<Frames; ++I) Queries.Add({RHICreateRenderQuery(RQT_AbsoluteTime),RHICreateRenderQuery(RQT_AbsoluteTime)});
+    for (uint32 Id : {0x01D9010Bu,0x015D0251u})
+    {
+        FACEPosition Pose; Pose.CellId=Id;
+        Pose.Location=Id==0x01D9010B ? FVector(31.136580,-26.668570,.006) : FVector(20,-63,36.01);
+        GI->GetSubsystem<UACEClientSubsystem>()->GetSession()->SetLocalPosition(Pose);
+        const FVector Feet=FACEPosition::AceVectorToUnreal(Pose.Location,100);
+        Pawn->SetActorLocation(Feet);
+        const auto* Cell=Dat->GetOrBuildEnvCellMesh(Id,100);
+        if (!TestNotNull(TEXT("Benchmark room decoded"),Cell)) return false;
+        auto Cells=Cell->VisibleCells; Cells.AddUnique(uint16(Id));
+        TArray<AACEEnvCellActor*> Rooms;
+        for (uint16 Short : Cells)
+        {
+            const uint32 FullId=(Id&0xffff0000u)|Short;
+            const auto* Mesh=Dat->GetOrBuildEnvCellMesh(FullId,100);
+            if (!Mesh || Mesh->IsEmpty()) continue;
+            const auto Stabs=Mesh->StaticObjects;
+            auto* Room=F.World->SpawnActor<AACEEnvCellActor>();
+            if (!Room->LoadEnvCell(FullId,FVector::ZeroVector,100)) return false;
+            Room->SetEnvCellHiddenInGame(false);
+            for (const auto& Stab:Stabs)
+            {
+                Dat->GetOrBuildSetupMesh(Stab.Id,100,UACEDatSubsystem::ACEPlacementResting);
+                Room->TrySpawnOneStaticObject(Dat,Stab);
+            }
+            Rooms.Add(Room);
+        }
+        TArray<AACEWorldEntityActor*> Movers;
+        for (int32 I=0; I<2; ++I)
+        {
+            FACEWorldObject Mob; Mob.Guid=0x7100B000+I; Mob.ItemType=ACEItemType::Creature;
+            Mob.SetupId=0x02001A33; Mob.MotionTableId=0x0900000C; Mob.Position=Pose;
+            auto* Actor=F.World->SpawnActor<AACEWorldEntityActor>();
+            Actor->InitializeFromObject(Mob,100,true);
+            if (!TestTrue(TEXT("Moving shadow caster loaded"),Actor->Appearance->HasAppearance())) return false;
+            Actor->Appearance->SetPartsCastShadow(true);
+            Movers.Add(Actor);
+        }
+        if (GShaderCompilingManager) GShaderCompilingManager->FinishAllCompilation();
+        TArray<double> Gpu[3],Cpu[3]; int32 Counts[3]={}, InView[3]={}, Shadows[3]={};
+        TArray<FColor> Images[3];
+        for (int Mode : {0,1,2,1,2,0,2,0,1})
+        {
+            Preferences.Mode->Set(Mode,ECVF_SetByCode);
+            // Identical pan and geometry in each pass. Warm the shadow caches
+            // and PSOs before timestamping; rotate the order between passes.
+            for (int I=-8; I<Frames; ++I)
+            {
+                const float Pan=12.f*FMath::Sin(2.f*PI*FMath::Max(0,I)/Frames);
+                const FRotator Rotation(-8, (Id==0x01D9010B ? 103.5f : 90.f)+Pan,0);
+                const FVector Eye=Feet+FVector(0,0,165);
+                for (int J=0; J<Movers.Num(); ++J)
+                    Movers[J]->SetActorLocation(Feet+FVector((J ? 170. : -150.)+Pan*3.,260.+J*35.,0.));
+                F.View->SetActorRotation(Rotation); F.SetView(Eye);
+                Capture->SetWorldLocationAndRotation(Eye,Rotation);
+                const double Start=FPlatformTime::Seconds();
+                F.Lights->RefreshLights(1.f/60.f);
+                if (I>=0) Cpu[Mode].Add((FPlatformTime::Seconds()-Start)*1000.);
+                F.World->SendAllEndOfFrameUpdates();
+                if (I>=0)
+                {
+                    ENQUEUE_RENDER_COMMAND(BeginDungeonTiming)([Q=Queries[I].Start](FRHICommandListImmediate& Cmd){ Cmd.EndRenderQuery(Q); });
+                }
+                Capture->CaptureScene();
+                if (I>=0)
+                {
+                    ENQUEUE_RENDER_COMMAND(EndDungeonTiming)([Q=Queries[I].End](FRHICommandListImmediate& Cmd){ Cmd.EndRenderQuery(Q); });
+                }
+                if (I==-1) FlushRenderingCommands();
+            }
+            ENQUEUE_RENDER_COMMAND(ReadDungeonTimings)([&Queries,&Gpu,Mode](FRHICommandListImmediate& Cmd)
+            {
+                Cmd.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+                for (auto& Q:Queries)
+                {
+                    uint64 A=0,B=0;
+                    if (RHIGetRenderQueryResult(Q.Start,A,true) && RHIGetRenderQueryResult(Q.End,B,true) && B>A)
+                        Gpu[Mode].Add(double(B-A)/1000.);
+                }
+            });
+            FlushRenderingCommands();
+            FVector Camera; FConvexVolume Frustum;
+            if (!ACEOutdoorPortalPlan::TryGetPlayerViewFrustum(F.World,Camera,Frustum)) return false;
+            const auto Lamps=F.ActualLights(); Counts[Mode]=Lamps.Num(); InView[Mode]=0; Shadows[Mode]=0;
+            for (const auto* L:Lamps)
+            {
+                InView[Mode]+=Frustum.IntersectSphere(L->GetComponentLocation(),L->AttenuationRadius);
+                Shadows[Mode]+=bool(L->CastShadows);
+            }
+            if (Images[Mode].IsEmpty())
+            {
+                auto* Resource=Target->GameThread_GetRenderTargetResource();
+                if (!Resource->ReadPixels(Images[Mode],FReadSurfaceDataFlags(RCM_MinMax))) return false;
+                const FString Out=FPaths::ProjectSavedDir()/TEXT("Automation/DungeonLightBenchmark");
+                IFileManager::Get().MakeDirectory(*Out,true);
+                for (auto& Pixel:Images[Mode]) Pixel.A=255;
+                TArray64<uint8> Png;
+                FImageUtils::PNGCompressImageArray(Size.X,Size.Y,Images[Mode],Png);
+                FFileHelper::SaveArrayToFile(Png,*(Out/FString::Printf(TEXT("%08X-%dp-mode%d.png"),Id,Size.Y,Mode)));
+            }
+        }
+        for (int Mode=0; Mode<3; ++Mode)
+        {
+            Gpu[Mode].Sort(); Cpu[Mode].Sort();
+            if (!TestEqual(TEXT("All frames returned GPU timestamps"),Gpu[Mode].Num(),Frames*3)) return false;
+            const int P50=Frames*3/2, P95=FMath::CeilToInt(Frames*3*.95)-1;
+            AddInfo(FString::Printf(TEXT("DungeonBench cell=%08X mode=%d resolution=%dx%d frames=%d lights=%d frustum=%d shadows=%d gpu_ms_p50=%.3f gpu_ms_p95=%.3f light_cpu_ms_p50=%.4f light_cpu_ms_p95=%.4f"),
+                Id,Mode,Size.X,Size.Y,Gpu[Mode].Num(),Counts[Mode],InView[Mode],Shadows[Mode],Gpu[Mode][P50],Gpu[Mode][P95],Cpu[Mode][P50],Cpu[Mode][P95]));
+        }
+        TestTrue(TEXT("Uncapped benchmark actually exercises additional fixtures"),Counts[2]>Counts[0]);
+        int32 Drawn=0, Changed=0;
+        for (int32 I=0; I<Images[0].Num(); ++I)
+        {
+            const auto& A=Images[0][I]; const auto& B=Images[2][I];
+            Drawn+=FMath::Max3(B.R,B.G,B.B)>10;
+            Changed+=FMath::Max3(FMath::Abs(int32(A.R)-B.R),FMath::Abs(int32(A.G)-B.G),FMath::Abs(int32(A.B)-B.B))>5;
+        }
+        TestTrue(TEXT("Captured dungeon geometry fills the view"),Drawn>Size.X*Size.Y/10);
+        AddInfo(FString::Printf(TEXT("DungeonBench image cell=%08X drawn=%d changed=%d of %d pixels"),Id,Drawn,Changed,Images[0].Num()));
+        for (auto* Room:Rooms) Room->Destroy();
+        for (auto* Actor:Movers) Actor->Destroy();
+        F.Lights->RefreshLights(.1f);
+    }
+    return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACECrowdLightBudgetTest, "ACE.Rendering.CrowdEffectLighting.Budget",

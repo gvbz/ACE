@@ -1157,7 +1157,9 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 	const float Dayness = FMath::Clamp((DirBright - 0.20f) / 0.62f, 0.f, 1.f);
 	const float DirIntensity = FMath::Lerp(5.5f, 8.5f, Dayness);
 	const float SkyIntensityOut = FMath::Lerp(1.05f, 1.35f, Dayness);
-	const float SkyIntensity = SkyIntensityOut;
+	// Skylight diffuse is global and ignores the dungeon lighting channel.
+	// Keep the exterior sky for doorways that still present the landscape.
+	const float SkyIntensity = bIndoor && !Dat->IsBuildingInteriorFill() ? 0.f : SkyIntensityOut;
 	const float LandEmis = FMath::Lerp(0.14f, 0.09f, Dayness);
 	// Outdoor shells/plants are DefaultLit — keep emissive low so CSM shows on walls/foliage.
 	// EnvCells use authored static vertex lights and the retail world ambient separately.

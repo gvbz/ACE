@@ -1,4 +1,5 @@
 #include "ACEEnvCellActor.h"
+#include "ACEEffectLightSubsystem.h"
 #include "ACERuntimeOptions.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
@@ -306,11 +307,13 @@ void AACEEnvCellActor::SetSunCastShadow(bool bCast)
 	}
 	// The room also occludes its local entrance light when PView hides its draw.
 	const bool bDoorwayShadows = ACERuntimeOptions::DynamicLightingQuality() == 2 && !DoorwayLights.IsEmpty();
-	bCast = bCast || bDoorwayShadows;
+	const bool bLocalShadows = bDoorwayShadows || (EnvCellId && !bSeenOutside && !ACERuntimeOptions::UniformDungeonLighting() &&
+		GetWorld()->GetFeatureLevel() >= ERHIFeatureLevel::SM5 && ACERuntimeOptions::DynamicLightingQuality()==2);
+	bCast = bCast || bLocalShadows;
 	if (static_cast<bool>(CellMesh->CastShadow) != bCast || CellMesh->bCastDynamicShadow != bCast
-		|| CellMesh->bCastHiddenShadow != bDoorwayShadows)
+		|| CellMesh->bCastHiddenShadow != bLocalShadows)
 	{
-		CellMesh->bCastHiddenShadow = bDoorwayShadows;
+		CellMesh->bCastHiddenShadow = bLocalShadows;
 		CellMesh->SetCastShadow(bCast);
 		CellMesh->bCastDynamicShadow = bCast;
 		CellMesh->bCastShadowAsTwoSided = bCast;
@@ -601,6 +604,8 @@ void AACEEnvCellActor::Destroyed()
 
 void AACEEnvCellActor::ClearDoorwayLights()
 {
+	if (auto* Pool=GetWorld() ? GetWorld()->GetSubsystem<UACEEffectLightSubsystem>() : nullptr)
+		Pool->RemoveSource(GetRootComponent());
 	DoorwayLights.Reset();
 	if (IsValid(DoorwayLightActor)) DoorwayLightActor->Destroy();
 	DoorwayLightActor = nullptr;
@@ -640,6 +645,21 @@ void AACEEnvCellActor::ClearStaticObjects()
 	SetActorTickEnabled(false);
 }
 
+void AACEEnvCellActor::ConfigureSceneryLighting(UMeshComponent* Part,UACEDatSubsystem* Dat) const
+{
+	if (!Part || !Part->bRenderInMainPass) return;
+	for (int32 I=0; I<Part->GetNumMaterials(); ++I)
+	{
+		auto* Source=Part->GetMaterial(I);
+		Part->SetMaterial(I,bSeenOutside ? Dat->GetUniformInteriorMaterial(Source) : Dat->GetDungeonObjectMaterial(Source));
+	}
+	Part->SetLightingChannels(bSeenOutside,!bSeenOutside,false);
+	Part->bCastDynamicShadow=!bSeenOutside;
+	// Portal culling can hide this prop while its shadow still falls into the next room.
+	if (!bSeenOutside && Part->IsVisible()) Part->SetCastHiddenShadow(true);
+	Part->SetCastShadow(!bSeenOutside);
+}
+
 UInstancedStaticMeshComponent* AACEEnvCellActor::GetOrCreateStaticHism(
 	UACEDatSubsystem* Dat, uint32 SetupId)
 {
@@ -666,8 +686,7 @@ UInstancedStaticMeshComponent* AACEEnvCellActor::GetOrCreateStaticHism(
 	Hism->SetMobility(EComponentMobility::Movable);
 	Dat->BindSetupStaticMeshMaterials(
 		Hism, SetupId, WorldScale, /*bEnableCollision*/ true, UACEDatSubsystem::ACEPlacementResting);
-	for (int32 I = 0; I < Hism->GetNumMaterials(); ++I)
-		Hism->SetMaterial(I, Dat->GetUniformInteriorMaterial(Hism->GetMaterial(I)));
+	ConfigureSceneryLighting(Hism,Dat);
 	Hism->bNeverDistanceCull = true;
 	Hism->SetCullDistances(0.f, 0.f);
 	Hism->LDMaxDrawDistance = 0.f;
@@ -687,7 +706,6 @@ UInstancedStaticMeshComponent* AACEEnvCellActor::GetOrCreateStaticHism(
 	Hism->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	Hism->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 	Hism->CanCharacterStepUpOn = ECB_No;
-	Hism->SetCastShadow(false);
 	Hism->RegisterComponent();
 	StaticObjectHisms.Add(SetupId, Hism);
 	return Hism;
@@ -766,8 +784,7 @@ bool AACEEnvCellActor::TrySpawnOneStaticObject(UACEDatSubsystem* Dat, const FACE
 		Scenery->SetActorEnableCollision(bAppliedCollisionActive);
 		TArray<UProceduralMeshComponent*> Parts;
 		Scenery->GetComponents(Parts);
-		for (auto* Part : Parts) for (int32 I = 0; I < Part->GetNumMaterials(); ++I)
-			Part->SetMaterial(I, Dat->GetUniformInteriorMaterial(Part->GetMaterial(I)));
+		for (auto* Part : Parts) ConfigureSceneryLighting(Part,Dat);
 		AnimatedStabs.Add(Scenery);
 		return true;
 	}
@@ -808,8 +825,7 @@ bool AACEEnvCellActor::TrySpawnOneStaticObject(UACEDatSubsystem* Dat, const FACE
 		Proc->DestroyComponent();
 		return true;
 	}
-	for (int32 I = 0; I < Proc->GetNumMaterials(); ++I)
-		Proc->SetMaterial(I, Dat->GetUniformInteriorMaterial(Proc->GetMaterial(I)));
+	ConfigureSceneryLighting(Proc,Dat);
 	Proc->bUseComplexAsSimpleCollision = true;
 	Proc->CanCharacterStepUpOn = ECB_No;
 	Proc->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
@@ -945,7 +961,7 @@ bool AACEEnvCellActor::LoadEnvCell(int32 InEnvCellId, const FVector& LandblockOr
 			/*bCreateCollision*/ false);
 		SectionIsCeiling.Add(bCeilingBucket);
 		++SectionIndex;
-		UMaterialInterface* SecMat = Dat->GetOrCreateEnvCellMaterial(Sec.SurfaceId, Sec.bWrapTexture);
+		UMaterialInterface* SecMat = Dat->GetOrCreateEnvCellMaterial(Sec.SurfaceId, Sec.bWrapTexture, !Mesh.CanSeeOutside());
 		if (SecMat)
 		{
 			++MidCount;
@@ -1046,6 +1062,23 @@ bool AACEEnvCellActor::LoadEnvCell(int32 InEnvCellId, const FVector& LandblockOr
 	bSeenOutside = Mesh.CanSeeOutside();
 	bHasOutsidePortal = Mesh.HasOutsidePortal();
 	ClearDoorwayLights();
+	if (!bSeenOutside)
+	{
+		if (auto* Pool=GetWorld()->GetSubsystem<UACEEffectLightSubsystem>())
+		{
+			TArray<FACEEffectLightRequest> Fixtures;
+			Fixtures.Reserve(Mesh.PointLights.Num());
+			for (const auto& Point : Mesh.PointLights)
+			{
+				auto& Light = Fixtures.AddDefaulted_GetRef();
+				Light.Position = Point.BlockPosition;
+				Light.Color = Point.Color;
+				Light.Intensity = Point.Intensity;
+				Light.Radius = Point.Radius;
+			}
+			Pool->SetCellLights(GetRootComponent(),MoveTemp(Fixtures));
+		}
+	}
 	TArray<FLinearColor> DoorCenters, DoorNormals;
 	// Light starts inside the aperture. Closed door meshes and the room walls
 	// occlude it; a light outside the door illuminates the street even when shut.

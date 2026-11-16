@@ -243,6 +243,14 @@ namespace ACEEnvCellTileCache
 				WritePod(Buf, S.Orientation.W);
 			}
 
+			WritePod(Buf, static_cast<uint32>(Mesh.PointLights.Num()));
+			for (const auto& Light : Mesh.PointLights)
+			{
+				WriteF32Vec3(Buf, Light.BlockPosition);
+				WriteLinearColor(Buf, Light.Color);
+				WritePod(Buf, Light.Intensity);
+				WritePod(Buf, Light.Radius);
+			}
 			WritePod(Buf, static_cast<uint32>(Mesh.VisibleCells.Num()));
 			for (uint16 V : Mesh.VisibleCells)
 			{
@@ -349,6 +357,13 @@ namespace ACEEnvCellTileCache
 			{
 				return false;
 			}
+			Out.PointLights.SetNum(static_cast<int32>(Count));
+			for (auto& Light : Out.PointLights)
+			{
+				if (!ReadF32Vec3(Ar, Light.BlockPosition) || !ReadLinearColor(Ar, Light.Color)
+					|| !ReadPod(Ar, Light.Intensity) || !ReadPod(Ar, Light.Radius)) return false;
+			}
+			if (!ReadPod(Ar, Count) || Count > 10000u) return false;
 			Out.VisibleCells.SetNum(static_cast<int32>(Count));
 			for (uint16& V : Out.VisibleCells)
 			{

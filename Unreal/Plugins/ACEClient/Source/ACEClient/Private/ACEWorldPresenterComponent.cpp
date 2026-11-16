@@ -224,6 +224,10 @@ void UACEWorldPresenterComponent::RefreshCellVisibility()
 			bVisible = Terrain->IsWorldObjectVisible(Occupant->GetLastAceCellId(), Bounds);
 		}
 		Actor->SetCellVisible(bVisible);
+		// Static occupants can arrive before their room mesh. Recheck lighting on
+		// admission, including held items whose own position has no cell.
+		if (bVisible && Actor->Appearance)
+			Actor->Appearance->UpdateCellLighting(bSelfAttachment ? Client->GetPlayerPosition().CellId : Occupant->GetLastAceCellId());
 		// Camera/portal culling only controls presentation. A radar or fellowship
 		// selection must survive turning away from the target's room.
 	}

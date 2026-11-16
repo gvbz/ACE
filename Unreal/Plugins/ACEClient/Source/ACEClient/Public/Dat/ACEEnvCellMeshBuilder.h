@@ -7,6 +7,14 @@
 #include "Dat/ACEDatTextureResolver.h"
 #include "Dat/ACESetupMeshBuilder.h" // FACEBuiltMeshSection
 
+struct FACEEnvCellPointLight
+{
+	FVector BlockPosition;
+	FLinearColor Color;
+	float Intensity;
+	float Radius;
+};
+
 	/**
 	 * Built indoor EnvCell — per-surface drawing sections in cell-local space, plus the cell's own
 	 * placement Frame (within its owning landblock) and the pass-through data the presenter needs
@@ -25,6 +33,8 @@ struct FACEBuiltEnvCellMesh
 	/** Physics-polygon collision mesh (cell-local). Prefer this over drawing sections for blocking. */
 	TArray<FACEBuiltMeshSection> CollisionSections;
 	TArray<FACEDatStab> StaticObjects;
+	/** Lights owned by this cell. Position and radius are in Unreal units. */
+	TArray<FACEEnvCellPointLight> PointLights;
 	TArray<uint16> VisibleCells;
 	TArray<FACEDatCellPortal> CellPortals;
 	/**

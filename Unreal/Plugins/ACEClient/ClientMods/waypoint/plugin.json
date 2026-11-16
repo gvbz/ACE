@@ -1,1 +1,1 @@
-{"api":1,"id":"waypoint","short_name":"NAV","name":"Waypoint","version":"0.1.0","description":"Clickable chat coordinates, a movable navigation arrow, and interactive world and dungeon maps. No automated movement.","permissions":[]}
+{"api":1,"id":"waypoint","short_name":"NAV","name":"Waypoint","version":"0.2.0","description":"Search imported GoArrow locations, plan portal routes, and navigate with a floating arrow and interactive maps.","permissions":[]}

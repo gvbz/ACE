@@ -1,8 +1,37 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #include "Mods/ACEWaypoint.h"
+#include "Mods/ACEWaypointAtlas.h"
 #include "UI/ACERetailTextBlock.h"
 #include "Serialization/JsonSerializer.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEWaypointAtlasRouteTest,"ACE.Plugins.Waypoint.AtlasRoutes",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FACEWaypointAtlasRouteTest::RunTest(const FString&)
+{
+    const auto& Regions=ACEWaypointAtlas::MapRegions();
+    if(!TestTrue(TEXT("Bundled GoArrow region boundaries loaded"),!Regions.IsEmpty()))return false;
+    FACEWaypointLandmark Goal{{52,84},TEXT("Dark Isle"),TEXT("Town")};
+    auto Route=[&](FVector2D From,const TArray<FACEWaypointLandmark>& Links)
+    {return ACEWaypointAtlas::FindRoute(From,Goal,Links,Regions,[]{return false;});};
+    const FVector2D Mainland(52,82);
+    TestTrue(TEXT("A short walk cannot cross the sea"),Route(Mainland,{}).IsEmpty());
+    FACEWaypointLandmark Link{Mainland,TEXT("Ferry"),TEXT("NPC"),Goal.Coordinates};
+    auto Steps=Route(Mainland,{Link});
+    TestEqual(TEXT("Non-portal transports with exits can reach an island"),Steps.Num(),2);
+    Goal.Coordinates=Mainland;
+    TestTrue(TEXT("An atlas exit cannot be taken in reverse"),Route({52,84},{Link}).IsEmpty());
+    Goal.Coordinates={52,81};
+    TestEqual(TEXT("Nearby mainland destination uses a single walking leg"),Route(Mainland,{Link}).Num(),1);
+    Goal.Coordinates={60,0};
+    const TArray<FACEWaypointLandmark> Chain={{{1,0},TEXT("First"),TEXT("Portal"),FVector2D(25,0)},
+        {{26,0},TEXT("Second"),TEXT("Portal"),FVector2D(59,0)}};
+    Steps=Route({0,0},Chain);
+    TestTrue(TEXT("Planner minimizes walking distance over multiple portals"),
+        Steps.Num()==3 && Steps[0].Name==TEXT("First") && Steps[1].Name==TEXT("Second") && Steps[2].Name==Goal.Name);
+    TestTrue(TEXT("Canceled routes never return partial directions"),ACEWaypointAtlas::FindRoute({0,0},Goal,Chain,Regions,[]{return true;}).IsEmpty());
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEWaypointRouteTest,"ACE.Plugins.Waypoint.Route",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)

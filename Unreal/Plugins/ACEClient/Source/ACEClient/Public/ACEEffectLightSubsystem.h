@@ -6,6 +6,7 @@
 
 class UActorComponent;
 class UPointLightComponent;
+struct FACEBuiltEnvCellMesh;
 
 /** A scene-light hint. Particle materials and simulation remain owned by their source. */
 struct FACEEffectLightRequest
@@ -33,6 +34,8 @@ public:
 	void RemoveEmitter(UActorComponent* Source, uint32 EmitterId);
 	void RemoveSource(UActorComponent* Source);
 	void SetScriptLight(UActorComponent* Source, bool bEnabled, const FACEEffectLightRequest& Request);
+	/** DAT fixture positions are in the owning room actor's landblock-local UE frame. */
+	void SetCellLights(UActorComponent* Source, TArray<FACEEffectLightRequest> Fixtures);
 	bool IsParticleSelected(const UActorComponent* Source, uint32 EmitterId) const;
 	void UpdateParticlePosition(UActorComponent* Source, uint32 EmitterId, const FVector& Position);
 	UPointLightComponent* FindParticleLight(const UActorComponent* Source, uint32 EmitterId) const;
@@ -46,6 +49,7 @@ private:
 	struct FSourceState
 	{
 		TArray<FACEEffectLightRequest> Particles;
+		TArray<FACEEffectLightRequest> Fixtures;
 		FACEEffectLightRequest Script;
 		double SubmittedAt = 0;
 		uint64 Order = 0;
@@ -57,9 +61,10 @@ private:
 		TWeakObjectPtr<UActorComponent> Source;
 		uint32 EmitterId = 0;
 		bool bScript = false;
+		bool bFixture = false;
 		bool operator==(const FLightKey& Other) const
 		{
-			return Source == Other.Source && EmitterId == Other.EmitterId && bScript == Other.bScript;
+			return Source == Other.Source && EmitterId == Other.EmitterId && bScript == Other.bScript && bFixture == Other.bFixture;
 		}
 	};
 	struct FChoice
@@ -72,13 +77,13 @@ private:
 	};
 
 	FSourceState& FindOrAddSource(UActorComponent* Source);
-	bool IsSourceUsable(UActorComponent* Source) const;
+	bool IsSourceUsable(UActorComponent* Source, const FACEBuiltEnvCellMesh* PlayerCell) const;
 	bool IsPortalOccluded(const FChoice& Choice) const;
 	const FACEEffectLightRequest* FindRequest(const FLightKey& Key) const;
 	void ReleaseSlot(int32 Index);
 	void ReleaseSourceSlots(UActorComponent* Source, bool bParticles, bool bScript, const uint32* EmitterId = nullptr);
-	void SelectLights(int32 Budget, const FVector* ViewPosition, float MaxDistance);
-	void UpdateSelectedLights(const FVector* ViewPosition, float MaxDistance);
+	void SelectLights(int32 Budget, const FVector* ViewPosition, float MaxDistance, const FACEBuiltEnvCellMesh* PlayerCell);
+	void UpdateSelectedLights(const FVector* ViewPosition, float MaxDistance, const FACEBuiltEnvCellMesh* PlayerCell);
 	UPointLightComponent* CreatePoolLight();
 	void OnWorldPostActorTick(UWorld* World, ELevelTick TickType, float DeltaSeconds);
 
@@ -90,6 +95,7 @@ private:
 	double NextSelectionAt = 0;
 	uint64 NextSourceOrder = 1;
 	int32 LastBudget = -1;
+	int32 LastFixtureMode = -1;
 	float LastMaxDistance = -1.f;
 	bool bSelectionDirty = true;
 };

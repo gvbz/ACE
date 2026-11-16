@@ -23,6 +23,8 @@ class ACECLIENT_API AACEEnvCellActor : public AActor
 	friend class FACEBridgeEntryCollisionTest;
 	friend class FACERetailRuntimeRegressionTest;
 	friend class FACEStaticCellVisibilityTest;
+	friend class FACEDungeonFixtureLightTest;
+	friend class FACEDungeonLightPerformanceTest;
 
 public:
 	AACEEnvCellActor();
@@ -112,7 +114,7 @@ public:
 	/** Stabs can occupy a visible neighboring room even when their origin cell is hidden. */
 	void RefreshStaticVisibility(TFunctionRef<bool(const FBox&)> IsVisible);
 
-	/** Outdoor StabList peeks (Yaraq shop facades) cast into CSM. Indoor/dungeon cells stay off. */
+	/** Combine the requested sun shadows with local light occlusion for this room. */
 	void SetSunCastShadow(bool bCast);
 	void RefreshLightingOptions();
 	/** Outdoor look-in: EnvCell PDO stays 0 (UE clamps negative). Land PDO recedes LScape. */
@@ -145,6 +147,7 @@ protected:
 
 	void ClearStaticObjects();
 	void ClearDoorwayLights();
+	void ConfigureSceneryLighting(class UMeshComponent* Part, UACEDatSubsystem* Dat) const;
 	void QueueStaticObjects(const TArray<FACEDatStab>& StaticObjects, UACEDatSubsystem* Dat);
 	bool TrySpawnOneStaticObject(UACEDatSubsystem* Dat, const FACEDatStab& Stab);
 	UInstancedStaticMeshComponent* GetOrCreateStaticHism(UACEDatSubsystem* Dat, uint32 SetupId);

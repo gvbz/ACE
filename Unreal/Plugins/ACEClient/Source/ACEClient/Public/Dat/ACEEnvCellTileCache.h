@@ -6,7 +6,7 @@
 /** On-disk EnvCell draw/collision tiles (streamed indoors). */
 namespace ACEEnvCellTileCache
 {
-	static constexpr uint32 SchemaVersion = 16u; // Preserve each draw section's retail Clamp/Wrap addressing
+	static constexpr uint32 SchemaVersion = 17u; // Include the placed DAT light points owned by this cell
 	static constexpr uint32 Magic = 0x43454341u; // 'ACEC'
 
 	FString MakeCacheFilePath(uint32 EnvCellId, float WorldScale, uint64 DatFingerprint);

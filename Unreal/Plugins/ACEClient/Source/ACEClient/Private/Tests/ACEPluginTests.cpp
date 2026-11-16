@@ -31,6 +31,9 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Views/SListView.h"
+#include "Mods/ACEWaypointAtlas.h"
 #include "Widgets/Text/STextBlock.h"
 #include "ImageUtils.h"
 #include "RenderingThread.h"
@@ -41,6 +44,18 @@ namespace
 {
     TSharedPtr<FJsonObject> Json(const TCHAR* Text)
     { TSharedPtr<FJsonObject> O; FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), O); return O; }
+    TSharedPtr<SWidget> FindControl(TSharedRef<SWidget> W,FName Name)
+    {
+        if(W->GetTag()==Name||W->GetType()==Name)return W;
+        if(W->GetType()==TEXT("SACEPluginButton"))
+        {
+            const auto Content=StaticCastSharedRef<SButton>(W)->GetContent();
+            if(Content->GetType()==TEXT("SACEPluginText") && StaticCastSharedRef<STextBlock>(Content)->GetText().ToString()==Name.ToString())return W;
+        }
+        auto Children=W->GetChildren();
+        for(int32 I=0;I<Children->Num();++I)if(auto Found=FindControl(Children->GetChildAt(I),Name))return Found;
+        return nullptr;
+    }
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEPluginVMTest,"ACE.Plugins.Runtime",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
@@ -379,28 +394,107 @@ bool FACEPluginHostTest::RunTest(const FString&)
     const FString SavedCharacterProfile=H->UCMSectionName(TEXT("Character"));
     H->Discover();P=H->Find(TEXT("ucm"));
     TestTrue(TEXT("Waypoint discovered and ready without automation"),H->IsWaypointEnabled());
+    {
+        FVector2D IdleDestination;uint32 IdleDungeon=0;
+        TestFalse(TEXT("Idle arrow fixture has no navigation destination"),H->GetWaypoint(IdleDestination,IdleDungeon));
+        const FString WaypointId=TEXT("waypoint"),ArrowId=TEXT("waypoint.arrow");
+        const FString OriginalProfile=H->ProfileJson(WaypointId);
+        const auto LegacyProfile=Json(*OriginalProfile);
+        LegacyProfile->SetBoolField(TEXT("arrow"),false);
+        H->SaveProfileData(WaypointId,TEXT("Legacy"),LegacyProfile,false);
+        H->Discover();
+        TestFalse(TEXT("Upgrading preserves a legacy profile's hidden idle arrow"),H->ShouldShowWaypointArrow());
+        TestTrue(TEXT("Save another Waypoint profile with its original visible default"),H->SaveProfile(WaypointId,TEXT("Default"),OriginalProfile,false));
+        auto Panel=H->MakeWaypointPanel();
+        auto Preview=FindControl(Panel,TEXT("SWaypointArrow"));
+        auto Checkbox=StaticCastSharedPtr<SCheckBox>(FindControl(Panel,TEXT("Waypoint.ShowFloatingArrow")));
+        if(!TestTrue(TEXT("Found the arrow checkbox and coordinate preview in Waypoint settings"),Checkbox&&Preview))return false;
+        Panel->SlatePrepass(1.f);
+        TestTrue(TEXT("Reopening Waypoint settings with no destination hides the coordinate preview"),Preview->GetVisibility()==EVisibility::Collapsed);
+        TestTrue(TEXT("Hidden state is reflected by the checkbox"),Checkbox->GetCheckedState()==ECheckBoxState::Unchecked);
+        Checkbox->ToggleCheckedState();Panel->SlatePrepass(1.f);
+        auto IdleDock=SNew(SACEPluginDesktop).Host(H);
+        TestTrue(TEXT("Explicitly showing the idle arrow enables both preview and HUD"),Preview->GetVisibility().IsVisible()&&IdleDock->IsOpen(ArrowId));
+        Checkbox->ToggleCheckedState();Panel->SlatePrepass(1.f);IdleDock->Refresh();
+        TestTrue(TEXT("Unchecking the idle arrow hides the settings preview and HUD"),Preview->GetVisibility()==EVisibility::Collapsed&&!IdleDock->IsOpen(ArrowId));
+        IdleDock->Toggle(ArrowId);IdleDock->Refresh();
+        TestFalse(TEXT("Generic window toggle cannot reopen a disabled idle arrow"),IdleDock->IsOpen(ArrowId));
+        Checkbox->ToggleCheckedState();IdleDock->Refresh();IdleDock->Toggle(ArrowId);IdleDock->Refresh();
+        TestFalse(TEXT("Closing an enabled idle arrow persists through dock refresh"),H->WaypointOption(TEXT("arrow"))||IdleDock->IsOpen(ArrowId));
+        H->SetEnabled(WaypointId,false);H->SetEnabled(WaypointId,true);
+        H->LoadProfile(WaypointId,TEXT("Default"));H->Discover();P=H->Find(TEXT("ucm"));
+        auto LoginDock=SNew(SACEPluginDesktop).Host(H);
+        TestFalse(TEXT("Plugin restart, profile reload and HUD recreation preserve the idle opt-out"),H->ShouldShowWaypointArrow()||LoginDock->IsOpen(ArrowId));
+    }
     TestTrue(TEXT("Chat/manual waypoint accepted"),H->SetWaypoint(TEXT("42.0N, 33.6E")));
     H->SetWaypointOption(TEXT("distance"),false);
     H->SavePluginWindowPosition(TEXT("waypoint.arrow"),FVector2D(350,20));
     H->Discover();P=H->Find(TEXT("ucm"));FVector2D Destination;uint32 Dungeon=0;
     TestTrue(TEXT("Waypoint destination survives reload"),H->GetWaypoint(Destination,Dungeon));
     TestEqual(TEXT("Destination preserved"),Destination,FVector2D(33.6,42));
+    TestFalse(TEXT("Navigating and reloading preserve a hidden arrow"),H->WaypointOption(TEXT("arrow")));
     TestFalse(TEXT("Distance preference persists"),H->WaypointOption(TEXT("distance")));
     TestEqual(TEXT("Arrow position persists"),H->GetPluginWindowPosition(TEXT("waypoint.arrow"),FVector2D::ZeroVector),FVector2D(350,20));
     H->SetEnabled(TEXT("waypoint"),false);H->SetWaypoint(FVector2D(1,2));H->GetWaypoint(Destination,Dungeon);
     TestEqual(TEXT("Disabled plugin cannot navigate"),Destination,FVector2D(33.6,42));H->SetEnabled(TEXT("waypoint"),true);
-    const FString Atlas=Root/TEXT("atlas.xml");
-    FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Test portal\" type=\"Portal\" NS=\"42.0\" EW=\"33.6\" /></locations>"),*Atlas);
-    TestTrue(TEXT("GoArrow atlas imports without a DLL"),H->ImportWaypointLocations(Atlas));
-    TestEqual(TEXT("Imported location count"),H->GetWaypointLocations().Num(),1);
+    const FString Atlas=Root/TEXT("locations with spaces.xml");
+    FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Test portal\" type=\"Portal\" NS=\"0\" EW=\"1\" exitNS=\"0\" exitEW=\"55\"/>")
+        TEXT("<loc name=\"Test village\" type=\"Town\" NS=\"0\" EW=\"56\"/><loc name=\"Closed gate\" type=\"Portal\" NS=\"0\" EW=\"0\" exitNS=\"0\" exitEW=\"56\" use=\"False\"/></locations>"),*Atlas);
+    {
+        auto Panel=H->MakeWaypointPanel();
+        auto Click=[&](const TCHAR* Name)
+        {
+            auto B=StaticCastSharedPtr<SButton>(FindControl(Panel,Name));
+            if(TestTrue(Name,B.IsValid()))B->SimulateClick();
+        };
+        auto PathBox=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasPath")));
+        if(!TestTrue(TEXT("Atlas path available in settings"),PathBox.IsValid()))return false;
+        PathBox->SetText(FText::FromString(FString::Printf(TEXT("  \"%s\"  "),*Atlas)));
+        Click(TEXT("Import locations"));
+        auto Status=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.AtlasStatus")));
+        if(!TestTrue(TEXT("Quoted path opens the atlas and displays import count"),Status&&Status->GetText().ToString().Contains(TEXT("Imported 3 locations"))))return false;
+        auto Search=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasSearch")));
+        auto Results=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
+        if(!TestTrue(TEXT("Atlas picker available"),Search&&Results))return false;
+        Search->SetText(FText::FromString(TEXT("tOwN")));
+        if(!TestEqual(TEXT("Search by type returns the destination"),Results->GetItems().Num(),1))return false;
+        Results->SetSelection(Results->GetItems()[0]);Click(TEXT("Point arrow"));
+        TestTrue(TEXT("Point arrow uses selected destination"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(56,0));
+        auto Session=GI->GetSubsystem<UACEClientSubsystem>()->GetSession();
+        const auto Previous=Session->GetPlayerPosition();ON_SCOPE_EXIT{Session->SetLocalPosition(Previous);};
+        FACEPosition Origin;Origin.CellId=0x7f7f0001;Origin.Location=FVector(84,84,0);Session->SetLocalPosition(Origin);
+        Click(TEXT("Find route"));
+        const double Timeout=FPlatformTime::Seconds()+5;
+        while(H->WaypointItinerary.IsEmpty()&&FPlatformTime::Seconds()<Timeout)
+        {FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);FPlatformProcess::Sleep(.001f);}
+        TestEqual(TEXT("Directions include one transport and the destination"),H->WaypointItinerary.Num(),2);
+        TestTrue(TEXT("Arrow targets usable entrance and ignores disabled shortcut"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(1,0));
+        Click(TEXT("Back"));Click(TEXT("Browse locations"));
+        Click(TEXT("2. Reach Test village at 0.00N, 56.00E"));
+        TestTrue(TEXT("Reopened route can point to the final leg"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(56,0));
+        TestFalse(TEXT("Choosing atlas destinations and route legs keeps the floating arrow hidden"),H->WaypointOption(TEXT("arrow")));
+    }
+    H->bWaypointLocationsLoaded=false;
+    TestEqual(TEXT("Imported locations reload from disk"),H->GetWaypointLocations().Num(),3);
     FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Invalid\" NS=\"NaN\" EW=\"3\" /></locations>"),*Atlas);
     TestFalse(TEXT("Invalid atlas rejected"),H->ImportWaypointLocations(Atlas));
-    TestEqual(TEXT("Rejected import preserves atlas"),H->GetWaypointLocations().Num(),1);
+    TestEqual(TEXT("Rejected import preserves atlas"),H->GetWaypointLocations().Num(),3);
     FString AtlasFixture;
     if(FParse::Value(FCommandLine::Get(),TEXT("WaypointAtlas="),AtlasFixture))
     {
         TestTrue(*H->Notice,H->ImportWaypointLocations(AtlasFixture));
-        AddInfo(FString::Printf(TEXT("GoArrow atlas imported: %d locations"),H->GetWaypointLocations().Num()));
+        TArray<FACEWaypointLandmark> Links;
+        const auto& Places=H->GetWaypointLocations();
+        for(const auto& Place:Places)if(Place.TravelExit)Links.Add(Place);
+        AddInfo(FString::Printf(TEXT("GoArrow atlas imported: %d locations, %d eligible transports"),Places.Num(),Links.Num()));
+        auto Town=[&](const TCHAR* Name){return Places.FindByPredicate([&](const auto& P){return P.Name==Name&&P.Type==TEXT("Town");});};
+        const auto* From=Town(TEXT("Holtburg"));const auto* To=Town(TEXT("Ayan Baqur"));
+        if(From&&To)
+        {
+            auto Trip=ACEWaypointAtlas::FindRoute(From->Coordinates,*To,Links,ACEWaypointAtlas::MapRegions(),[]{return false;});
+            TestTrue(TEXT("Real atlas route between distant towns uses a transport"),Trip.Num()>1&&Trip.Last().Name==To->Name);
+            for(const auto& Step:Trip)AddInfo(TEXT("Holtburg to Ayan Baqur: ")+Step.Name);
+        }
     }
 
     TestTrue(TEXT("Independent loot editor is discovered"),H->Find(TEXT("looteditor")).IsValid());
@@ -587,6 +681,19 @@ bool FACEPluginHostTest::RunTest(const FString&)
         TestEqual(TEXT("Arrow position restores from disk after logout"),RelogDock->Windows[TEXT("waypoint.arrow")].Position,FVector2D(2080,830));
         TestEqual(TEXT("Pinned map position restores from disk after logout"),RelogDock->Windows[TEXT("waypoint.dungeon")].Position,FVector2D(1780,730));
         TestEqual(TEXT("Pinned map size restores from disk after logout"),RelogDock->Windows[TEXT("waypoint.dungeon")].Size,FVector2D(340,350));
+        const FString ArrowId=TEXT("waypoint.arrow");
+        const auto ArrowWidget=RelogDock->Windows[ArrowId].Widget;
+        const auto Geometry=FGeometry::MakeRoot(FVector2D(1920,1080),FSlateLayoutTransform());
+        auto Frame=[&]{RelogDock->Tick(Geometry,1,.016f);RelogDock->SlatePrepass(1.f);};
+        H->SetWaypointOption(TEXT("arrow"),false);
+        Ui->SetQuickShowUi(true);Frame();
+        TestTrue(TEXT("Desktop frame and quick-show respect the hidden arrow before the next dock refresh"),ArrowWidget->GetVisibility()==EVisibility::Collapsed);
+        RelogDock->Refresh();
+        TestFalse(TEXT("Refreshing the dock closes a hidden arrow"),RelogDock->IsOpen(ArrowId));
+        H->SetWaypointOption(TEXT("arrow"),true);RelogDock->Refresh();Frame();
+        TestTrue(TEXT("Re-enabled arrow is movable during quick-show"),ArrowWidget->GetVisibility()==EVisibility::Visible);
+        Ui->SetQuickShowUi(false);Frame();
+        TestTrue(TEXT("Reopened arrow stays click-through with UI locked"),ArrowWidget->GetVisibility()==EVisibility::HitTestInvisible);
         // Restore the compact fixture for the existing panel render checks.
         H->SavePluginWindowPosition(TEXT("waypoint.arrow"),FVector2D(350,20));
         H->SavePluginWindowPosition(TEXT("waypoint.dungeon"),FVector2D(800,100));

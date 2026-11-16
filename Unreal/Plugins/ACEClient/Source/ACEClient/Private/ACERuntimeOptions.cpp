@@ -5,6 +5,7 @@
 #include "Engine/UserInterfaceSettings.h"
 #include "Engine/World.h"
 #include "ACEEnvCellActor.h"
+#include "ACEDatSubsystem.h"
 #include "ACETerrainPresenterComponent.h"
 #include "Dat/ACEWorldTextureMipProvider.h"
 #include "UObject/UObjectIterator.h"
@@ -17,8 +18,10 @@ namespace
  float CachedPluginTextScale=1.f;
  float AmbientGain=1.f,EffectsGain=1.f;
  int32 AppliedDynamicLightingQuality=2;
+ bool bUniformDungeonLighting=false;
 }
 int32 DynamicLightingQuality() { return AppliedDynamicLightingQuality; }
+bool UniformDungeonLighting() { return bUniformDungeonLighting; }
 float Get(const TCHAR* Key)
 {
  for (const auto& O : Values) if (FCString::Strcmp(O.Key,Key)==0) {
@@ -66,7 +69,15 @@ void Apply()
  const int32 LightingQuality=FMath::RoundToInt(Get(TEXT("DynamicLightingQuality")));
  if (auto* C=IConsoleManager::Get().FindConsoleVariable(TEXT("ace.FXLightBudget")))
   C->Set(FMath::RoundToInt(Get(TEXT("EffectLightLimit"))),ECVF_SetByGameSetting);
- if(AppliedDynamicLightingQuality!=LightingQuality)
+ const bool bUniform=Get(TEXT("UniformDungeonLighting"))>.5f;
+ const bool bUniformChanged=bUniform!=bUniformDungeonLighting;
+ if(bUniformChanged)
+ {
+  bUniformDungeonLighting=bUniform;
+  for(TObjectIterator<UACEDatSubsystem> It;It;++It)
+   if(IsValid(*It) && !It->IsTemplate()) It->RefreshDungeonLighting();
+ }
+ if(AppliedDynamicLightingQuality!=LightingQuality || bUniformChanged)
  {
   AppliedDynamicLightingQuality=LightingQuality;
   // Loaded rooms do not tick. Refresh only on preference changes; newly

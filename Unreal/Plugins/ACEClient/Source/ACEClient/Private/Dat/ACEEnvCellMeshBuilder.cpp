@@ -31,10 +31,13 @@ void FACEEnvCellMeshBuilder::BakeStaticLighting(const FACEDatEnvCell& Cell, floa
 			for (const auto& Info : SetupLightCache[Stab.Id])
 			{
 				if (Info.Intensity <= 0 || Info.Falloff <= 0) continue;
-				const FVector Local = CellFrame.InverseTransformPosition(Placement.TransformPosition(FVector(Info.Origin)));
-				Lights.Add({FACEPosition::AceVectorToUnreal(Local, 1.f),
-					FLinearColor(((Info.Color >> 16)&255)/255.f, ((Info.Color >> 8)&255)/255.f, (Info.Color&255)/255.f),
-					Info.Intensity, Info.Falloff * 1.3}); // retail static_light_factor
+				const FVector BlockPosition = Placement.TransformPosition(FVector(Info.Origin));
+				const FVector Local = CellFrame.InverseTransformPosition(BlockPosition);
+				const FLinearColor Color(((Info.Color >> 16)&255)/255.f, ((Info.Color >> 8)&255)/255.f, (Info.Color&255)/255.f);
+				const float Range = Info.Falloff * 1.3f; // retail static_light_factor
+				Lights.Add({FACEPosition::AceVectorToUnreal(Local, 1.f), Color, Info.Intensity, Range});
+				if (Source.Id == Cell.Id)
+					Mesh.PointLights.Add({FACEPosition::AceVectorToUnreal(BlockPosition, WorldScale), Color, Info.Intensity, Range * WorldScale});
 			}
 		}
 	};

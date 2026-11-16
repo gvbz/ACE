@@ -19,7 +19,12 @@ namespace ACEUCMPanelPrivate { class FACEUCMImportUITest; }
 class SWidget;
 class AACEPlayerController;
 class UGameViewportClient;
-struct FACEWaypointLandmark { FVector2D Coordinates; FString Name, Type; };
+struct FACEWaypointLandmark
+{
+    FVector2D Coordinates;
+    FString Name, Type;
+    TOptional<FVector2D> TravelExit;
+};
 struct FACEPluginRouteSegment { FVector Start,End; FLinearColor Color; float Thickness; };
 struct FACEPluginMarker { int32 Id=0; FString Shape; FLinearColor Color; bool World=true, Map=true; };
 namespace ACEPluginChatLimits
@@ -313,7 +318,8 @@ public:
     void SetWaypoint(FVector2D Coordinates, uint32 DungeonLandblock=0);
     bool GetWaypoint(FVector2D& Coordinates, uint32& DungeonLandblock) const;
     bool WaypointOption(const FString& Key, bool Default=true) const;
-    void SetWaypointOption(const FString& Key,bool Value);
+    bool SetWaypointOption(const FString& Key,bool Value);
+    bool ShouldShowWaypointArrow() const { return bShowWaypointArrow && IsWaypointEnabled(); }
     float WaypointMapOpacity() const;
     void SetWaypointMapOpacity(float Value);
     double WaypointMapZoom(bool Overlay, bool Dungeon) const;
@@ -322,6 +328,8 @@ public:
     bool ImportWaypointLocations(const FString& Path);
     const TArray<FACEWaypointLandmark>& GetWaypointLocations();
     uint64 WaypointLocationsRevision=0;
+    TArray<FACEWaypointLandmark> WaypointItinerary;
+    bool bWaypointAtlasHasRoutingData=false;
     void RecordRouteAction(const FString& Type, float Charge = .5f);
     void RefreshAutomationData();
     /** Estimated remaining duration of our confirmed harmful cast on this target. */
@@ -550,6 +558,8 @@ private:
     FString StorageRoot;
     TArray<FACEWaypointLandmark> WaypointLocations;
     bool bWaypointLocationsLoaded=false;
+    bool bShowWaypointArrow=false;
+    void LoadWaypointArrowPreference();
     TMap<int32, FACEAppraisalInfo> Appraisals;
     struct FEquipmentAssessment
     {

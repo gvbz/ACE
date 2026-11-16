@@ -42,6 +42,7 @@ public:
  UFUNCTION() void ResetMouseTurnSpeed();
  UFUNCTION() void ChangeCursorScale(float Value);
  UFUNCTION() void ChangeObjectGlow(bool bEnabled);
+ UFUNCTION() void ChangeUniformDungeonLighting(bool bEnabled);
  UFUNCTION() void ChangeScreenBrightness(float Value);
  UFUNCTION() void ChangeEffectLightLimit(float Value);
  UFUNCTION() void ChangeScreenContrast(float Value);
@@ -68,6 +69,7 @@ private:
  UPROPERTY() TObjectPtr<UCheckBox> VSync;
  UPROPERTY() TObjectPtr<UCheckBox> ShowFrameRate;
  UPROPERTY() TObjectPtr<UCheckBox> ObjectGlow;
+ UPROPERTY() TObjectPtr<UCheckBox> UniformDungeonLighting;
  UPROPERTY() TObjectPtr<UCheckBox> ConstrainUIWindows;
  UPROPERTY() TObjectPtr<USlider> MouseTurnSpeed;
  UPROPERTY() TObjectPtr<UCheckBox> InvertMouseX;

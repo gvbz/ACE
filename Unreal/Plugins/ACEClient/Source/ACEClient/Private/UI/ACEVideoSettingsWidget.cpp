@@ -135,6 +135,10 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  ObjectGlow->SetWidgetStyle(RoundToggle); ObjectGlow->SetContent(Label(TEXT("Custom object highlighting"))); Box->AddChild(Fixed(ObjectGlow,272,20));
  ObjectGlow->OnCheckStateChanged.AddDynamic(this,&UACEVideoSettingsWidget::ChangeObjectGlow);
  UACEHoverTooltipWidget::SetWidgetTooltip(ObjectGlow,FText::FromString(TEXT("Glow on selected and hovered objects, including your own character. Turn off to remove the custom glow in desktop and VR. Selection and interaction still work. Changes apply and save immediately.")));
+ UniformDungeonLighting=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("UniformDungeonLighting"));
+ UniformDungeonLighting->SetWidgetStyle(RoundToggle); UniformDungeonLighting->SetContent(Label(TEXT("Uniform dungeon lighting"))); Box->AddChild(Fixed(UniformDungeonLighting,272,20));
+ UniformDungeonLighting->OnCheckStateChanged.AddDynamic(this,&UACEVideoSettingsWidget::ChangeUniformDungeonLighting);
+ UACEHoverTooltipWidget::SetWidgetTooltip(UniformDungeonLighting,FText::FromString(TEXT("Light enclosed dungeon rooms, objects, and characters evenly. Turn off for torchlight and shadows. Changes apply and save immediately.")));
  ShowFrameRate=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("ShowFrameRate"));
  ShowFrameRate->SetWidgetStyle(RoundToggle);ShowFrameRate->SetContent(Label(TEXT("Show FPS overlay")));Box->AddChild(Fixed(ShowFrameRate,272,20));
  Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain")),TEXT("PersonalFarTerrain"),TEXT("Draw low-detail terrain past the loaded landblocks, out to Far Terrain Radius. Off also turns off the other Far Terrain options. Changes apply and save immediately.")),272,20)); // personal: far-terrain
@@ -186,14 +190,14 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
   {
    C->Rename(TEXT("ShadowQuality"));
    for(const TCHAR* V:{TEXT("Off"),TEXT("Low"),TEXT("Medium"),TEXT("High"),TEXT("Cinematic")}) C->AddOption(V);
-   UACEHoverTooltipWidget::SetWidgetTooltip(C,FText::FromString(TEXT("Off removes dynamic shadows. Low and Medium reduce shadow distance and detail. Turn off for the lowest GPU cost.")));
+   UACEHoverTooltipWidget::SetWidgetTooltip(C,FText::FromString(TEXT("Off removes dynamic shadows. With Full desktop lighting, Low and Medium cast shadows from two nearby dungeon fixtures. High and Cinematic allow every visible fixture to cast shadows.")));
   }
   else for(const TCHAR* V:{TEXT("Low"),TEXT("Medium"),TEXT("High"),TEXT("Epic"),TEXT("Cinematic")}) C->AddOption(V);
   QualityLevels.Add(C);
  }
  DynamicLighting=Combo(TEXT("Dynamic lights")); DynamicLighting->Rename(TEXT("DynamicLightingQuality"));
  for(const TCHAR* V:{TEXT("Off"),TEXT("Low"),TEXT("Full")}) DynamicLighting->AddOption(V);
- UACEHoverTooltipWidget::SetWidgetTooltip(DynamicLighting,FText::FromString(TEXT("Off removes light cast by spells, weapons and doorways. Low keeps up to two nearby effect lights. Particles, sunlight and ambient room illumination remain visible. Saved with Apply.")));
+ UACEHoverTooltipWidget::SetWidgetTooltip(DynamicLighting,FText::FromString(TEXT("Full lights every visible dungeon fixture on desktop. Low shares two nearby lights between fixtures and effects. Off disables local lighting. Saved with Apply.")));
  Box->AddChild(Fixed(Label(TEXT("Older hardware: turn shadows and dynamic lights off."),7),272,18));
  AddValue(TEXT("EffectLightLimit"));
  auto* LightLimit=ValueSliders[TEXT("EffectLightLimit")].Get();
@@ -312,6 +316,7 @@ void UACEVideoSettingsWidget::ResetVideo()
  CursorScale->SetValue(ACERuntimeOptions::Get(TEXT("CursorScale")));
  CursorScaleLabel->SetText(FText::FromString(FString::Printf(TEXT("%d%%"),FMath::RoundToInt(CursorScale->GetValue()*100.f))));
  ObjectGlow->SetIsChecked(ACERuntimeOptions::Get(TEXT("ObjectGlow"))>.5f);
+ UniformDungeonLighting->SetIsChecked(ACERuntimeOptions::Get(TEXT("UniformDungeonLighting"))>.5f);
  ConstrainUIWindows->SetIsChecked(ACERuntimeOptions::Get(TEXT("ConstrainUIWindows"))>.5f);
  RefreshFrameRateOption();
  ChatFontFace->SetSelectedIndex(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("ChatFontFace"))));
@@ -375,6 +380,7 @@ bool UACEVideoSettingsWidget::HasPendingChanges() const
   || InvertMouseY->IsChecked()!=ACECameraSettings::GetInvertMouseY()
   || DesktopScale->GetSelectedIndex()!=FMath::RoundToInt((ACERuntimeOptions::Get(TEXT("DesktopUIScale"))-1.f)*4.f)
   || ObjectGlow->IsChecked()!=(ACERuntimeOptions::Get(TEXT("ObjectGlow"))>.5f)
+  || UniformDungeonLighting->IsChecked()!=(ACERuntimeOptions::Get(TEXT("UniformDungeonLighting"))>.5f)
   || ConstrainUIWindows->IsChecked()!=(ACERuntimeOptions::Get(TEXT("ConstrainUIWindows"))>.5f)
   || ShowFrameRate->IsChecked()!=(ACERuntimeOptions::Get(TEXT("ShowFrameRate"))>.5f)
   || ChatFontFace->GetSelectedIndex()!=FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("ChatFontFace")))
@@ -442,6 +448,7 @@ void UACEVideoSettingsWidget::ApplyInterfaceOptions()
  if(DesktopScale->GetSelectedIndex()>=0) ACERuntimeOptions::Set(TEXT("DesktopUIScale"),1.f+DesktopScale->GetSelectedIndex()*.25f);
  if(CursorScale) ACERuntimeOptions::Set(TEXT("CursorScale"),CursorScale->GetValue());
  ACERuntimeOptions::Set(TEXT("ObjectGlow"),ObjectGlow->IsChecked()?1.f:0.f);
+ ACERuntimeOptions::Set(TEXT("UniformDungeonLighting"),UniformDungeonLighting->IsChecked()?1.f:0.f);
  ACERuntimeOptions::Set(TEXT("ConstrainUIWindows"),ConstrainUIWindows->IsChecked()?1.f:0.f);
  ACERuntimeOptions::Set(TEXT("ShowFrameRate"),ShowFrameRate->IsChecked()?1.f:0.f);
  if(ChatFontFace->GetSelectedIndex()>=0) ACERuntimeOptions::Set(TEXT("ChatFontFace"),ChatFontFace->GetSelectedIndex());
@@ -470,6 +477,13 @@ void UACEVideoSettingsWidget::ChangeObjectGlow(bool bEnabled)
   ACERuntimeOptions::Set(TEXT("ObjectGlow"),Value);
   if(GConfig)GConfig->Flush(false,GGameUserSettingsIni);
  }
+}
+
+void UACEVideoSettingsWidget::ChangeUniformDungeonLighting(bool bEnabled)
+{
+ if(LoadingSettings || (ACERuntimeOptions::Get(TEXT("UniformDungeonLighting"))>.5f)==bEnabled) return;
+ ACERuntimeOptions::Set(TEXT("UniformDungeonLighting"),bEnabled?1.f:0.f);
+ ACERuntimeOptions::Apply();
 }
 
 void UACEVideoSettingsWidget::ChangeMouseTurnSpeed(float Value)
@@ -522,6 +536,7 @@ void UACEVideoSettingsWidget::DefaultsVideo()
  ToggleMouseLook->SetIsChecked(false);
  CursorScale->SetValue(1.f); ChangeCursorScale(1.f);
  ObjectGlow->SetIsChecked(true); ChangeObjectGlow(true);
+ UniformDungeonLighting->SetIsChecked(false); ChangeUniformDungeonLighting(false);
  ConstrainUIWindows->SetIsChecked(true);
  ShowFrameRate->SetIsChecked(false);
  ChatFontFace->SetSelectedIndex(2); ChatFontSize->SetSelectedIndex(1);

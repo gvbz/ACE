@@ -58,6 +58,7 @@ public:
 	/** Keep shared source assets alive while this appearance uses private lighting copies. */
 	UPROPERTY() TArray<TObjectPtr<class UMaterialInterface>> AppearanceSourceMaterials;
 	bool bWorldLightingInterior = false;
+	bool bWorldLightingEnclosed = false;
 	UACECharacterAppearanceComponent();
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;

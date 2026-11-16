@@ -294,7 +294,7 @@ bool FACEYaraqSceneTest::RunTest(const FString& Parameters)
         {
             const FLinearColor Outside(.43f,.32f,.21f);
             Dat->SetInteriorAmbient(Outside); Dat->SetInteriorUsesOutdoorAmbient(false);
-            TestTrue(TEXT("Sealed room uses the requested uniform full illumination"),Material->K2_GetVectorParameterValue(TEXT("InteriorAmbient")).Equals(FLinearColor::White,.001f));
+            TestTrue(TEXT("Outdoor-connected shop retains its authored presentation when the player is inside"),Material->K2_GetVectorParameterValue(TEXT("InteriorAmbient")).Equals(FLinearColor::White,.001f));
             Dat->SetInteriorUsesOutdoorAmbient(true);
             TestTrue(TEXT("Opening to outdoors preserves the same interior illumination"),Material->K2_GetVectorParameterValue(TEXT("InteriorAmbient")).Equals(FLinearColor::White,.001f));
         }

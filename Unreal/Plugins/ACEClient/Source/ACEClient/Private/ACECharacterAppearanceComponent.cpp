@@ -628,7 +628,7 @@ void UACECharacterAppearanceComponent::ClearAppearance()
 {
 	WalkingMotion.Reset();
 	bRemoteWalkingFramePending = false;
-	WorldLightingInstances.Reset(); bWorldLightingInterior=false;
+	WorldLightingInstances.Reset(); bWorldLightingInterior=false; bWorldLightingEnclosed=false;
 	AppearanceSourceMaterials.Reset();
 	if (AActor* Owner = GetOwner())
 		if (auto* Scripts = Owner->FindComponentByClass<UACEScriptComponent>()) Scripts->StopAllEffects();
@@ -866,6 +866,10 @@ bool UACECharacterAppearanceComponent::ApplyWorldObject(const FACEWorldObject& O
 					Part->SetMaterial(I,Instance);
 				}
 			}
+		// Rebuilt parts can retain the former cell's channels. Reapply even
+		// when the new appearance is built outdoors.
+		bWorldLightingEnclosed=false;
+		for (auto* Part : Meshes) if (Part) Part->SetLightingChannels(true,false,false);
 		bWorldLightingInterior=false;
 		UpdateCellLighting(Object.Position.CellId);
 	}
@@ -1045,13 +1049,18 @@ void UACECharacterAppearanceComponent::UpdateCellLighting(uint32 CellId)
 {
 	const uint32 LocalCell=CellId & 0xFFFFu;
 	const bool bInterior=LocalCell>=0x100u && LocalCell<0xFFFEu;
-	if (bWorldLightingInterior==bInterior) return;
-	bWorldLightingInterior=bInterior;
+	if (!bUseWorldLighting || (!bInterior && !bWorldLightingInterior)) return;
 	auto* GI=GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	auto* Dat=GI ? GI->GetSubsystem<UACEDatSubsystem>() : nullptr;
+	const auto* Room=bInterior && Dat ? Dat->FindEnvCellMesh(CellId,WorldScale) : nullptr;
+	const bool bEnclosed=Room && !Room->CanSeeOutside();
+	if (bWorldLightingInterior==bInterior && bWorldLightingEnclosed==bEnclosed) return;
+	bWorldLightingInterior=bInterior;
+	bWorldLightingEnclosed=bEnclosed;
+	for (UProceduralMeshComponent* Part : PartMeshes) if (Part) Part->SetLightingChannels(!bEnclosed,bEnclosed,false);
 	for (UMaterialInstanceDynamic* Material:WorldLightingInstances)
 	{
-		if (Dat) Dat->UpdateWorldObjectLighting(Material,bInterior);
+		if (Dat) Dat->UpdateWorldObjectLighting(Material,bInterior,bEnclosed);
 	}
 }
 
