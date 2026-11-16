@@ -20,6 +20,11 @@ bool FPersonalCameraTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Height defaults to retail"), PersonalCamera::PivotHeightAc(false), ACECameraRetail::DefaultPivotZAc);
 	ACERuntimeOptions::Set(TEXT("PersonalCameraHeight"), 3.f);
 	TestEqual(TEXT("Height follows the slider"), PersonalCamera::PivotHeightAc(false), 3.f);
+	ACERuntimeOptions::Set(TEXT("PersonalCameraHeight"), .5f);
+	TestEqual(TEXT("Height does not go below retail"), PersonalCamera::PivotHeightAc(false), ACECameraRetail::DefaultPivotZAc);
+	GConfig->SetFloat(TEXT("ACE.Presentation"), TEXT("PersonalCameraHeight"), .5f, GGameUserSettingsIni);
+	TestEqual(TEXT("A saved height below retail reads as retail"), PersonalCamera::PivotHeightAc(false), ACECameraRetail::DefaultPivotZAc);
+	ACERuntimeOptions::Set(TEXT("PersonalCameraHeight"), 3.f);
 	TestEqual(TEXT("First person keeps retail height"), PersonalCamera::PivotHeightAc(true), ACECameraRetail::DefaultPivotZAc);
 	TestEqual(TEXT("Zoom limit does not depend on angle"), PersonalCamera::MaxArmLength(Scale), 45000.f);
 
