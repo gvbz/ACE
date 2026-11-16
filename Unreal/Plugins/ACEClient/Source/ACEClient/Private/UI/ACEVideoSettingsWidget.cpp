@@ -115,6 +115,8 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  ActiveSoundOnly=WidgetTree->ConstructWidget<UCheckBox>(); ActiveSoundOnly->SetWidgetStyle(RoundToggle); ActiveSoundOnly->SetContent(Label(TEXT("Play Sounds Only When Active"))); Box->AddChild(Fixed(ActiveSoundOnly,272,20));
  Section(TEXT("Camera Options"));
  for (const TCHAR* Key:{TEXT("CameraStiffness"),TEXT("CameraAdjustment"),TEXT("PersonalCameraHeight"),TEXT("FieldOfViewDegrees")}) AddValue(Key); // personal: camera
+ Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Save Camera Position")),TEXT("PersonalCameraSave"),TEXT("Keep the camera distance and pitch between sessions. Changes apply and save immediately.")),272,20)); // personal: camera
+ Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Free Camera Restriction")),TEXT("PersonalCameraFree"),TEXT("Zoom out to the same distance at every camera angle. Off keeps the limit that depends on the camera angle. Changes apply and save immediately.")),272,20)); // personal: camera
  CameraAlignToSlope=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("CameraAlignToSlope"));
  CameraAlignToSlope->SetWidgetStyle(RoundToggle); CameraAlignToSlope->SetContent(Label(TEXT("Align camera to slope"))); Box->AddChild(Fixed(CameraAlignToSlope,272,20));
  Section(TEXT("Graphics Options"));

@@ -4400,7 +4400,7 @@ void AACEPlayerController::StepCameraZoom(USpringArmComponent* Boom, bool bClose
 		// Retail rejects offsets outside the bounds instead of changing modes or
 		// flattening the camera pitch to make them fit. Numpad 5 owns first person.
 		if (Next < ACECameraRetail::CloserMinLengthAc*ScaleCm
-			|| (!bCloser && Next > PersonalCamera::MaxArmLength(ScaleCm))) break; // personal: camera
+			|| (!bCloser && Next > PersonalCamera::MaxArmLength(Boom->GetRelativeRotation(),ScaleCm))) break; // personal: camera
 		UserCameraArmLength=Next;
 	}
 }

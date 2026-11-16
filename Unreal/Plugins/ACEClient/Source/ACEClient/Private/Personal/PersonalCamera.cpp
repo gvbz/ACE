@@ -20,33 +20,53 @@ namespace PersonalCamera
 		bool Same(float A, float B) { return FMath::IsNearlyEqual(A, B, .001f); }
 	}
 
+	bool SavePosition() { return ACERuntimeOptions::Get(SaveKey) > .5f; }
+	bool FreeZoom() { return ACERuntimeOptions::Get(FreeKey) > .5f; }
+
 	float PivotHeightAc(bool bInHead)
 	{
 		return bInHead ? ACECameraRetail::DefaultPivotZAc : ACERuntimeOptions::Get(TEXT("PersonalCameraHeight"));
+	}
+
+	float MaxArmLength(const FRotator& Rotation, float ScaleCm)
+	{
+		return FreeZoom() ? MaxDistanceAc * ScaleCm : ACECameraRetail::MaximumArmLength(Rotation, ScaleCm);
 	}
 
 	void Restore(USpringArmComponent* Boom, float& UserArmLength, float ScaleCm)
 	{
 		if (!Boom || ScaleCm <= 0.f) return;
 		float Distance = 0.f, Pitch = 0.f;
-		if (GConfig
+		const bool bSave = SavePosition();
+		if (bSave && GConfig
 			&& GConfig->GetFloat(Section, DistanceKey, Distance, GGameUserSettingsIni)
 			&& GConfig->GetFloat(Section, PitchKey, Pitch, GGameUserSettingsIni)
 			&& FMath::IsFinite(Distance) && FMath::IsFinite(Pitch))
 		{
-			UserArmLength = Boom->TargetArmLength = FMath::Clamp(Distance, MinDistanceAc, MaxDistanceAc) * ScaleCm;
 			FRotator Rotation = Boom->GetRelativeRotation();
 			Rotation.Pitch = FMath::Clamp(Pitch, MinPitch, MaxPitch);
 			Boom->SetRelativeRotation(Rotation);
+			// Within the zoom limit that applies at the restored pitch.
+			const float MaxAc = FMath::Min(MaxDistanceAc, MaxArmLength(Rotation, ScaleCm) / ScaleCm);
+			UserArmLength = Boom->TargetArmLength = FMath::Clamp(Distance, MinDistanceAc, FMath::Max(MinDistanceAc, MaxAc)) * ScaleCm;
 		}
 		// Start from the current position so a login alone does not write the file.
-		SeenDistance = SavedDistance = UserArmLength / ScaleCm;
-		SeenPitch = SavedPitch = Boom->GetRelativeRotation().Pitch;
+		SeenDistance = UserArmLength / ScaleCm;
+		SeenPitch = Boom->GetRelativeRotation().Pitch;
+		SavedDistance = bSave ? SeenDistance : -1.f;
+		SavedPitch = SeenPitch;
 		QuietSeconds = 0.f;
 	}
 
 	void Update(const USpringArmComponent* Boom, float UserArmLength, float ScaleCm, bool bSpecialView, float DeltaSeconds)
 	{
+		if (!SavePosition())
+		{
+			// Nothing is written. Turning the option on saves the position the camera has then.
+			SavedDistance = -1.f;
+			QuietSeconds = 0.f;
+			return;
+		}
 		// First person, look-down and map views are not saved.
 		if (!Boom || bSpecialView || ScaleCm <= 0.f || UserArmLength < 0.f || !GConfig) return;
 		const float Distance = UserArmLength / ScaleCm;

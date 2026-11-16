@@ -11,8 +11,9 @@ with a few added options. The original README is in the repository root.
 ## Changes
 
 - Camera: a height slider for the third person camera (1.5, the client's
-  height, to 5), one zoom limit at every angle, and saved distance and
-  pitch.
+  height, to 5). `Save Camera Position` keeps the distance and pitch
+  between sessions, and `Free Camera Restriction` gives one zoom limit at
+  every angle (both off by default).
 - Far terrain: one low-detail terrain mesh past the loaded landblocks,
   out to the `Far Terrain Radius` setting (43 to 96 landblocks, default
   43). The `Far Terrain` toggle turns it on and off (off by default).
