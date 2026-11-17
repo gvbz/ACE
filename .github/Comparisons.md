@@ -9,6 +9,7 @@ Screenshots of each change in this fork, with its setting off and on. Each pair 
 - [Far Terrain Textures](#far-terrain-textures)
 - [Far Terrain Horizon](#far-terrain-horizon)
 - [Far Terrain Rooms](#far-terrain-rooms)
+- [All Features](#all-features)
 
 ## Camera Height
 
@@ -83,3 +84,18 @@ Holtburg at night, both pictures cropped to the same area around the town:
 | Off | On |
 |---|---|
 | [![Far Terrain Rooms off, night](comparisons/far-terrain-rooms_night_off.jpg)](comparisons/far-terrain-rooms_night_off.jpg) | [![Far Terrain Rooms on, night](comparisons/far-terrain-rooms_night_on.jpg)](comparisons/far-terrain-rooms_night_on.jpg) |
+
+## All Features
+
+Every feature of this fork off, and every feature on, at eight places. The other sections show one feature at a time.
+
+| Off | On |
+|---|---|
+| [![All features off, 1](comparisons/all-features_1_off.jpg)](comparisons/all-features_1_off.jpg) | [![All features on, 1](comparisons/all-features_1_on.jpg)](comparisons/all-features_1_on.jpg) |
+| [![All features off, 2](comparisons/all-features_2_off.jpg)](comparisons/all-features_2_off.jpg) | [![All features on, 2](comparisons/all-features_2_on.jpg)](comparisons/all-features_2_on.jpg) |
+| [![All features off, 3](comparisons/all-features_3_off.jpg)](comparisons/all-features_3_off.jpg) | [![All features on, 3](comparisons/all-features_3_on.jpg)](comparisons/all-features_3_on.jpg) |
+| [![All features off, 4](comparisons/all-features_4_off.jpg)](comparisons/all-features_4_off.jpg) | [![All features on, 4](comparisons/all-features_4_on.jpg)](comparisons/all-features_4_on.jpg) |
+| [![All features off, 5](comparisons/all-features_5_off.jpg)](comparisons/all-features_5_off.jpg) | [![All features on, 5](comparisons/all-features_5_on.jpg)](comparisons/all-features_5_on.jpg) |
+| [![All features off, 6](comparisons/all-features_6_off.jpg)](comparisons/all-features_6_off.jpg) | [![All features on, 6](comparisons/all-features_6_on.jpg)](comparisons/all-features_6_on.jpg) |
+| [![All features off, 7](comparisons/all-features_7_off.jpg)](comparisons/all-features_7_off.jpg) | [![All features on, 7](comparisons/all-features_7_on.jpg)](comparisons/all-features_7_on.jpg) |
+| [![All features off, 8](comparisons/all-features_8_off.jpg)](comparisons/all-features_8_off.jpg) | [![All features on, 8](comparisons/all-features_8_on.jpg)](comparisons/all-features_8_on.jpg) |
