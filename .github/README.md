@@ -6,7 +6,7 @@ with a few added options. The original README is in the repository root.
 ## Branches
 
 - `master` matches Thwargle's repository.
-- `gvbz` has the changes below, on top of client v158 (2026.11.15.158).
+- `gvbz` has the changes below, on top of client v160 (2026.11.18.160). Since v159 they are also part of Thwargle's client (pull request #1), with his later changes.
 
 ## Changes
 
@@ -19,7 +19,7 @@ with a few added options. The original README is in the repository root.
   43). The `Far Terrain` toggle turns it on and off (off by default).
 - Far terrain objects: trees, rocks, buildings and other objects are
   drawn past the landblocks where the client draws its own, out to the
-  `Far Terrain Objects Radius` setting (3 to 8 landblocks, default 6),
+  `Far Terrain Objects Radius` setting (3 to 24 landblocks, default 6),
   with simpler models further out (`Far Terrain Objects` toggle, off by
   default). `Hide Far Terrain with Fog` removes the ones past the fog
   end (off by default). It applies with the far terrain on.

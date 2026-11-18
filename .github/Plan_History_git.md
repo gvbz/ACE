@@ -1,4 +1,4 @@
-# Plan history (gvbz at 156bdf587, client v158, 2026.11.15.158)
+# Plan history (gvbz at b5abfd700, client v160, 2026.11.18.160)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -552,3 +552,15 @@ Why it was dropped: it made the picture worse.
 4. The seam cap left the slider with no effect in clear weather.
 
 Retail fog depends on weather, time of day and color at once, so one multiplier cannot work. Replacing the fog with Unreal's was rejected: the client disables the exponential height fog because it never reached the emissive DAT materials.
+
+## Since v159
+
+Thwargle's release v159 (82391a7e, 2026.11.17.159) contains the changes above (pull request #1) and changes some of them. Release v160 (7e9348e5, 2026.11.18.160) changes none of them. Both were merged into `gvbz` as b5abfd700; under `Unreal/` the branch now matches Thwargle's `master`. Line numbers in the sections above are for 156bdf587 and may now be off.
+
+- Options window: the far terrain check boxes (`Far Terrain`, `Far Terrain Objects`, `Hide Far Terrain with Fog`, `Far Terrain Rooms`, `Far Terrain Textures`, `Far Terrain Horizon`) are plain check boxes applied with Apply, and Defaults and Reset include them. Apply rebuilds the sky when `Far Terrain Horizon` turns on or off (this was in `UPersonalOptionCheckBox`). Labels, keys and defaults are unchanged.
+- Far scenery: `Far Terrain Objects Radius` runs from 3 to 24 (was 3 to 8), default 6. Past ring 8, units are at least 4 x 4 landblocks. Never built past the far terrain radius.
+- Far terrain rooms and door panels: limited to ring 8 (`PersonalFarScenery::InteriorRings`).
+- Far terrain: the shell is at full 24 m detail out to the objects radius (`SceneryRadius` in `PersonalFarTerrainMesh::Build`). The 100 cm `LandDepthBias` is gone; the shell is placed 1 cm lower. Its materials are registered with `UACEDatSubsystem::RegisterLandSky` (brightness, and with the AC2 sky, cloud shadows and a tint). New `VisibleRadius()`.
+- Sky horizon: new `PersonalSkyHorizon::IsEnabled()`. Thwargle's new horizon band (fog color below eye level) is drawn under the extended stars when the option is on and no cloud layer shows.
+- Camera options: unchanged.
+- Fog, for all players: the fog end follows the drawn area. With the far terrain off, full fog at the edge of the loaded terrain; with it on, clear-weather fog (2,400 m and more in the DAT) reaches up to 4 times as far, up to the edge of the far terrain.
