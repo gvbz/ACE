@@ -223,8 +223,13 @@ bool FACEVRRenderReplicationTest::RunTest(const FString& Parameters)
 	auto* Desktop=World->SpawnActor<AACEWorldEntityActor>();Desktop->InitializeFromObject(DesktopObject,100,true);
 	Desktop->bClampToGround=false;Desktop->bRetryGroundClamp=false;
 	auto* DesktopRemote=Desktop->FindComponentByClass<UACEVRRemoteAvatarComponent>();
+	// Compare with the ordinary actor path. Authored DAT entry/exit motion is
+	// not instantaneous constant-speed movement; RemoteMovementReplay checks its
+	// displacement against the clips separately.
+	auto* Ordinary=World->SpawnActor<AACEWorldEntityActor>();Ordinary->InitializeFromObject(DesktopObject,100,true);
+	Ordinary->bClampToGround=false;Ordinary->bRetryGroundClamp=false;
 	const auto MotionHandle=Session.OnMotionUpdate.AddLambda([&](int32 Guid,const FACEObjectMotionState& Motion)
-		{if(Guid==126)Desktop->ApplyMotionState(Motion);});
+		{if(Guid==126){Desktop->ApplyMotionState(Motion);Ordinary->ApplyMotionState(Motion);}});
 	auto ReceiveMotion=[&](uint16 Sequence,uint16 Command)
 	{
 		FACEBinaryWriter Motion;Motion.WriteUInt32(ACEOpcode::UpdateMotion);Motion.WriteUInt32(126);
@@ -240,15 +245,24 @@ bool FACEVRRenderReplicationTest::RunTest(const FString& Parameters)
 	{
 		Desktop->Tick(1.f/90);Desktop->Appearance->TickComponent(1.f/90,LEVELTICK_All,nullptr);
 		DesktopRemote->TickComponent(1.f/90,LEVELTICK_All,nullptr);
+		Ordinary->Tick(1.f/90);Ordinary->Appearance->TickComponent(1.f/90,LEVELTICK_All,nullptr);
 	}
-	TestTrue(TEXT("VR viewer sees standard desktop movement at the interpreted run speed"),
-		FMath::IsNearlyEqual(FVector::Distance(DesktopStart,Desktop->GetActorLocation()),80.,.5));
+	TestTrue(TEXT("VR viewer sees standard desktop movement with the same authored displacement"),
+		FVector::Distance(DesktopStart,Desktop->GetActorLocation())>1 && Desktop->GetActorLocation().Equals(Ordinary->GetActorLocation(),.01));
 	TestFalse(TEXT("VR viewer sees desktop running animation"),Desktop->Appearance->GetPartMesh(2)->GetRelativeTransform().Equals(DesktopLeg,.01));
 	TestFalse(TEXT("Desktop avatar never inherits the observer's tracked animation mode"),Desktop->Appearance->bVRPoseControlled);
-	ReceiveMotion(2,3);const FVector DesktopStopped=Desktop->GetActorLocation();
+	ReceiveMotion(2,3);
+	for(int32 Frame=0;Frame<90;++Frame)
+	{
+		Desktop->Tick(1.f/90);Desktop->Appearance->TickComponent(1.f/90,LEVELTICK_All,nullptr);
+		DesktopRemote->TickComponent(1.f/90,LEVELTICK_All,nullptr);
+		Ordinary->Tick(1.f/90);Ordinary->Appearance->TickComponent(1.f/90,LEVELTICK_All,nullptr);
+	}
+	TestTrue(TEXT("VR observer preserves the authored stopping transition"),Desktop->GetActorLocation().Equals(Ordinary->GetActorLocation(),.01));
+	const FVector DesktopStopped=Desktop->GetActorLocation();
 	Desktop->Tick(.1f);
 	TestTrue(TEXT("Desktop stop packet stops movement for a VR viewer"),Desktop->GetActorLocation().Equals(DesktopStopped,.1));
-	Session.OnMotionUpdate.Remove(MotionHandle);Session.WorldObjects.Remove(126);Desktop->Destroy();
+	Session.OnMotionUpdate.Remove(MotionHandle);Session.WorldObjects.Remove(126);Desktop->Destroy();Ordinary->Destroy();
 	const double Received=FPlatformTime::Seconds();
 	auto First=Session.VRPoses[123].Current;First.ReceivedAt=Received-.1;
 	Session.VRPoses[123]=FACERemoteVRPose();Session.VRPoses[123].Add(First);

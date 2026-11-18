@@ -9,6 +9,7 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Components/Slider.h"
+#include "Components/CheckBox.h"
 #include "Blueprint/WidgetTree.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "ProceduralMeshComponent.h"
@@ -55,6 +56,47 @@ bool FACEDisplaySettingsTest::RunTest(const FString&)
     ON_SCOPE_EXIT { GI->Shutdown(); GEngine->DestroyWorldContext(World); World->DestroyWorld(false); };
 
     auto* Options=CreateWidget<UACEVideoSettingsWidget>(GI); Options->TakeWidget();
+    // Send the same change notifications as a click or drag. A control that
+    // writes in its change handler would bypass both Apply and Reset.
+    const TCHAR* TerrainKeys[] = {TEXT("PersonalFarTerrain"),TEXT("PersonalFarScenery"),TEXT("PersonalFarSceneryFog"),
+        TEXT("PersonalFarWindows"),TEXT("PersonalFarTerrainTextures"),TEXT("PersonalSkyHorizon")};
+    TArray<UCheckBox*> TerrainChecks;
+    for (const TCHAR* Key : TerrainKeys)
+    {
+        auto* Check = Cast<UCheckBox>(Options->WidgetTree->FindWidget(Key));
+        if (!TestNotNull(Key,Check)) return false;
+        Check->SetIsChecked(true);
+        Check->OnCheckStateChanged.Broadcast(true);
+        TestTrue(FString::Printf(TEXT("%s enables Apply"),Key),Options->HasPendingChanges());
+        TestEqual(FString::Printf(TEXT("%s is unchanged until Apply"),Key),ACERuntimeOptions::Get(Key),0.f);
+        Options->ResetVideo();
+        TestFalse(FString::Printf(TEXT("Reset discards %s"),Key),Check->IsChecked());
+        TerrainChecks.Add(Check);
+    }
+    auto* Radius = Cast<USlider>(Options->WidgetTree->FindWidget(TEXT("PersonalFarTerrainRadius")));
+    auto* ObjectRadius = Cast<USlider>(Options->WidgetTree->FindWidget(TEXT("PersonalFarSceneryRadius")));
+    if (!TestNotNull(TEXT("Terrain radius slider"),Radius) || !TestNotNull(TEXT("Scenery radius slider"),ObjectRadius)) return false;
+    for (auto* Check : TerrainChecks) { Check->SetIsChecked(true); Check->OnCheckStateChanged.Broadcast(true); }
+    Radius->SetValue(80); Radius->OnValueChanged.Broadcast(80);
+    ObjectRadius->SetValue(18); ObjectRadius->OnValueChanged.Broadcast(18);
+    TestEqual(TEXT("Dragging terrain radius only edits the draft"),ACERuntimeOptions::Get(TEXT("PersonalFarTerrainRadius")),43.f);
+    TestEqual(TEXT("Dragging object radius only edits the draft"),ACERuntimeOptions::Get(TEXT("PersonalFarSceneryRadius")),6.f);
+    Options->ApplyRuntimeOptions();
+    FConfigFile TerrainSaved;
+    TerrainSaved.Read(GGameUserSettingsIni);
+    for (const TCHAR* Key : TerrainKeys)
+    {
+        float Value = 0;
+        TestTrue(FString::Printf(TEXT("Apply persists %s"),Key),TerrainSaved.GetFloat(TEXT("ACE.Presentation"),Key,Value) && Value == 1.f);
+    }
+    Options->DefaultsVideo();
+    for (auto* Check : TerrainChecks) TestFalse(TEXT("Defaults stages a cleared terrain checkbox"),Check->IsChecked());
+    TestEqual(TEXT("Defaults stages the default terrain radius"),Radius->GetValue(),43.f);
+    TestEqual(TEXT("Defaults stages the default object radius"),ObjectRadius->GetValue(),6.f);
+    Options->ResetVideo();
+    for (auto* Check : TerrainChecks) TestTrue(TEXT("Reset restores the applied terrain checkbox"),Check->IsChecked());
+    TestEqual(TEXT("Reset restores the applied terrain radius"),Radius->GetValue(),80.f);
+    TestEqual(TEXT("Reset restores the applied object radius"),ObjectRadius->GetValue(),18.f);
     auto* Brightness=Cast<USlider>(Options->WidgetTree->FindWidget(TEXT("ScreenBrightness")));
     auto* Contrast=Cast<USlider>(Options->WidgetTree->FindWidget(TEXT("Contrast")));
     if(!TestNotNull(TEXT("Brightness control exists"),Brightness)||!TestNotNull(TEXT("Contrast control exists"),Contrast)) return false;

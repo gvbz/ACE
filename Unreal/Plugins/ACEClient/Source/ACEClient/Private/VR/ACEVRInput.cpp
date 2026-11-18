@@ -293,12 +293,17 @@ void UACEVRComponent::SelectPressed()
 	if (bSpellWheelOpen) { ChangeWheelTab(1); return; }
 	if (bLeftPointerPressed || bRightPointerPressed) return;
 	if (!bTracking || PC->bEnterWorldLoading || PC->bWorldRevealActive) return;
-	if (RightAim->IsTracked() && RightPointer->IsOverHitTestVisibleWidget())
+	for (const bool Left : {FeedbackHand == 0, FeedbackHand != 0})
 	{
-		if (RightPointer->GetHoveredWidgetComponent() == RetailPanel && PC->DatGameplayBinder
-			&& PC->DatGameplayBinder->ActivateVRPointerItem(RightPointer->Get2DHitLocation()))
-		{ FeedbackHand = 1; Pulse(false, .5f); UpdateInteractionFeedback(true); return; }
-		Trigger(false, true); Trigger(false, false); return;
+		auto* Aim = Left ? LeftAim.Get() : RightAim.Get();
+		auto* Pointer = Left ? LeftPointer.Get() : RightPointer.Get();
+		if (!Aim || !Aim->IsTracked() || !Pointer) continue;
+		if (auto* VRPointer = Cast<UACEVRWidgetInteraction>(Pointer)) VRPointer->RefreshHit();
+		if (!Pointer->IsOverHitTestVisibleWidget()) continue;
+		if (Pointer->GetHoveredWidgetComponent() == RetailPanel && PC->DatGameplayBinder
+			&& PC->DatGameplayBinder->ActivateVRPointerItem(Pointer->Get2DHitLocation()))
+		{ FeedbackHand = Left ? 0 : 1; Pulse(Left, .5f); UpdateInteractionFeedback(true); return; }
+		Trigger(Left, true); Trigger(Left, false); return;
 	}
 	if (IsInputBlocked()) return;
 	if (GetCombatMode() == ACECombatMode::Magic) { CycleSpell(1); return; }

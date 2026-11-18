@@ -4892,6 +4892,28 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("DAT journal editing updates the saved page immediately"),Gameplay->JournalPages[0].Notes,FString(TEXT("Remember the Yaraq roofs.!")));
         NotesSlate->OnKeyDown(Gameplay->JournalNotes->GetCachedGeometry(),FKeyEvent(EKeys::Escape,FModifierKeysState(),0,false,0,0));
         TestEqual(TEXT("Cancelling an edit restores the saved notes too"),Gameplay->JournalPages[0].Notes,FString(TEXT("Remember the Yaraq roofs.")));
+        {
+            const int32 OriginalPages=Gameplay->JournalPages.Num();
+            CaptureScreen(TEXT("Journal135BeforeNew"),1.35f,FVector2D(120,80));
+            const auto NewPage=Manager->FindElementUnder(TEXT("JournalPage"),TEXT("NewPageButton"));
+            if(TestTrue(TEXT("New page button is enabled after journal load"),NewPage && NewPage->bActivatable && !NewPage->bGhosted))
+            {
+                const auto Origin=NewPage->GetScreenOrigin();
+                const FVector2D Point=Canvas->LayoutToViewport(FVector2D(Origin)+FVector2D(NewPage->Width,NewPage->Height)*.5);
+                const auto Geometry=Canvas->GetCachedGeometry();const auto Absolute=Geometry.LocalToAbsolute(Point);
+                Canvas->NativeOnMouseButtonDown(Geometry,FPointerEvent(0,Absolute,Absolute,{EKeys::LeftMouseButton},EKeys::LeftMouseButton,0,FModifierKeysState()));
+                Canvas->NativeOnMouseButtonUp(Geometry,FPointerEvent(0,Absolute,Absolute,{},EKeys::LeftMouseButton,0,FModifierKeysState()));
+                TestEqual(TEXT("Physical New click adds one journal page"),Gameplay->JournalPages.Num(),OriginalPages+1);
+                TestEqual(TEXT("New selects the new page"),Gameplay->JournalPageIndex,OriginalPages);
+                TestTrue(TEXT("New page has an empty notes field"),Gameplay->JournalNotes->GetText().IsEmpty());
+                Gameplay->JournalFile.Reset();Gameplay->RefreshQuestOverlays();
+                TestEqual(TEXT("New page survives reload"),Gameplay->JournalPages.Num(),OriginalPages+1);
+                Gameplay->HandleNamedClick(TEXT("FirstPageButton"));
+                TestEqual(TEXT("New preserves the previous page"),Gameplay->JournalNotes->GetText().ToString(),FString(TEXT("Remember the Yaraq roofs.")));
+                Gameplay->JournalPages.SetNum(OriginalPages);Gameplay->RefreshQuestOverlays();
+            }
+            CaptureScreen(TEXT("JournalAfterNew"));
+        }
         FString LongNotes;for(int32 Line=0;Line<60;++Line)LongNotes+=FString::Printf(TEXT("Journal line %d\n"),Line);
         Gameplay->JournalNotes->SetText(FText::FromString(LongNotes));CaptureScreen(TEXT("GameplayJournalLongNotes"));
         TestTrue(TEXT("Long DAT notes expose a scroll range"),Gameplay->JournalNotes->GetScrollOffsetOfEnd()>0);

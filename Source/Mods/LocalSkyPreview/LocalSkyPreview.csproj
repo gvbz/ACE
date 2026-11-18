@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Target Name="StageMod" AfterTargets="Build">
+    <MakeDir Directories="$(TargetDir)LocalSkyPreview" />
+    <Copy SourceFiles="$(TargetPath);$(MSBuildProjectDirectory)/Meta.json"
+          DestinationFolder="$(TargetDir)LocalSkyPreview" />
+  </Target>
+</Project>

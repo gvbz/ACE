@@ -23,7 +23,7 @@ static TAutoConsoleVariable<int32> CVarEffectLightBudget(TEXT("ace.FXLightBudget
 static TAutoConsoleVariable<int32> CVarEffectLightBudgetMobile(TEXT("ace.FXLightBudgetMobile"), 4,
 	TEXT("Maximum simultaneous particle/script scene lights per mobile world (0 disables them, capped at 64)."));
 static TAutoConsoleVariable<int32> CVarDungeonFixtureMode(TEXT("ace.DungeonFixtureMode"), -1,
-	TEXT("Full desktop dungeon lights: -1 follows shadow quality. For comparisons, 0 shares the effect budget, 1 lights all with two shadows, 2 shadows all."));
+	TEXT("Full dungeon lighting: -1 follows shadow quality. For comparisons, 0 shares the effect budget, 1 lights all with two shadows, 2 shadows all."));
 static TAutoConsoleVariable<float> CVarEffectLightMaxDistance(TEXT("ace.FXLightMaxDistance"), 3500.f,
 	TEXT("Maximum scene-light distance in cm (from the player in dungeons, otherwise the camera). Fades over the outer 20 percent."));
 
@@ -381,8 +381,11 @@ void UACEEffectLightSubsystem::SelectLights(int32 Budget, const FVector* ViewPos
 			if (IsValid(LightPool[I])) LightPool[I]->DestroyComponent();
 			LightPool.RemoveAtSwap(I); Assignments.RemoveAtSwap(I);
 		}
-	const bool bFullDesktop = GetWorld()->GetFeatureLevel() >= ERHIFeatureLevel::SM5 && ACERuntimeOptions::DynamicLightingQuality()==2;
-	int32 ShadowsRemaining = bFullDesktop ? 2 : 0;
+	static const auto* ShadowQuality = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("sg.ShadowQuality"));
+	const bool CastFixtureShadows = ACERuntimeOptions::DynamicLightingQuality()==2 &&
+		ShadowQuality && ShadowQuality->GetValueOnGameThread() > 0;
+	const bool AllFixtureShadows = FixtureMode==2 && GetWorld()->GetFeatureLevel() >= ERHIFeatureLevel::SM5;
+	int32 ShadowsRemaining = CastFixtureShadows ? 2 : 0;
 	for (const FChoice& Choice : Chosen)
 	{
 		int32 Slot = Assignments.Find(Choice.Key);
@@ -399,7 +402,7 @@ void UACEEffectLightSubsystem::SelectLights(int32 Budget, const FVector* ViewPos
 		const auto* Room = Cast<AACEEnvCellActor>(Choice.Key.Source->GetOwner()->GetOwner());
 		const bool bIndoorFixture = Choice.Key.bFixture || (Room && !Room->bSeenOutside);
 		const bool bIndependent=Choice.Key.bFixture && FixtureMode;
-		const bool bShadow = bIndoorFixture && (ShadowsRemaining>0 || (bIndependent && FixtureMode==2));
+		const bool bShadow = CastFixtureShadows && bIndoorFixture && (ShadowsRemaining>0 || (bIndependent && AllFixtureShadows));
 		if (bShadow && ShadowsRemaining>0) --ShadowsRemaining;
 		LightPool[Slot]->SetCastShadows(bShadow);
 		LightPool[Slot]->SetLightingChannels(!bIndoorFixture,true,false);
@@ -506,7 +509,7 @@ void UACEEffectLightSubsystem::RefreshLights(float DeltaSeconds)
 	const int32 Budget = FMath::Clamp(bMobile ? CVarEffectLightBudgetMobile.GetValueOnGameThread()
 		: CVarEffectLightBudget.GetValueOnGameThread(), 0, BudgetLimit);
 	int32 FixtureMode=0;
-	if (!bMobile && LightingQuality==2 && !ACERuntimeOptions::UniformDungeonLighting())
+	if (LightingQuality==2 && !ACERuntimeOptions::UniformDungeonLighting())
 	{
 		static const auto* ShadowQuality=IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("sg.ShadowQuality"));
 		const int32 Override=CVarDungeonFixtureMode.GetValueOnGameThread();

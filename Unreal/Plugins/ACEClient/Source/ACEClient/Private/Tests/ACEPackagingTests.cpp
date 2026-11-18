@@ -15,7 +15,16 @@ bool FACEPackagingMaterialsTest::RunTest(const FString& Parameters)
 	TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>());
 	TStrongObjectPtr<UACEDatSubsystem> Dat(NewObject<UACEDatSubsystem>(Instance.Get()));
 	const auto Parents = Dat->GetRuntimeMaterialParents();
-	TestEqual(TEXT("Complete world/UI/filtered VR widget/pointer/particle/sky/comfort shader set"), Parents.Num(), 38);
+	TestEqual(TEXT("Complete world/UI/filtered VR widget/pointer/particle/sky/comfort shader set"), Parents.Num(), 41);
+	for (const TCHAR* Name : {TEXT("M_ACELegionsSkyAdd_v2"),TEXT("M_ACELegionsSkyAlpha_v1"),TEXT("M_ACESkyColorFill_v8")})
+		TestTrue(Name,Parents.ContainsByPredicate([Name](const UMaterialInterface* Parent)
+		{
+			return Parent && Parent->GetName()==Name;
+		}));
+	const auto* Horizon = LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/ACE/RuntimeMaterials/M_ACESkyColorFill_v8.M_ACESkyColorFill_v8"));
+	float Falloff = -1.f;
+	TestTrue(TEXT("Cookable horizon supports a forecast-dependent fade"), Horizon &&
+		Horizon->GetScalarParameterValue(TEXT("HorizonFalloff"),Falloff) && Falloff == 0.f);
 	TestTrue(TEXT("World pointer material included"), Parents.ContainsByPredicate([](const UMaterialInterface* Parent)
 	{
 		return Parent && Parent->GetName() == TEXT("M_ACEVRPointerWorld_v1");

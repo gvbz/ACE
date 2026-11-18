@@ -1,4 +1,7 @@
 #include "UI/ACEVideoSettingsWidget.h"
+#include "Sky/ACELegionsSky.h"
+#include "Async/Async.h"
+#include "Components/Button.h"
 #include "ACEHoverTooltipWidget.h"
 #include "ACECameraSettings.h"
 #include "ACEScreenshotSettings.h"
@@ -27,8 +30,27 @@
 #include "GameFramework/GameUserSettings.h"
 #include "Styling/CoreStyle.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Personal/PersonalOptionCheckBox.h" // personal: far-textures
+#include "Personal/PersonalOptionCheckBox.h"
+#include "Personal/PersonalFarTerrain.h"
+#include "Personal/PersonalSkyHorizon.h"
 #include "Personal/PersonalSliderLabel.h" // personal: far-scenery
+#include "Brushes/SlateRoundedBoxBrush.h"
+#include "Framework/Application/SlateApplication.h"
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#include <shobjidl.h>
+#elif PLATFORM_LINUX
+#include <SDL3/SDL.h>
+#endif
+
+namespace
+{
+bool SavedFarTerrainCheck(const FString& Key)
+{
+ // Legacy profiles used a zero radius to disable terrain.
+ return Key == PersonalFarTerrain::OptionKey ? PersonalFarTerrain::IsOn() : ACERuntimeOptions::Get(*Key) > .5f;
+}
+}
 
 TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
 {
@@ -141,18 +163,65 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  UniformDungeonLighting->SetWidgetStyle(RoundToggle); UniformDungeonLighting->SetContent(Label(TEXT("Uniform dungeon lighting"))); Box->AddChild(Fixed(UniformDungeonLighting,272,20));
  UniformDungeonLighting->OnCheckStateChanged.AddDynamic(this,&UACEVideoSettingsWidget::ChangeUniformDungeonLighting);
  UACEHoverTooltipWidget::SetWidgetTooltip(UniformDungeonLighting,FText::FromString(TEXT("Light enclosed dungeon rooms, objects, and characters evenly. Turn off for torchlight and shadows. Changes apply and save immediately.")));
+ LegionsSky=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("LegionsSky"));
+ LegionsSky->SetWidgetStyle(RoundToggle);
+ LegionsSky->SetContent(Label(TEXT("Use imported AC2 sky")));
+ UACEHoverTooltipWidget::SetWidgetTooltip(LegionsSky,FText::FromString(TEXT("Show the Legions sky outdoors with AC1 weather and sun and moon positions for your server’s time of day.")));
+ Box->AddChild(Fixed(LegionsSky,272,20));
+ LegionsSky->OnCheckStateChanged.AddDynamic(this,&UACEVideoSettingsWidget::ChangeLegionsSky);
+ LegionsDirectory=WidgetTree->ConstructWidget<UEditableTextBox>(UEditableTextBox::StaticClass(),TEXT("LegionsDatPath"));
+ const FLinearColor Bronze(.37f,.23f,.085f), Gold(.78f,.53f,.16f);
+ const FSlateRoundedBoxBrush Field(FLinearColor(.018f,.014f,.01f),1.f,Bronze,1.f);
+ const FSlateRoundedBoxBrush Focus(FLinearColor(.035f,.026f,.015f),1.f,Gold,1.f);
+ auto PathStyle=LegionsDirectory->GetWidgetStyle();
+ PathStyle.SetTextStyle(FTextBlockStyle(PathStyle.TextStyle).SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"),9)))
+  .SetBackgroundImageNormal(Field).SetBackgroundImageHovered(Focus).SetBackgroundImageFocused(Focus)
+  .SetForegroundColor(FLinearColor::White).SetFocusedForegroundColor(FLinearColor::White).SetPadding(FMargin(5,2));
+ LegionsDirectory->SetWidgetStyle(PathStyle);
+ LegionsDirectory->SetHintText(FText::FromString(TEXT("Legions folder or portal.dat")));
+ auto* ImportRow=WidgetTree->ConstructWidget<UHorizontalBox>();
+ auto* PathSlot=ImportRow->AddChildToHorizontalBox(LegionsDirectory);
+ PathSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+ auto AddImportButton=[&](const TCHAR* Caption,const TCHAR* Name,float Width)
+ {
+  auto* Button=WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(),Name);
+  FButtonStyle Style;
+  Style.SetNormal(FSlateRoundedBoxBrush(FLinearColor(.12f,.018f,.009f),1.f,Bronze,1.f))
+   .SetHovered(FSlateRoundedBoxBrush(FLinearColor(.21f,.032f,.014f),1.f,Gold,1.f))
+   .SetPressed(Field).SetNormalPadding(FMargin(1)).SetPressedPadding(FMargin(1));
+  Button->SetStyle(Style); Button->SetContent(Label(Caption));
+  ImportRow->AddChildToHorizontalBox(Fixed(Button,Width,22))->SetPadding(FMargin(3,0,0,0));
+  return Button;
+ };
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
+ LegionsBrowse=AddImportButton(TEXT("Browse…"),TEXT("BrowseLegionsDat"),54);
+ LegionsBrowse->OnClicked.AddDynamic(this,&UACEVideoSettingsWidget::BrowseLegionsDat);
+#endif
+ LegionsImport=AddImportButton(TEXT("Import"),TEXT("ImportLegionsDat"),47);
+ LegionsImport->OnClicked.AddDynamic(this,&UACEVideoSettingsWidget::ImportLegionsSky);
+ Box->AddChild(Fixed(ImportRow,272,22));
+ LegionsStatus=Label(TEXT("")); LegionsStatus->SetAutoWrapText(true); Box->AddChild(LegionsStatus);
  ShowFrameRate=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("ShowFrameRate"));
  ShowFrameRate->SetWidgetStyle(RoundToggle);ShowFrameRate->SetContent(Label(TEXT("Show FPS overlay")));Box->AddChild(Fixed(ShowFrameRate,272,20));
- Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain")),TEXT("PersonalFarTerrain"),TEXT("Draw low-detail terrain past the loaded landblocks, out to Far Terrain Radius. Off also turns off the other Far Terrain options. Changes apply and save immediately.")),272,20)); // personal: far-terrain
+ auto AddFarTerrainCheck = [&](const TCHAR* Key, const TCHAR* Caption, const TCHAR* Tooltip)
+ {
+  auto* Check = WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), Key);
+  Check->SetWidgetStyle(RoundToggle);
+  Check->SetContent(Label(Caption));
+  UACEHoverTooltipWidget::SetWidgetTooltip(Check, FText::FromString(Tooltip));
+  Box->AddChild(Fixed(Check,272,20));
+  FarTerrainChecks.Add(Key,Check);
+ };
+ AddFarTerrainCheck(TEXT("PersonalFarTerrain"), TEXT("Far Terrain"), TEXT("Draw low-detail terrain past the loaded landblocks, out to Far Terrain Radius. Use Apply to update the terrain and its dependent options."));
  AddValue(TEXT("PersonalFarTerrainRadius")); ValueSliders[TEXT("PersonalFarTerrainRadius")]->SetStepSize(1.f); // personal: far-terrain
  Box->AddChild(Fixed(UPersonalSliderLabel::Make(WidgetTree,ValueSliders[TEXT("PersonalFarTerrainRadius")],Label(TEXT(""),7),TEXT("landblocks")),250,14)); // personal: far-terrain
- Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain Objects")),TEXT("PersonalFarScenery"),TEXT("Draw trees, rocks, buildings and other objects past the landblocks where they are drawn today, out to Far Terrain Objects Radius. Needs Far Terrain. Changes apply and save immediately.")),272,20)); // personal: far-scenery
+ AddFarTerrainCheck(TEXT("PersonalFarScenery"), TEXT("Far Terrain Objects"), TEXT("Draw trees, rocks, buildings and other objects past the landblocks where they are drawn today, out to Far Terrain Objects Radius. Needs Far Terrain."));
  AddValue(TEXT("PersonalFarSceneryRadius")); ValueSliders[TEXT("PersonalFarSceneryRadius")]->SetStepSize(1.f); // personal: far-scenery
  Box->AddChild(Fixed(UPersonalSliderLabel::Make(WidgetTree,ValueSliders[TEXT("PersonalFarSceneryRadius")],Label(TEXT(""),7),TEXT("landblocks")),250,14)); // personal: far-scenery
- Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Hide Far Terrain with Fog")),TEXT("PersonalFarSceneryFog"),TEXT("Draw no far terrain objects past the fog end. Off keeps them as a skyline in fog and at night. Changes apply and save immediately.")),272,20)); // personal: far-scenery
- Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain Rooms")),TEXT("PersonalFarWindows"),TEXT("Show the rooms behind the windows and other openings of far buildings, with their lights at night, and close far doors with dark panels. Needs Far Terrain Objects. Changes apply and save immediately.")),272,20)); // personal: far-windows
- Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain Textures")),TEXT("PersonalFarTerrainTextures"),TEXT("Draw the far terrain within about 2.7 km with the terrain textures. Off leaves it at flat colors. Needs Far Terrain. Changes apply and save immediately.")),272,20)); // personal: far-textures
- Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Far Terrain Horizon")),TEXT("PersonalSkyHorizon"),TEXT("Continue the night sky below eye level, down to the far terrain. Removes the bright strip at the horizon from sunset to dawn. Needs Far Terrain. Changes apply and save immediately.")),272,20)); // personal: sky-horizon
+ AddFarTerrainCheck(TEXT("PersonalFarSceneryFog"), TEXT("Hide Far Terrain with Fog"), TEXT("Draw no far terrain objects past the fog end. Off keeps them as a skyline in fog and at night."));
+ AddFarTerrainCheck(TEXT("PersonalFarWindows"), TEXT("Far Terrain Rooms"), TEXT("Show the rooms behind the windows and other openings of far buildings, with their lights at night, and close far doors with dark panels. Needs Far Terrain Objects."));
+ AddFarTerrainCheck(TEXT("PersonalFarTerrainTextures"), TEXT("Far Terrain Textures"), TEXT("Draw the far terrain within about 2.7 km with the terrain textures. Off leaves it at flat colors. Needs Far Terrain."));
+ AddFarTerrainCheck(TEXT("PersonalSkyHorizon"), TEXT("Far Terrain Horizon"), TEXT("Continue the night sky below eye level, down to the far terrain. Removes the bright strip at the horizon from sunset to dawn. Needs Far Terrain."));
  Resolution=Combo(TEXT("Resolution")); Resolution->Rename(TEXT("DisplayResolution"));
  Resolution->OnOpening.AddDynamic(this,&UACEVideoSettingsWidget::RefreshResolutions);
  UACEHoverTooltipWidget::SetWidgetTooltip(Resolution,FText::FromString(TEXT("Resolution for fullscreen and windowed modes. Borderless fills the desktop at its native resolution.")));
@@ -303,6 +372,7 @@ void UACEVideoSettingsWidget::ResetVideo()
  for(int32 I=0;I<QualityLevels.Num();++I)QualityLevels[I]->SetSelectedIndex(Levels[I]);
  DynamicLighting->SetSelectedIndex(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("DynamicLightingQuality"))));
  for(auto& P:ValueSliders)P.Value->SetValue(ACERuntimeOptions::Get(*P.Key.ToString()));
+ for(const auto& P : FarTerrainChecks) P.Value->SetIsChecked(SavedFarTerrainCheck(P.Key));
  ChangeFieldOfView(GetPreviewFieldOfView());
  ChangeScreenBrightness(ValueSliders[TEXT("ScreenBrightness")]->GetValue());
  ChangeScreenContrast(ValueSliders[TEXT("Contrast")]->GetValue());
@@ -319,6 +389,12 @@ void UACEVideoSettingsWidget::ResetVideo()
  CursorScaleLabel->SetText(FText::FromString(FString::Printf(TEXT("%d%%"),FMath::RoundToInt(CursorScale->GetValue()*100.f))));
  ObjectGlow->SetIsChecked(ACERuntimeOptions::Get(TEXT("ObjectGlow"))>.5f);
  UniformDungeonLighting->SetIsChecked(ACERuntimeOptions::Get(TEXT("UniformDungeonLighting"))>.5f);
+ bool NeedsWeather=false;
+ const bool HasSky=ACELegionsSky::HasCache(&NeedsWeather);
+ if (NeedsWeather && LegionsImport->GetIsEnabled())
+  LegionsStatus->SetText(FText::FromString(TEXT("Reimport your Legions DAT to add storm skies and lighting.")));
+ LegionsSky->SetIsEnabled(HasSky);
+ LegionsSky->SetIsChecked(HasSky && ACERuntimeOptions::LegionsSky());
  ConstrainUIWindows->SetIsChecked(ACERuntimeOptions::Get(TEXT("ConstrainUIWindows"))>.5f);
  RefreshFrameRateOption();
  ChatFontFace->SetSelectedIndex(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("ChatFontFace"))));
@@ -372,6 +448,7 @@ bool UACEVideoSettingsWidget::HasPendingChanges() const
  const int32 Levels[]={S->GetTextureQuality(),S->GetViewDistanceQuality(),S->GetShadowQuality(),S->GetVisualEffectQuality(),S->GetPostProcessingQuality(),S->GetAntiAliasingQuality(),S->GetFoliageQuality(),S->GetShadingQuality()};
  for(int32 I=0;I<QualityLevels.Num();++I) if(QualityLevels[I]->GetSelectedIndex()!=Levels[I]) return true;
  for(const auto& P:ValueSliders) if(!FMath::IsNearlyEqual(P.Value->GetValue(),ACERuntimeOptions::Get(*P.Key.ToString()))) return true;
+ for(const auto& P : FarTerrainChecks) if(P.Value->IsChecked() != SavedFarTerrainCheck(P.Key)) return true;
  if(ActiveSoundOnly->IsChecked()!=(ACERuntimeOptions::Get(TEXT("ActiveSoundOnly"))>.5f)
   || Filtering->GetSelectedIndex()!=FMath::Clamp(FMath::FloorLog2(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("Anisotropy")))),0,4)) return true;
  if(auto* GI=GetGameInstance()) if(auto* Client=GI->GetSubsystem<UACEClientSubsystem>())
@@ -431,7 +508,10 @@ void UACEVideoSettingsWidget::ChangeQuality(FString, ESelectInfo::Type)
 
 void UACEVideoSettingsWidget::ApplyRuntimeOptions()
 {
+ const bool bHadExtendedHorizon = PersonalSkyHorizon::IsEnabled();
  for(const auto& P:ValueSliders) ACERuntimeOptions::Set(*P.Key.ToString(),P.Value->GetValue());
+ for(const auto& P : FarTerrainChecks) ACERuntimeOptions::Set(*P.Key,P.Value->IsChecked() ? 1.f : 0.f);
+ if(bHadExtendedHorizon != PersonalSkyHorizon::IsEnabled()) PersonalSkyHorizon::RebuildSky();
  ACERuntimeOptions::Set(TEXT("DynamicLightingQuality"),DynamicLighting->GetSelectedIndex());
  ApplyInterfaceOptions();
  ACERuntimeOptions::Set(TEXT("ActiveSoundOnly"),ActiveSoundOnly->IsChecked()?1:0);
@@ -488,6 +568,96 @@ void UACEVideoSettingsWidget::ChangeUniformDungeonLighting(bool bEnabled)
  ACERuntimeOptions::Apply();
 }
 
+void UACEVideoSettingsWidget::ChangeLegionsSky(bool bEnabled)
+{
+ if (LoadingSettings || bEnabled==ACERuntimeOptions::LegionsSky()) return;
+ ACERuntimeOptions::Set(TEXT("LegionsSky"),bEnabled ? 1.f : 0.f);
+ ACERuntimeOptions::Apply();
+}
+
+void UACEVideoSettingsWidget::BrowseLegionsDat()
+{
+#if PLATFORM_WINDOWS
+ const HRESULT Init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+ IFileOpenDialog* Dialog=nullptr;
+ HRESULT Result=CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&Dialog));
+ if (SUCCEEDED(Result))
+ {
+  DWORD Options=0; Dialog->GetOptions(&Options);
+  Dialog->SetOptions(Options|FOS_FORCEFILESYSTEM|FOS_FILEMUSTEXIST|FOS_NOCHANGEDIR);
+  const COMDLG_FILTERSPEC Filter{L"Legions portal.dat",L"portal.dat"};
+  Dialog->SetFileTypes(1,&Filter); Dialog->SetTitle(L"Select your AC2 Legions portal.dat");
+  Result=Dialog->Show(static_cast<HWND>(const_cast<void*>(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(GetCachedWidget()))));
+  IShellItem* Item=nullptr;
+  if (SUCCEEDED(Result)) Result=Dialog->GetResult(&Item);
+  if (Item)
+  {
+   PWSTR Path=nullptr; Result=Item->GetDisplayName(SIGDN_FILESYSPATH,&Path);
+   if (SUCCEEDED(Result)) { LegionsDirectory->SetText(FText::FromString(Path)); LegionsStatus->SetText(FText::GetEmpty()); }
+   CoTaskMemFree(Path); Item->Release();
+  }
+  Dialog->Release();
+ }
+ if (SUCCEEDED(Init)) CoUninitialize();
+ if (FAILED(Result) && Result!=HRESULT_FROM_WIN32(ERROR_CANCELLED))
+  LegionsStatus->SetText(FText::FromString(TEXT("Could not open the file picker. Enter the folder or portal.dat path.")));
+#elif PLATFORM_LINUX
+ using FWeakWidget=TWeakObjectPtr<UACEVideoSettingsWidget>;
+ LegionsBrowse->SetIsEnabled(false);
+ static const SDL_DialogFileFilter Filter{"AC2 DAT files","dat"};
+ SDL_ShowOpenFileDialog([](void* Context,const char* const* Files,int)
+ {
+  TUniquePtr<FWeakWidget> Weak(static_cast<FWeakWidget*>(Context));
+  const FString Path=Files && Files[0] ? UTF8_TO_TCHAR(Files[0]) : TEXT("");
+  AsyncTask(ENamedThreads::GameThread,[Weak=*Weak,Path,Failed=!Files]()
+  {
+   if (auto* Widget=Weak.Get())
+   {
+    Widget->LegionsBrowse->SetIsEnabled(Widget->LegionsImport->GetIsEnabled());
+    if (!Path.IsEmpty()) { Widget->LegionsDirectory->SetText(FText::FromString(Path)); Widget->LegionsStatus->SetText(FText::GetEmpty()); }
+    if (Failed) Widget->LegionsStatus->SetText(FText::FromString(TEXT("Could not open the file picker. Enter the folder or portal.dat path.")));
+   }
+  });
+ },new FWeakWidget(this),static_cast<SDL_Window*>(const_cast<void*>(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(GetCachedWidget()))),&Filter,1,nullptr,false);
+#endif
+}
+
+void UACEVideoSettingsWidget::ImportLegionsSky()
+{
+ const FString Input=LegionsDirectory->GetText().ToString().TrimStartAndEnd();
+ if (Input.IsEmpty())
+ {
+  LegionsStatus->SetText(FText::FromString(TEXT("Enter the folder containing your AC2 portal.dat.")));
+  return;
+ }
+ LegionsImport->SetIsEnabled(false);
+ LegionsDirectory->SetIsEnabled(false);
+ if (LegionsBrowse) LegionsBrowse->SetIsEnabled(false);
+ LegionsStatus->SetText(FText::FromString(TEXT("Importing sky from your AC2 DATs…")));
+ const FString Destination=ACELegionsSky::CachePath();
+ Async(EAsyncExecution::ThreadPool,[Weak=TWeakObjectPtr<UACEVideoSettingsWidget>(this),Input,Destination]()
+ {
+  FString Error;
+  const bool Ok=ACELegionsSky::Import(Input,Destination,Error);
+  AsyncTask(ENamedThreads::GameThread,[Weak,Ok,Error=MoveTemp(Error)]() mutable
+  {
+   if (auto* Widget=Weak.Get())
+   {
+    Widget->LegionsImport->SetIsEnabled(true);
+    Widget->LegionsDirectory->SetIsEnabled(true);
+    if (Widget->LegionsBrowse) Widget->LegionsBrowse->SetIsEnabled(true);
+    if (Ok) Error=ACERuntimeOptions::LegionsSky() ? TEXT("Imported. The AC2 sky is enabled.") : TEXT("Imported. Select “Use imported AC2 sky” to enable it.");
+    Widget->LegionsStatus->SetText(FText::FromString(Error));
+    if (Ok)
+    {
+     Widget->LegionsSky->SetIsEnabled(true);
+     Widget->LegionsSky->SetIsChecked(ACERuntimeOptions::LegionsSky());
+    }
+   }
+  });
+ });
+}
+
 void UACEVideoSettingsWidget::ChangeMouseTurnSpeed(float Value)
 {
  ACECameraSettings::SetMouseTurnSpeed(Value);
@@ -524,7 +694,11 @@ void UACEVideoSettingsWidget::DefaultsVideo()
 {
  if(!Resolution)return;
  WindowMode->SetSelectedIndex(0); Quality->SetSelectedIndex(2); FrameLimit->SetSelectedIndex(0); VSync->SetIsChecked(false);
- for(const auto& O:ACERuntimeOptions::Values) if(auto* V=ValueSliders.Find(O.Key))(*V)->SetValue(O.Default);
+ for(const auto& O:ACERuntimeOptions::Values)
+ {
+  if(auto* V=ValueSliders.Find(O.Key)) (*V)->SetValue(O.Default);
+  if(auto* Check=FarTerrainChecks.Find(O.Key)) (*Check)->SetIsChecked(O.Default > .5f);
+ }
  ChangeFieldOfView(GetPreviewFieldOfView());
  ChangeScreenBrightness(ValueSliders[TEXT("ScreenBrightness")]->GetValue());
  ChangeScreenContrast(ValueSliders[TEXT("Contrast")]->GetValue());
@@ -539,6 +713,7 @@ void UACEVideoSettingsWidget::DefaultsVideo()
  CursorScale->SetValue(1.f); ChangeCursorScale(1.f);
  ObjectGlow->SetIsChecked(true); ChangeObjectGlow(true);
  UniformDungeonLighting->SetIsChecked(false); ChangeUniformDungeonLighting(false);
+ LegionsSky->SetIsChecked(false); ChangeLegionsSky(false);
  ConstrainUIWindows->SetIsChecked(true);
  ShowFrameRate->SetIsChecked(false);
  ChatFontFace->SetSelectedIndex(2); ChatFontSize->SetSelectedIndex(1);

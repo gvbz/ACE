@@ -212,6 +212,7 @@ void UACEScriptComponent::InitializeFromObject(const FACEWorldObject& Object, fl
 
 void UACEScriptComponent::InitializeForEnvironment(float InWorldScale)
 {
+	EnvironmentSkyTime.Reset(); PreviousEnvironmentSkyTime.Reset();
 	EnvironmentScriptDrawOrder.Reset();
 	WorldScale = FMath::Max(0.01f, InWorldScale);
 	ObjectScale = 1.f;
@@ -2925,6 +2926,13 @@ void UACEScriptComponent::TickParticlePresentation(float RenderAhead)
 
 void UACEScriptComponent::TickEmitters(float DeltaTime)
 {
+	double SkyDelta = DeltaTime;
+	if (bEnvironmentWeather && EnvironmentSkyTime.IsSet())
+	{
+		if (PreviousEnvironmentSkyTime.IsSet())
+			SkyDelta = FMath::Max(0.,EnvironmentSkyTime.GetValue()-PreviousEnvironmentSkyTime.GetValue());
+		PreviousEnvironmentSkyTime = EnvironmentSkyTime;
+	}
 	TGuardValue<bool> UpdatingVisuals(bUpdatingParticleVisuals, true);
 	FVector ViewLocation;
 	const bool bHasView = GetParticleViewLocation(ViewLocation);
@@ -2938,14 +2946,15 @@ void UACEScriptComponent::TickEmitters(float DeltaTime)
 	for (int32 EmitterIndex = ActiveEmitters.Num() - 1; EmitterIndex >= 0; --EmitterIndex)
 	{
 		FActiveEmitter& Emitter = ActiveEmitters[EmitterIndex];
-		Emitter.Age += DeltaTime;
+		const double Dt = bEnvironmentWeather && Emitter.RenderSortPriority < 0 ? SkyDelta : DeltaTime;
+		Emitter.Age += Dt;
 		const FTransform Anchor = GetEmitterTransform(Emitter);
 		const FVector EmitterOrigin = Anchor.GetLocation();
 		const FVector ParentDelta = EmitterOrigin - Emitter.LastOrigin;
 		const double DisplacementSquared = FVector::DistSquared(EmitterOrigin, Emitter.LastEmissionOrigin)
 			/ FMath::Square(FMath::Max(1.f, WorldScale));
 		Emitter.LastOrigin = EmitterOrigin;
-		Emitter.TimeSinceEmit += DeltaTime;
+		Emitter.TimeSinceEmit += Dt;
 		const bool bTimed = (Emitter.Info.EmitterType & 1) != 0;
 		const bool bPerMeter = !bTimed && (Emitter.Info.EmitterType & 2) != 0;
 		const bool bEmissionDue = bTimed ? Emitter.TimeSinceEmit > Emitter.Info.Birthrate
@@ -2962,7 +2971,7 @@ void UACEScriptComponent::TickEmitters(float DeltaTime)
 				for (int32 I=Emitter.Particles.Num()-1; I>=0; --I)
 				{
 					auto& Particle=Emitter.Particles[I];
-					Particle.Age += DeltaTime;
+					Particle.Age += Dt;
 					if (Particle.Age >= Particle.Life)
 					{
 						ReleaseParticleVisual(Emitter,Particle);
@@ -2994,7 +3003,7 @@ void UACEScriptComponent::TickEmitters(float DeltaTime)
 		for (int32 ParticleIndex = Emitter.Particles.Num() - 1; ParticleIndex >= 0; --ParticleIndex)
 		{
 			FActiveParticle& Particle = Emitter.Particles[ParticleIndex];
-			Particle.Age += DeltaTime;
+			Particle.Age += Dt;
 			if (Particle.Age >= Particle.Life)
 			{
 				if (Particle.bHoldStill && !Emitter.bStopped)

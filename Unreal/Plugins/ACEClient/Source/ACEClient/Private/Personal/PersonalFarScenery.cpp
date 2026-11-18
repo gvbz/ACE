@@ -11,7 +11,7 @@ namespace
 	TAutoConsoleVariable<int32> CVarFarSceneryDraw(TEXT("personal.FarScenery.Draw"), -1,
 		TEXT("-1 follows the Far Terrain Objects check box, 0 removes the far scenery, 1 draws it. A file Saved/Personal/FarSceneryOff does the same as 0."));
 	TAutoConsoleVariable<int32> CVarFarSceneryRadius(TEXT("personal.FarScenery.Radius"), 0,
-		TEXT("0 follows the Far Terrain Objects Radius slider, else the outermost ring of landblocks with far scenery, 2 to 8."));
+		TEXT("0 follows the Far Terrain Objects Radius slider, else the outermost ring of landblocks with far scenery, 2 to 24."));
 	TAutoConsoleVariable<int32> CVarFarSceneryFogRule(TEXT("personal.FarScenery.FogRule"), -1,
 		TEXT("-1 follows the Hide Far Terrain with Fog check box, 1 draws no far objects past the fog end, 0 draws them out to the radius whatever the fog."));
 }

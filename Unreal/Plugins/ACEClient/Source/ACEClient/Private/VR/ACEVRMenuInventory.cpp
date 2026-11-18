@@ -166,8 +166,9 @@ void UACEVRMenu::BeginItemPointer(int32 Guid)
 {
     bSuppressItemClick=false;
     FACEWorldObject Item;
-    if(UseSource || !Rig || !Client->GetWorldObject(Guid,Item)
-        || (Guid!=Client->GetPlayerGuid() && !Client->IsOwnedInventoryItem(Item)))return;
+    if(UseSource || !Rig || !Client->GetWorldObject(Guid,Item))return;
+    const bool Equipped=Item.WielderId==Client->GetPlayerGuid() && Item.CurrentWieldedLocation!=0;
+    if(Guid!=Client->GetPlayerGuid() && !Client->IsOwnedInventoryItem(Item) && !Equipped)return;
     auto* Pointer=Rig->FeedbackHand==0?Rig->LeftPointer.Get():Rig->RightPointer.Get();
     DragItem=Guid;DragAmount=Binder->GetSelectedItemAmount(Guid);DragStart=Pointer->Get2DHitLocation();bItemDragging=false;
 }
@@ -285,7 +286,9 @@ void UACEVRMenu::BuildInventory()
     // Reserve the same footer geometry before and after selection, including
     // single items versus stacks. Auto-height rows used to change the scrollbar
     // and shrink the pack grid as soon as the player clicked an item.
-    FACEWorldObject Item;const bool Valid=Selected && Client->GetWorldObject(Selected,Item) && Client->IsOwnedInventoryItem(Item);
+    FACEWorldObject Item;const bool Found=Selected && Client->GetWorldObject(Selected,Item);
+    const bool Packed=Found && Client->IsOwnedInventoryItem(Item);
+    const bool Valid=Packed || (Found && Item.WielderId==Client->GetPlayerGuid() && Item.CurrentWieldedLocation!=0);
     Body->AddSlot().AutoHeight().Padding(4)[SNew(SBox).HeightOverride(bTouchMode?48:64).Clipping(EWidgetClipping::ClipToBoundsAlways)
         [Text(Valid?ACERetailObjectNames::Name(Item):TEXT("Select an item to use, equip, or inspect."),28)]];
     auto Quantity=SNew(SVerticalBox);const auto MainBody=Body;Body=Quantity;
@@ -294,7 +297,8 @@ void UACEVRMenu::BuildInventory()
     if(!bTouchMode)Body->AddSlot().AutoHeight()[SNew(SBox).HeightOverride(76)[Quantity]];
     auto Actions=SNew(SWrapBox).UseAllottedSize(true);
     for(const TCHAR* Name:{TEXT("Use / Equip"),TEXT("Inspect"),TEXT("Give"),TEXT("Drop")})
-        Actions->AddSlot().Padding(2)[Button(Name,[this,Name](){Execute(Name);},Valid)];
+        Actions->AddSlot().Padding(2)[Button(Name,[this,Name](){Execute(Name);},
+            FCString::Strcmp(Name,TEXT("Give"))==0 || FCString::Strcmp(Name,TEXT("Drop"))==0 ? Packed : Valid)];
     Body->AddSlot().AutoHeight().Padding(2)[SNew(SBox).HeightOverride(60)[Actions]];
     if(bTouchMode)Body->AddSlot().AutoHeight()[Quantity];
     if(bTouchMode && Valid && ACEEquipmentRules::CanWieldInSlot(Item,ACEEquipMask::Shield))

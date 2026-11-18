@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Async/Future.h"
 #include "GameFramework/Actor.h"
 #include "Dat/ACEDatFileTypes.h"
 #include "ACESkyDomeActor.generated.h"
@@ -13,6 +14,8 @@ class UACEScriptComponent;
 class AExponentialHeightFog;
 class ADirectionalLight;
 class ASkyLight;
+struct FACELegionsSkyRenderer;
+namespace ACELegionsSky { struct FBackdrop; }
 
 /**
  * Retail Asheron's Call sky — RegionDesc 0x13000000 SkyDesc → GameSky / GetSky.
@@ -35,6 +38,7 @@ class ACECLIENT_API AACESkyDomeActor : public AActor
 	friend class FACERetailNetworkWeatherTest;
 	friend class FACEMobileShadowTest;
 	friend class FACELowEndVideoSettingsTest;
+	friend class FACELegionsSkyTest;
 
 public:
 	AACESkyDomeActor();
@@ -96,6 +100,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 	/** Retail CelestialPosition + Unreal draw resources for one DayGroup.SkyObjects entry. */
 	struct FSkySlot
@@ -117,8 +122,9 @@ protected:
 		bool bAfterPass = false;
 		bool bWeather = false;
 		bool bForceWeatherZ = false;
-		/** DAT Surface.Translucency baked at mesh build (rain 0.5). Multiplies OpacityMul. */
-		float AuthoredOpacity = 1.f;
+		/** Local bearing of the AC1 sun or moon card. */
+		FVector LocalBodyDirection = FVector::ZeroVector;
+		FVector LocalCloudTravel = FVector::ZeroVector;
 	};
 
 	/** GetSky-resolved per-object state for one frame. */
@@ -134,11 +140,11 @@ protected:
 	};
 
 	bool TryBuild();
-	void ClearSky();
+	void ClearSky(bool KeepImported = false);
 	void RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId);
 	void DestroySlotMesh(FSkySlot& Slot);
 
-	void UpdateSky(float DayFraction, float DeltaSeconds);
+	void UpdateSky(float DayFraction, float DeltaSeconds, bool bUseImported = false);
 	void ResolveCelestialState(float DayFraction, int32 IdxA, int32 IdxB, float Alpha,
 		int32 ObjIndex, const FACEDatSkyObject& Def, FCelestialState& Out) const;
 	void ApplySlotFrame(FSkySlot& Slot, const FCelestialState& State);
@@ -153,7 +159,7 @@ protected:
 		int32& OutIdxA, int32& OutIdxB, float& OutAlpha);
 
 	/** Bump when sky mesh authoring / retail policy changes so PIE rebuilds. */
-	static constexpr int32 SkyMeshFormatVersion = 55;
+	static constexpr int32 SkyMeshFormatVersion = 56;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UACEDatSubsystem> DatSubsystem;
@@ -185,11 +191,28 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ColorFillMid;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> HorizonMesh;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HorizonMid;
+
 	void SnapToView();
 	void EnsureColorFillMesh();
 	void DestroyColorFillMesh();
 	void UpdateColorFill(const FLinearColor& Color);
 	FLinearColor LastFillColor = FLinearColor::Transparent;
+	void ResetImportedSky();
+	bool UpdateImportedSky(float DayFraction, bool bEnabled);
+	float ImportedPaletteTime(float DayFraction) const;
+	// Night end, daylight start, daylight end, night start from the AC1 star field.
+	FVector4f Twilight = FVector4f(.16f,.27f,.84f,.96f);
+	float LastImportedTime = -1.f;
+	double LastImportedUpdate = -1.;
+	bool bImportedClouds = false;
+	TSharedPtr<FACELegionsSkyRenderer> ImportedSky;
+	TFuture<TSharedPtr<ACELegionsSky::FBackdrop>> PendingSky;
+	int32 ImportedRevision = INDEX_NONE;
+	bool bImportedVisible = false;
 
 	TArray<FSkySlot> Slots;
 	FACEDatSkyDayGroup ActiveGroup;

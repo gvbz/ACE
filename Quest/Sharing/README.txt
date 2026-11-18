@@ -22,6 +22,23 @@ Update-Quest.cmd. It updates the app while keeping your DAT files, saved login,
 and VR settings. Do not uninstall the old app first. If the original data
 installation is incomplete, use Install-Quest.cmd instead.
 
+OPTIONAL AC2 LEGIONS SKY
+
+1. Install or update AC:VR from this full bundle. Connect your Quest by USB
+   and close the game.
+2. On the PC, run Install-AC2-Sky.cmd. Choose portal.dat from your own AC2
+   Legions installation, or choose Saved\Skies\Legions.sky from an existing
+   AC:Unreal import. The cache is the smaller transfer. For portal.dat, allow
+   free space on the headset for two copies during USB transfer.
+3. Open AC:VR. Under Options > VR settings > Graphics, choose "Import and use
+   AC2 sky". The headset validates the file, applies the sky, and frees the
+   transferred DAT space after import. Use "AC2 sky" here to switch back to
+   the original sky or enable the imported sky again.
+
+The sky and your choice survive ordinary app updates. To replace the sky,
+repeat steps 2 and 3. For a single install and transfer from the command line,
+pass -AC2SkyPath "C:\path to AC2\portal.dat" to Install-Quest.cmd or Update-Quest.cmd.
+
 INSTALL
 
 1. Extract the entire ZIP into a normal folder on your Windows PC.

@@ -1,6 +1,9 @@
 #include "VR/ACEVRWidget.h"
 #include "ACEClientBuild.h"
 #include "ACERuntimeOptions.h"
+#include "Sky/ACELegionsSky.h"
+#include "Async/Async.h"
+#include "HAL/FileManager.h"
 #include "VR/ACEVRComponent.h"
 #include "VR/ACEVRSettings.h"
 #include "VR/ACEVRInputLayout.h"
@@ -20,6 +23,46 @@
 
 namespace
 {
+#if PLATFORM_ANDROID
+	// Multiple menu instances can exist while a transfer is being imported.
+	struct FQuestSkyMenu
+	{
+		bool HasSource = false;
+		bool HasCache = false;
+		bool Importing = false;
+		bool NeedsWeather = false;
+		FString Message;
+
+		void Refresh()
+		{
+			HasSource = IFileManager::Get().FileExists(*ACELegionsSky::StagedPath(ACELegionsSky::CachePath()));
+			HasCache = ACELegionsSky::HasCache(&NeedsWeather);
+		}
+		void StartImport()
+		{
+			if (!HasSource || Importing) return;
+			Importing = true;
+			Message = TEXT("Importing your AC2 sky...");
+			Async(EAsyncExecution::ThreadPool, [this, Destination = ACELegionsSky::CachePath()]()
+			{
+				FString Error;
+				const bool Success = ACELegionsSky::ImportStaged(Destination, Error);
+				AsyncTask(ENamedThreads::GameThread, [this, Success, Error = MoveTemp(Error)]()
+				{
+					Importing = false;
+					Refresh();
+					Message = Success ? TEXT("AC2 sky installed.") : Error;
+					if (Success)
+					{
+						ACERuntimeOptions::Set(TEXT("LegionsSky"), 1.f);
+						ACERuntimeOptions::Apply();
+					}
+				});
+			});
+		}
+	};
+	FQuestSkyMenu QuestSky;
+#endif
 	const FLinearColor MenuGold(.66f, .44f, .16f);
 	const FLinearColor MenuText(.90f, .83f, .66f);
 	const FButtonStyle& RetailButtonStyle()
@@ -145,7 +188,7 @@ TSharedRef<SWidget> UACEVRWidget::RebuildWidget()
 			[SNew(SBorder).Padding(0,0,0,3).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
 			.BorderBackgroundColor_Lambda([this,I](){return SettingsCategory==I?MenuGold:FLinearColor::Transparent;})
 			[Button(Literal(CategoryNames[I]),[this,I](){SettingsCategory=I;},16)]];
-			auto Page=SNew(SScrollBox);Sections.Add(Page);Switcher->AddSlot()[Page];
+			auto Page=SNew(SScrollBox).Tag(FName(CategoryNames[I]));Sections.Add(Page);Switcher->AddSlot()[Page];
 		}
 		List->AddSlot().AutoHeight().Padding(0,8)[Categories];
 		auto Scroll=Sections[1];
@@ -190,6 +233,32 @@ TSharedRef<SWidget> UACEVRWidget::RebuildWidget()
 		Scroll->AddSlot().Padding(0,6)[Button(TAttribute<FText>::CreateLambda([]()
 			{ return FText::FromString(ACERuntimeOptions::Get(TEXT("ShowFrameRate"))>.5f ? TEXT("FPS overlay: On") : TEXT("FPS overlay: Off")); }),
 			[](){ACERuntimeOptions::Set(TEXT("ShowFrameRate"),ACERuntimeOptions::Get(TEXT("ShowFrameRate"))>.5f ? 0.f : 1.f);ACERuntimeOptions::Apply();})];
+#if PLATFORM_ANDROID
+		QuestSky.Refresh();
+		auto SkyToggle = Button(TAttribute<FText>::CreateLambda([]()
+		{
+			return FText::FromString(ACERuntimeOptions::LegionsSky() ? TEXT("AC2 sky: On") : TEXT("AC2 sky: Off"));
+		}), []()
+		{
+			ACERuntimeOptions::Set(TEXT("LegionsSky"), ACERuntimeOptions::LegionsSky() ? 0.f : 1.f);
+			ACERuntimeOptions::Apply();
+		});
+		SkyToggle->SetEnabled(TAttribute<bool>::CreateLambda([](){ return QuestSky.HasCache && !QuestSky.Importing; }));
+		Scroll->AddSlot().Padding(0,6)[SkyToggle];
+		auto ImportSky = Button(Literal(TEXT("Import and use AC2 sky")), [](){ QuestSky.StartImport(); });
+		ImportSky->SetVisibility(TAttribute<EVisibility>::CreateLambda([](){ return QuestSky.HasSource ? EVisibility::Visible : EVisibility::Collapsed; }));
+		ImportSky->SetEnabled(TAttribute<bool>::CreateLambda([](){ return !QuestSky.Importing; }));
+		Scroll->AddSlot().Padding(0,4)[ImportSky];
+		Scroll->AddSlot()[Text(TAttribute<FText>::CreateLambda([]()
+		{
+			if (!QuestSky.Message.IsEmpty()) return FText::FromString(QuestSky.Message);
+			if (QuestSky.NeedsWeather && !QuestSky.HasSource)
+				return FText::FromString(TEXT("Transfer your Legions DAT again to add storm skies."));
+			if (!QuestSky.HasCache && !QuestSky.HasSource)
+				return FText::FromString(TEXT("On your PC, run Install-AC2-Sky.cmd to transfer your sky."));
+			return FText::GetEmpty();
+		}), 18)];
+#endif
 		Scroll=Sections[0];
 		Scroll->AddSlot().Padding(0, 6)[Button(TAttribute<FText>::CreateLambda([Rig]()
 			{ return FText::FromString(Rig.IsValid() && Rig->GetSettings()->bMatchCharacterHeight ? TEXT("Eye height: Character") : TEXT("Eye height: Physical")); }),
@@ -197,7 +266,7 @@ TSharedRef<SWidget> UACEVRWidget::RebuildWidget()
 		Scroll->AddSlot().Padding(0, 6)[Button(TAttribute<FText>::CreateLambda([Rig]()
 			{ return FText::FromString(Rig.IsValid() && Rig->GetSettings()->bRun ? TEXT("Movement: Run") : TEXT("Movement: Walk")); }),
 			[Rig]() { if (Rig.IsValid()) Rig->ChangeSetting(TEXT("Run")); })];
-		for (FName Setting : {FName("Height"), FName("Panel"), FName("Distance"), FName("Vitals"), FName("CompassSize"), FName("OptionsSize"), FName("Chat"), FName("Wrist"), FName("Speed"), FName("ForwardAssist"), FName("TurnSpeed"), FName("Stability"), FName("HandPitch"), FName("Draw"), FName("BowAnchor")})
+		for (FName Setting : {FName("Height"), FName("Panel"), FName("Distance"), FName("MenuRecenter"), FName("Vitals"), FName("CompassSize"), FName("OptionsSize"), FName("Chat"), FName("Wrist"), FName("Speed"), FName("ForwardAssist"), FName("TurnSpeed"), FName("Stability"), FName("HandPitch"), FName("Draw"), FName("BowAnchor")})
 		{
 			Scroll=Sections[(Setting=="Height" || Setting=="Speed" || Setting=="ForwardAssist" || Setting=="TurnSpeed")?0:
 				(Setting=="HandPitch" || Setting=="Draw" || Setting=="BowAnchor" || Setting=="Stability")?2:1];
@@ -208,6 +277,7 @@ TSharedRef<SWidget> UACEVRWidget::RebuildWidget()
 					if (Setting == "Height") return FText::FromString(FString::Printf(TEXT("Eye height adjustment: %+.0f cm"), S->EyeHeightOffset));
 					if (Setting == "Panel") return FText::FromString(FString::Printf(TEXT("Menu scale: %.0f%%"), S->PanelScale / .11f * 100));
 					if (Setting == "Distance") return FText::FromString(FString::Printf(TEXT("Menu distance: %.0f cm"), S->PanelDistance));
+					if (Setting == "MenuRecenter") return FText::FromString(FString::Printf(TEXT("Inventory recenter radius: %.0f degrees minimum"), S->MenuRecenterDegrees));
 					if (Setting == "Wrist") return FText::FromString(FString::Printf(TEXT("Hotbar scale: %.0f%%"), S->WristScale / .06f * 100));
 					if (Setting == "CompassSize") return FText::FromString(FString::Printf(TEXT("Compass scale: %.0f%%"), S->CompassScale / .065f * 100));
 					if (Setting == "OptionsSize") return FText::FromString(FString::Printf(TEXT("VR options scale: %.0f%%"), S->OptionsScale / .1f * 100));
@@ -223,9 +293,13 @@ TSharedRef<SWidget> UACEVRWidget::RebuildWidget()
 				}), 22)]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 10)[SNew(SBox).HeightOverride(36)
 				[SNew(SSlider).Style(&MenuSliderStyle()).SliderBarColor(FLinearColor::White).SliderHandleColor(FLinearColor::White)
+				.Tag(Setting)
+				.IsEnabled_Lambda([Rig, Setting]() { return Rig.IsValid() && (Setting != "MenuRecenter" || Rig->GetSettings()->MenuAnchorMode == 1); })
 				.Value_Lambda([Rig, Setting]() { return Rig.IsValid() ? Rig->GetSliderSetting(Setting) : 0.f; })
 				.OnValueChanged_Lambda([Rig, Setting](float Value) { if (Rig.IsValid()) Rig->SetSliderSetting(Setting, Value); })
 				.OnMouseCaptureEnd_Lambda([Rig]() { if (Rig.IsValid()) Rig->GetSettings()->Persist(); })]]];
+			if (Setting == "MenuRecenter")
+				Scroll->AddSlot().Padding(10,0,10,8)[Text(FText::FromString(TEXT("Body anchor only. Higher values delay recentering. The radius expands to fit wider panels.")),18)];
 		}
 		for (FName Setting : {FName("PinMenu"), FName("ShowWrist"), FName("PinHotbar"), FName("Compass"), FName("CompassAnchor"), FName("CompassLock"), FName("MenuLock"), FName("OptionsLock"), FName("PinVitals"), FName("VitalsAnchor"), FName("VitalsLock"), FName("PinChat"), FName("Turn"), FName("Angle"), FName("Hand"), FName("Movement"), FName("Seated"), FName("Body"), FName("Haptics"), FName("Render")})
 		{

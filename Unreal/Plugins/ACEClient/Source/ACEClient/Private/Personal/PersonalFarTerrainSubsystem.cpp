@@ -1,5 +1,6 @@
 #include "Personal/PersonalFarTerrainSubsystem.h"
 #include "Personal/PersonalFarTerrain.h"
+#include "Personal/PersonalFarScenery.h"
 #include "Personal/PersonalFarTerrainMesh.h"
 #include "ACEClientSubsystem.h"
 #include "ACEDatSubsystem.h"
@@ -52,6 +53,11 @@ void UPersonalFarTerrainSubsystem::Deinitialize()
 	ShellActor = nullptr;
 	ShellMesh = nullptr;
 	Super::Deinitialize();
+}
+
+int32 UPersonalFarTerrainSubsystem::VisibleRadius() const
+{
+	return ShellMesh && ShellMesh->IsVisible() ? BuiltRadius : 0;
 }
 
 void UPersonalFarTerrainSubsystem::SetShown(bool bShown)
@@ -110,9 +116,8 @@ bool UPersonalFarTerrainSubsystem::EnsureMesh(UACEDatSubsystem& Dat)
 		ShellMaterial = nullptr;
 		return false;
 	}
+	Dat.RegisterLandSky(ShellMaterial);
 	ShellMaterial->SetTextureParameterValue(TEXT("ACETexture"), ColorTexture);
-	ShellMaterial->SetScalarParameterValue(TEXT("LandDepthBias"), DepthBiasCm);
-	AppliedEmissive = -1.f;
 
 	FActorSpawnParameters Params;
 	Params.ObjectFlags |= RF_Transient;
@@ -145,7 +150,7 @@ void UPersonalFarTerrainSubsystem::ApplyMesh(const TSharedRef<FPersonalFarTerrai
 	{
 		return;
 	}
-	ShellActor->SetActorLocation(PersonalFarTerrainMesh::Origin(Mesh->Center, WorldScale));
+	ShellActor->SetActorLocation(PersonalFarTerrainMesh::Origin(Mesh->Center, WorldScale) - FVector(0,0,WorldScale * .01f));
 	// Section 0: flat colors from the color map. Section 1: the part with the detail texture.
 	if (Mesh->Triangles.Num() > 0)
 	{
@@ -228,9 +233,8 @@ bool UPersonalFarTerrainSubsystem::EnsureDetailTexture()
 	{
 		return false;
 	}
+	Dat->RegisterLandSky(DetailMaterial);
 	DetailMaterial->SetTextureParameterValue(TEXT("ACETexture"), DetailTexture);
-	DetailMaterial->SetScalarParameterValue(TEXT("LandDepthBias"), DepthBiasCm);
-	AppliedEmissive = -1.f;
 	return true;
 }
 
@@ -372,15 +376,17 @@ void UPersonalFarTerrainSubsystem::Update()
 	{
 		WantDetail = DetailCenter;
 	}
-	const bool bChanged = Center != BuiltCenter || Radius != BuiltRadius || Holes.Num() != BuiltHoles.Num() || !Holes.Includes(BuiltHoles)
+	const int32 SceneryRadius = PersonalFarScenery::IsOn() ? FMath::Min(Radius, PersonalFarScenery::Radius()) : 0;
+	const bool bChanged = SceneryRadius != RequestedSceneryRadius || Center != BuiltCenter || Radius != BuiltRadius || Holes.Num() != BuiltHoles.Num() || !Holes.Includes(BuiltHoles)
 		|| WantDetail != BuiltDetailCenter;
 	if (bChanged && !bBuilding)
 	{
 		// The mesh has about 100,000 triangles: build it on a worker, apply it here.
 		bBuilding = true;
+		RequestedSceneryRadius = SceneryRadius;
 		const float WorldScale = Terrain->WorldScale;
 		Async(EAsyncExecution::ThreadPool,
-			[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), Data = Bake, Center, Radius, HoleRadius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable
+			[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), Data = Bake, Center, Radius, HoleRadius, SceneryRadius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable
 		{
 			auto Mesh = MakeShared<FPersonalFarTerrainMesh, ESPMode::ThreadSafe>();
 			FIntRect DetailCells;
@@ -388,7 +394,7 @@ void UPersonalFarTerrainSubsystem::Update()
 			{
 				DetailCells = PersonalFarTerrainDetail::MeshCells(*WantDetail);
 			}
-			PersonalFarTerrainMesh::Build(*Data, Center, Radius, Holes, HoleRadius, WorldScale, *Mesh, WantDetail.IsSet() ? &DetailCells : nullptr);
+			PersonalFarTerrainMesh::Build(*Data, Center, Radius, Holes, HoleRadius, WorldScale, *Mesh, WantDetail.IsSet() ? &DetailCells : nullptr, SceneryRadius);
 			AsyncTask(ENamedThreads::GameThread, [Weak, Mesh, Radius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable
 			{
 				if (UPersonalFarTerrainSubsystem* Self = Weak.Get())
@@ -404,16 +410,6 @@ void UPersonalFarTerrainSubsystem::Update()
 		return;
 	}
 
-	const float Emissive = Dat->GetWorldEmissiveScale();
-	if (!FMath::IsNearlyEqual(Emissive, AppliedEmissive, 0.004f))
-	{
-		AppliedEmissive = Emissive;
-		ShellMaterial->SetScalarParameterValue(TEXT("EmissiveStrength"), Emissive);
-		if (DetailMaterial)
-		{
-			DetailMaterial->SetScalarParameterValue(TEXT("EmissiveStrength"), Emissive);
-		}
-	}
 	const bool bWantWireframe = CVarFarTerrainWireframe.GetValueOnGameThread() != 0 && GEngine && GEngine->WireframeMaterial;
 	if (bWantWireframe != bWireframe)
 	{

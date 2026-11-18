@@ -11,6 +11,7 @@
 #include "UI/ACEUIGameplayBinder.h"
 #include "UI/ACEUIElementManager.h"
 #include "UI/ACEUIResourceResolver.h"
+#include "Mods/ACEWaypointTowns.h"
 #include "UI/ACERetailMap.h"
 #include "Engine/GameInstance.h"
 #include "Engine/Texture2D.h"
@@ -594,13 +595,23 @@ private:
     void RefreshMarkers()
     {
         Markers.Reset();auto* H=Host.Get();if(!H)return;
-        if(!Dungeon && H->WaypointOption(TEXT("towns")))for(const auto& Town:ACERetailMap::Locations)
-            Markers.Add({{(Town.X+Town.Width*.5)/257.*204.-101.95,102.05-(Town.Y+Town.Height*.5)/267.*204.},Town.Name,false});
+        if(!Dungeon && H->WaypointOption(TEXT("towns")))for(const auto& Town:ACEWaypointTowns::Locations)
+            Markers.Add({{Town.EastWest,Town.NorthSouth},Town.Name,false});
+        // Preserve the three regional island labels; these artwork anchors
+        // describe whole islands, unlike the precise town destinations above.
+        if(!Dungeon && H->WaypointOption(TEXT("towns")))for(const auto& Region:ACERetailMap::Locations)
+            if(FString(Region.Name).EndsWith(TEXT("Island")))
+                Markers.Add({{(Region.X+Region.Width*.5)/257.*204.-101.95,102.05-(Region.Y+Region.Height*.5)/267.*204.},Region.Name,false});
         if(!Dungeon)for(const auto& M:H->GetWaypointLocations())
         {
             const bool Portal=M.Type.Contains(TEXT("Portal"))||M.Type==TEXT("Dungeon");
             const bool Town=M.Type==TEXT("Town");
-            if(H->WaypointOption(Portal?TEXT("portals"):Town?TEXT("towns"):TEXT("pois")))Markers.Add({M.Coordinates,M.Name,Portal,!Town});
+            if(H->WaypointOption(Portal?TEXT("portals"):Town?TEXT("towns"):TEXT("pois")))
+            {
+                // Imported atlases may override a town (including custom-server locations).
+                if(Town)Markers.RemoveAll([&](const FMarker& Existing){return Existing.Name.Equals(M.Name,ESearchCase::IgnoreCase);});
+                Markers.Add({M.Coordinates,M.Name,Portal,!Town});
+            }
         }
         if(H->WaypointOption(TEXT("portals")))if(auto* C=H->GetGameInstance()->GetSubsystem<UACEClientSubsystem>())if(auto Session=C->GetSession())for(const auto& Pair:Session->GetWorldObjects())
         {
@@ -809,6 +820,19 @@ bool FACEWaypointOverlayTest::RunTest(const FString&)
     if(!Plugin||!C->GetSession())return false;
     Plugin->Profile=MakeShared<FJsonObject>();
     auto Map=SNew(SWaypointMap).Host(Host).Overlay(true);
+    Plugin->Profile->SetBoolField(TEXT("towns"),true);
+    for(const auto& Town: {ACEWaypointTowns::FTown{TEXT("Mayoi"),82.5,-61.9},ACEWaypointTowns::FTown{TEXT("Wai Jhou"),-51.4,-62.0}})
+    {
+        const double X=(Town.EastWest+101.95)*240.,Y=(Town.NorthSouth+101.95)*240.;
+        FACEPosition P;P.CellId=int32((uint32(X/192)<<24)|(uint32(Y/192)<<16)|1);
+        P.Location=FVector(FMath::Fmod(X,192.),FMath::Fmod(Y,192.),0);
+        C->GetSession()->SetLocalPosition(P);
+        const FVector2D Size(420,420);
+        Map->Tick(FGeometry::MakeRoot(Size,FSlateLayoutTransform()),0,.016f);Map->RefreshMarkers();
+        const auto* Marker=Map->Markers.FindByPredicate([&](const auto& M){return M.Name==Town.Name;});
+        TestTrue(FString::Printf(TEXT("%s marker meets the player at the geographic town center"),Town.Name),
+            Marker && Map->Project(Marker->Point,Size).Equals(Size*.5,.01));
+    }
     double Time=1;
     for(bool Facing:{false,true})for(int Width:{260,560})for(uint32 Cell:{0x7D640014u,0x01430171u,0x01430172u,0x7D640100u,0x7D64001Au})
     {

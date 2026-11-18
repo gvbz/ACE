@@ -8,6 +8,7 @@ class USlider;
 class UScrollBox;
 class UEditableTextBox;
 class UTextBlock;
+class UButton;
 /** An option is a user widget so its Slate SObjectWidget keeps the DAT label alive during GC. */
 UCLASS()
 class ACECLIENT_API UACERetailOptionWidget : public UUserWidget
@@ -43,6 +44,9 @@ public:
  UFUNCTION() void ChangeCursorScale(float Value);
  UFUNCTION() void ChangeObjectGlow(bool bEnabled);
  UFUNCTION() void ChangeUniformDungeonLighting(bool bEnabled);
+ UFUNCTION() void ChangeLegionsSky(bool bEnabled);
+ UFUNCTION() void ImportLegionsSky();
+ UFUNCTION() void BrowseLegionsDat();
  UFUNCTION() void ChangeScreenBrightness(float Value);
  UFUNCTION() void ChangeEffectLightLimit(float Value);
  UFUNCTION() void ChangeScreenContrast(float Value);
@@ -57,6 +61,7 @@ private:
  UPROPERTY() TObjectPtr<UScrollBox> Scroll;
  UPROPERTY() TArray<TObjectPtr<UComboBoxString>> QualityLevels;
  UPROPERTY() TMap<FName,TObjectPtr<USlider>> ValueSliders;
+ UPROPERTY() TMap<FString,TObjectPtr<UCheckBox>> FarTerrainChecks;
  UPROPERTY() TMap<int32,TObjectPtr<UCheckBox>> CharacterChecks;
  UPROPERTY() TObjectPtr<UCheckBox> ActiveSoundOnly;
  UPROPERTY() TObjectPtr<UCheckBox> CameraAlignToSlope;
@@ -70,6 +75,11 @@ private:
  UPROPERTY() TObjectPtr<UCheckBox> ShowFrameRate;
  UPROPERTY() TObjectPtr<UCheckBox> ObjectGlow;
  UPROPERTY() TObjectPtr<UCheckBox> UniformDungeonLighting;
+ UPROPERTY() TObjectPtr<UCheckBox> LegionsSky;
+ UPROPERTY() TObjectPtr<UEditableTextBox> LegionsDirectory;
+ UPROPERTY() TObjectPtr<UButton> LegionsImport;
+ UPROPERTY() TObjectPtr<UButton> LegionsBrowse;
+ UPROPERTY() TObjectPtr<UTextBlock> LegionsStatus;
  UPROPERTY() TObjectPtr<UCheckBox> ConstrainUIWindows;
  UPROPERTY() TObjectPtr<USlider> MouseTurnSpeed;
  UPROPERTY() TObjectPtr<UCheckBox> InvertMouseX;

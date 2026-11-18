@@ -82,7 +82,7 @@ void UACEVRMenu::NativeDestruct()
     Super::NativeDestruct();
 }
 void UACEVRMenu::ObjectChanged(const FACEWorldObject& O)
-{ if(Client && (Client->IsOwnedInventoryItem(O) || O.Guid==Selected || (Page=="Fellowship" && O.bIsPlayer)
+{ if(Client && (Client->IsOwnedInventoryItem(O) || O.WielderId==Client->GetPlayerGuid() || O.Guid==Selected || (Page=="Fellowship" && O.bIsPlayer)
     || (Client->GetOpenExternalContainerGuid() && O.ContainerId==Client->GetOpenExternalContainerGuid())))bDirty=true; }
 void UACEVRMenu::ObjectDeleted(int32 Guid){bDirty=true;if(Guid==DragItem)CancelItemPointer();if(Guid==Selected)Selected=0;if(Guid==UseSource)UseSource=0;if(Guid==Pack)Pack=Client->GetPlayerGuid();}
 void UACEVRMenu::SelectionChanged(const FACESelectedObject& S)
@@ -195,6 +195,9 @@ void UACEVRMenu::RefreshIfDirty()
 	if(Client && Client->GetSession() && InventoryRevision!=Client->GetSession()->GetInventoryDataRevision())
 	{InventoryRevision=Client->GetSession()->GetInventoryDataRevision();if(Page!="Plugins")bDirty=true;}
     if(!bDirty || !Body || !Client || !Binder || DragItem || DragSpell)return;
+    // Inventory/server updates can arrive between trigger down and release.
+    // Keep action buttons and sliders alive until the owning pointer finishes.
+    if(Rig && (Rig->bLeftPointerPressed || Rig->bRightPointerPressed))return;
     bDirty=false;++RefreshCount;
     Body->ClearChildren();ItemDestinations.Reset();MenuTargets.Reset();SpellDestinations.Reset();IconBrushes.Reset();IconTextures.Reset();PendingIcons.Reset();
     if(HoverLabel)HoverLabel->SetText(FText::FromString(Page.ToString()));

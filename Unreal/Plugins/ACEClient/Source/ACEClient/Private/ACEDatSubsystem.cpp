@@ -1,5 +1,6 @@
 #include "ACEDatSubsystem.h"
 #include "ACERuntimeOptions.h"
+#include "Sky/ACELegionsSkyRenderer.h"
 #include "ACEProfiling.h"
 #include "ACESpellFormula.h"
 #include "ACEClientSubsystem.h"
@@ -75,6 +76,7 @@ UACEUIResourceResolver* UACEDatSubsystem::GetUiResources()
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionAppendVector.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionTime.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionVertexColor.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
@@ -132,7 +134,9 @@ namespace
 		VertexColorTranslucent,
         VertexColorAlpha,
 		/** Day-dome backdrop — opaque unlit (avoids full-screen translucent overdraw). */
-		VertexColorOpaque
+		VertexColorOpaque,
+		LegionsSkyAlpha,
+		LegionsSkyAdd
 	};
 
 	template<typename SurfaceType> bool IsDatPortalFillSurface(const SurfaceType& Decoded)
@@ -150,8 +154,8 @@ namespace
 	{
 		static TWeakObjectPtr<UMaterialParameterCollection> Cached;
 		if (Cached.IsValid()) return Cached.Get();
-		constexpr const TCHAR* PackageName = TEXT("/Game/ACE/RuntimeMaterials/MPC_ACEWorldFog_v1");
-		constexpr const TCHAR* ObjectPath = TEXT("/Game/ACE/RuntimeMaterials/MPC_ACEWorldFog_v1.MPC_ACEWorldFog_v1");
+		constexpr const TCHAR* PackageName = TEXT("/Game/ACE/RuntimeMaterials/MPC_ACEWorldFog_v2");
+		constexpr const TCHAR* ObjectPath = TEXT("/Game/ACE/RuntimeMaterials/MPC_ACEWorldFog_v2.MPC_ACEWorldFog_v2");
 		UMaterialParameterCollection* Collection = nullptr;
 #if WITH_EDITORONLY_DATA
 		if (FPackageName::DoesPackageExist(PackageName))
@@ -159,7 +163,7 @@ namespace
 		if (!Collection)
 		{
 			Collection = NewObject<UMaterialParameterCollection>(CreatePackage(PackageName),
-				TEXT("MPC_ACEWorldFog_v1"), RF_Public | RF_Standalone);
+				TEXT("MPC_ACEWorldFog_v2"), RF_Public | RF_Standalone);
 			for (const auto& Pair : { TPair<FName, float>(TEXT("FogStart"), 20000.f),
 				TPair<FName, float>(TEXT("FogEnd"), 90000.f), TPair<FName, float>(TEXT("FogAmount"), 1.f) })
 			{
@@ -170,6 +174,10 @@ namespace
 			auto& Color = Collection->VectorParameters.AddDefaulted_GetRef();
 			Color.ParameterName = TEXT("FogColor");
 			Color.DefaultValue = FLinearColor(0.55f, 0.62f, 0.78f, 1.f);
+			// Share the atmospheric uniforms: UE supports two collections per
+			// material and terrain also needs the portal visibility collection.
+			auto& Offset = Collection->VectorParameters.AddDefaulted_GetRef();
+			Offset.ParameterName = TEXT("CloudOffset"); Offset.DefaultValue = FLinearColor::Transparent;
 			Collection->PostEditChange();
 		}
 #else
@@ -374,6 +382,12 @@ namespace
 		// PIE / SurfaceUnpack flush nulls the UPROPERTY but leaves the transient
 		// UMaterial. NewObject with the same name then fails → callers fall back
 		// (opaque day-dome → translucent × A=0 → black sky).
+		const bool bLegionsSky=Kind==EACEAceMaterialKind::LegionsSkyAlpha || Kind==EACEAceMaterialKind::LegionsSkyAdd;
+		if (bLegionsSky)
+		{
+			Kind=Kind==EACEAceMaterialKind::LegionsSkyAdd ? EACEAceMaterialKind::Additive : EACEAceMaterialKind::Translucent;
+			bRetailSky=true;
+		}
 		auto ApplyMeshUsages = [](UMaterial* M)
 		{
 			if (!M)
@@ -546,7 +560,103 @@ namespace
 		}
 
 
-		if (Kind == EACEAceMaterialKind::VertexColorAlpha)
+		if (bLegionsSky)
+		{
+			// The Legions clear sky reuses one image in both texture stages, with
+			// independent UV motion. The DAT chooses the RGB and alpha operations.
+			auto& Expressions=EditorOnly->ExpressionCollection;
+			auto* Texture=NewObject<UMaterialExpressionTextureObjectParameter>(Mat);
+			Texture->Texture=Sample->Texture;
+			Texture->ParameterName=Sample->ParameterName;
+			auto* Velocity=NewObject<UMaterialExpressionVectorParameter>(Mat);
+			Velocity->ParameterName=TEXT("UVVelocity");
+			Velocity->DefaultValue=FLinearColor::Transparent;
+			auto* Clock=NewObject<UMaterialExpressionTime>(Mat);
+			auto* Stage=NewObject<UMaterialExpressionCustom>(Mat);
+			Stage->OutputType=CMOT_Float4;
+			auto Input=[Stage](const TCHAR* Name,UMaterialExpression* Source,int32 Output)
+			{
+				FCustomInput& In=Stage->Inputs.AddDefaulted_GetRef();
+				In.InputName=Name;
+				In.Input.Connect(Output,Source);
+			};
+			for (const TCHAR* Param : {TEXT("MaterialFactor"),TEXT("StageOps"),TEXT("SkyTint")})
+			{
+				auto* Vector=NewObject<UMaterialExpressionVectorParameter>(Mat);
+				Vector->ParameterName=Param;
+				Vector->DefaultValue=FLinearColor::White;
+				Expressions.AddExpression(Vector);
+				Input(Param,Vector,5);
+			}
+			Input(TEXT("Image"),Texture,0);
+			Input(TEXT("UV"),TexCoord,0);
+			Input(TEXT("Offset"),UvOffset,5);
+			Input(TEXT("Velocity"),Velocity,5);
+			Input(TEXT("Seconds"),Clock,0);
+			Stage->Code=TEXT(R"(
+				float4 scroll=frac(Offset+Velocity*Seconds);
+				float4 first=Texture2DSample(Image,ImageSampler,UV+scroll.xy);
+				float alpha=MaterialFactor.a*lerp(1,first.a,StageOps.g);
+				float3 linearRGB=first.rgb;
+				[branch] if (StageOps.b>.5 || StageOps.a>.5 || any(StageOps.r*MaterialFactor.rgb!=1)) {
+					float3 a=lerp(first.rgb*12.92,1.055*pow(max(first.rgb,0),1./2.4)-.055,step(.0031308,first.rgb));
+					float3 rgb=saturate(StageOps.r*a*MaterialFactor.rgb);
+					[branch] if (StageOps.b>.5 || StageOps.a>.5) {
+						float4 second=Texture2DSample(Image,ImageSampler,UV+scroll.zw);
+						float3 b=lerp(second.rgb*12.92,1.055*pow(max(second.rgb,0),1./2.4)-.055,step(.0031308,second.rgb));
+						if (StageOps.b>.5) rgb=saturate(rgb+b-.5);
+						if (StageOps.a>.5) alpha=saturate(2*alpha*second.a);
+					}
+					linearRGB=lerp(rgb/12.92,pow((rgb+.055)/1.055,2.4),step(.04045,rgb));
+				}
+				float3 emission=linearRGB*SkyTint.rgb;
+			)");
+			if (Kind == EACEAceMaterialKind::Additive)
+			{
+				auto* Backdrop = NewObject<UMaterialExpressionScalarParameter>(Mat);
+				Backdrop->ParameterName = TEXT("DaylightBackdrop");
+				Backdrop->DefaultValue = 0.f;
+				Expressions.AddExpression(Backdrop);
+				Input(TEXT("Backdrop"),Backdrop,0);
+				auto* SunGlow = NewObject<UMaterialExpressionScalarParameter>(Mat);
+				SunGlow->ParameterName = TEXT("SunHorizonGlow");
+				SunGlow->DefaultValue = 0.f;
+				Expressions.AddExpression(SunGlow);
+				Input(TEXT("SunGlow"),SunGlow,0);
+				// Low sun in Legions has a broad rose halo. Preserve the luminance
+				// profile of the additive flare and the hot centre of the disc.
+				Stage->Code += TEXT(R"(
+					float peak = max(max(emission.r, emission.g), emission.b);
+					emission = lerp(emission, peak * float3(1, .46, .58),
+						SunGlow * (1 - .65 * smoothstep(.4, 1, peak)));
+				)");
+				// The original adds display RGB; UE blends linear light. With a
+				// gamma-two approximation, (background + source)^2 - background^2
+				// includes this cross term. The day palette estimates the background
+				// without sampling scene color or adding another sky pass. A finite
+				// slope at black keeps quantization in the sun's outer glow subdued.
+				// The LDR mobile base pass already converts to gamma before blending.
+				Stage->Code += TEXT(R"(
+					#if !defined(OUTPUT_GAMMA_SPACE) || !OUTPUT_GAMMA_SPACE
+						[branch] if (Backdrop > 0) emission += 2 * Backdrop * (sqrt(max(emission, 0) + .01) - .1);
+					#endif
+				)");
+			}
+			Stage->Code += TEXT("return float4(emission,alpha*SkyTint.a);");
+			auto* RGB=NewObject<UMaterialExpressionComponentMask>(Mat);
+			RGB->R=RGB->G=RGB->B=true;
+			RGB->A=false;
+			RGB->Input.Connect(0,Stage);
+			auto* Alpha=NewObject<UMaterialExpressionComponentMask>(Mat);
+			Alpha->R=Alpha->G=Alpha->B=false;
+			Alpha->A=true;
+			Alpha->Input.Connect(0,Stage);
+			for (UMaterialExpression* E : TArray<UMaterialExpression*>{Texture,Velocity,Clock,Stage,RGB,Alpha})
+				Expressions.AddExpression(E);
+			EditorOnly->EmissiveColor.Connect(0,RGB);
+			EditorOnly->Opacity.Connect(0,Alpha);
+		}
+		else if (Kind == EACEAceMaterialKind::VertexColorAlpha)
         {
             auto* VC=NewObject<UMaterialExpressionVertexColor>(Mat);
             EditorOnly->ExpressionCollection.AddExpression(VC);
@@ -555,8 +665,7 @@ namespace
         }
         else if (Kind == EACEAceMaterialKind::VertexColorTranslucent)
         {
-			// Uniform fog-color fill cube. Do not use PMC vertex colors — those A channels
-			// often arrive as 0, which made the 13bj fill invisible (translucent × A=0).
+			// The backdrop fills the sky. The horizon copy fades out above eye level.
 			UMaterialExpressionVectorParameter* FillColor = NewObject<UMaterialExpressionVectorParameter>(Mat);
 			FillColor->ParameterName = TEXT("FillColor");
 			FillColor->DefaultValue = FLinearColor(0.55f, 0.62f, 0.78f, 1.f);
@@ -573,7 +682,24 @@ namespace
 			EditorOnly->ExpressionCollection.AddExpression(EmissiveMul);
 
 			EditorOnly->EmissiveColor.Expression = EmissiveMul;
-			EditorOnly->Opacity.Expression = EffectiveOpacity;
+			auto* Horizon = NewObject<UMaterialExpressionScalarParameter>(Mat);
+			Horizon->ParameterName = TEXT("HorizonFalloff");
+			Horizon->DefaultValue = 0.f;
+			auto* View = NewObject<UMaterialExpressionCameraVectorWS>(Mat);
+			auto* Coverage = NewObject<UMaterialExpressionCustom>(Mat);
+			Coverage->OutputType = CMOT_Float1;
+			Coverage->Code = TEXT("return Opacity * (1 - smoothstep(0, 1, -ViewDir.z * Horizon));");
+			for (const auto& Pair : {TPair<FName,UMaterialExpression*>(TEXT("Opacity"),EffectiveOpacity),
+				{TEXT("Horizon"),Horizon}, {TEXT("ViewDir"),View}})
+			{
+				FCustomInput Input;
+				Input.InputName = Pair.Key;
+				Input.Input.Expression = Pair.Value;
+				Coverage->Inputs.Add(Input);
+			}
+			for (UMaterialExpression* E : TArray<UMaterialExpression*>{Horizon, View, Coverage})
+				EditorOnly->ExpressionCollection.AddExpression(E);
+			EditorOnly->Opacity.Connect(0,Coverage);
 		}
 		else if (Kind == EACEAceMaterialKind::VertexColorOpaque)
 		{
@@ -932,7 +1058,7 @@ namespace
             EditorOnly->EmissiveColor.Expression=Sum; EditorOnly->EmissiveColor.OutputIndex=0;
         }
 
-        if (bRetailSky)
+        if (bRetailSky && !bDisableDepthTest)
         {
             // GameSky draws before terrain without depth writes. Our late sky
             // pass must use hardware depth testing: a resolved SceneDepth test
@@ -986,6 +1112,13 @@ namespace
 		return LoadCookedAceMaterial(Name);
 #endif
 	}
+}
+
+UMaterialInterface* FACELegionsSkyRenderer::MaterialParent(bool bAdditive)
+{
+	return CreateAceOverlayMaterial(bAdditive ? TEXT("M_ACELegionsSkyAdd_v2") : TEXT("M_ACELegionsSkyAlpha_v1"),
+		bAdditive ? EACEAceMaterialKind::LegionsSkyAdd : EACEAceMaterialKind::LegionsSkyAlpha,
+		/*bDisableFog*/true, /*bDisableDepthTest*/false, /*bForceUvWrap*/true, /*bEmissiveTimesOpacity*/false, /*bTwoSided*/true);
 }
 
 UMaterialInterface* UACEDatSubsystem::GetVRComfortMaterial()
@@ -1042,6 +1175,7 @@ TArray<UMaterialInterface*> UACEDatSubsystem::GetRuntimeMaterialParents()
 		EnsureAceBatchedParticleMaterialBase(false), EnsureAceBatchedParticleMaterialBase(true),
 		EnsureAceSkyTranslucentMaterialBase(), EnsureAceSkyTranslucentWrapMaterialBase(), EnsureAceSkyOpaqueMaterialBase(),
 		EnsureAceSkyAdditiveMaterialBase(), EnsureAceSkyVertexColorMaterialBase(), EnsureAceSkyColorFillMaterialBase(),
+		FACELegionsSkyRenderer::MaterialParent(false), FACELegionsSkyRenderer::MaterialParent(true),
 		EnsureAceWeatherTranslucentMaterialBase(), EnsureAceWeatherAdditiveMaterialBase(), GetVRComfortMaterial(),
 		UACEVRWidgetComponent::GetFilteredMaterial(),
 		ACEVRPointerVisuals::GetMaterial(false), ACEVRPointerVisuals::GetMaterial(true)
@@ -2027,7 +2161,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceUnlitTexturedMaterialBase()
 UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 {
 	// PDO / material graph bumps without a full landmesh wipe.
-	static constexpr int32 LandMatGraphVersion = 37;
+	static constexpr int32 LandMatGraphVersion = 39;
 	static int32 AppliedLandMatGraphVersion = 0;
 	if (AppliedLandMatGraphVersion != LandMatGraphVersion)
 	{
@@ -2043,11 +2177,13 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 #if WITH_EDITORONLY_DATA
 	// The aperture mask must run in the depth pass too. Clipping only BaseColor
 	// on an opaque material leaves invisible terrain depth occluding interiors.
-	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(), TEXT("M_ACELandLit_v38"), RF_Public | RF_Transient);
+	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(), TEXT("M_ACELandLit_v41"), RF_Public | RF_Transient);
 	if (!Mat)
 	{
 		return nullptr;
 	}
+	// World-space fog and cloud coordinates span kilometres on mobile.
+	Mat->FloatPrecisionMode = MFPM_Full;
 	Mat->MaterialDomain = MD_Surface;
 	Mat->TwoSided = false;
 	Mat->SetShadingModel(MSM_DefaultLit);
@@ -2121,6 +2257,39 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 	EditorOnly->ExpressionCollection.AddExpression(LandLitFrac);
 	EditorOnly->ExpressionCollection.AddExpression(LandBaseMul);
 	UMaterialExpressionWorldPosition* LandWorldPos = NewObject<UMaterialExpressionWorldPosition>(Mat);
+	// AC2 SurfaceDesc modulates terrain before fog, including its ambient term.
+	// One moving map across every tile. The stock sky skips the texture fetch.
+	auto* Mask = NewObject<UMaterialExpressionTextureObjectParameter>(Mat);
+	Mask->ParameterName = TEXT("CloudMask");
+	Mask->Texture = Sample->Texture;
+	auto* Motion = NewObject<UMaterialExpressionVectorParameter>(Mat);
+	Motion->ParameterName = TEXT("CloudMotion");
+	Motion->DefaultValue = FLinearColor::Transparent;
+	auto* CloudOffset = NewObject<UMaterialExpressionCollectionParameter>(Mat);
+	CloudOffset->Collection = RuntimeFogCollection();
+	CloudOffset->ParameterName = TEXT("CloudOffset");
+	CloudOffset->ParameterId = CloudOffset->Collection->GetParameterId(CloudOffset->ParameterName);
+	auto* Shaded = NewObject<UMaterialExpressionCustom>(Mat);
+	Shaded->OutputType = CMOT_Float3;
+	auto Input = [Shaded](FName Name, UMaterialExpression* Expression)
+	{
+		auto& Pin = Shaded->Inputs.AddDefaulted_GetRef();
+		Pin.InputName = Name;
+		Pin.Input.Connect(0,Expression);
+	};
+	Input(TEXT("Land"),Sample); Input(TEXT("Position"),LandWorldPos); Input(TEXT("Motion"),Motion);
+	Input(TEXT("Offset"),CloudOffset); Input(TEXT("Mask"),Mask);
+	Shaded->Code = TEXT("[branch] if (Motion.x <= 0) return Land; float2 uv=Position.xy*Motion.x+Offset.xy; return Land*Texture2DSample(Mask,MaskSampler,uv).rgb;");
+	auto* SkyTint = NewObject<UMaterialExpressionVectorParameter>(Mat);
+	SkyTint->ParameterName = TEXT("LandSkyTint");
+	SkyTint->DefaultValue = FLinearColor::White;
+	auto* AmbientLand = NewObject<UMaterialExpressionMultiply>(Mat);
+	AmbientLand->A.Connect(0,Shaded);
+	AmbientLand->B.Connect(0,SkyTint);
+	LandBaseMul->A.Connect(0,Shaded);
+	Emis->A.Connect(0,AmbientLand);
+	for (UMaterialExpression* Expr : TArray<UMaterialExpression*>{Mask,Motion,CloudOffset,Shaded,SkyTint,AmbientLand})
+		EditorOnly->ExpressionCollection.AddExpression(Expr);
 	LandWorldPos->WorldPositionShaderOffset = WPT_ExcludeAllShaderOffsets;
 	LandWorldPos->MaterialExpressionEditorX = -450;
 	LandWorldPos->MaterialExpressionEditorY = 420;
@@ -2329,7 +2498,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 	UE_LOG(LogTemp, Log, TEXT("ACEDat: created Lit land material v35 (PortalList + indoor footprint clip)"));
 	return LandMaterialBase;
 #else
-	LandMaterialBase = LoadCookedAceMaterial(TEXT("M_ACELandLit_v38"));
+	LandMaterialBase = LoadCookedAceMaterial(TEXT("M_ACELandLit_v41"));
 	return LandMaterialBase;
 #endif
 }
@@ -2339,6 +2508,51 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandLookOutMaterialBase()
 	// The active portal-plane mask supports opaque depth rendering. The obsolete
 	// CustomStencil graph used SceneTexture in a masked material, which UE cannot compile.
 	return EnsureAceLandMaterialBase();
+}
+
+void UACEDatSubsystem::SetSkyAnimationTime(double Seconds)
+{
+	// One shared uniform update, independent of the number of terrain tiles.
+	if (auto* World = GetWorld())
+		if (auto* Collection = RuntimeFogCollection())
+			if (auto* Instance = World->GetParameterCollectionInstance(Collection))
+			{
+				auto Wrap = [Seconds](double Velocity)
+				{
+					const double Offset = FMath::Fmod(Seconds * Velocity, 1.);
+					return float(Offset < 0. ? Offset + 1. : Offset);
+				};
+				Instance->SetVectorParameterValue(TEXT("CloudOffset"),FLinearColor(Wrap(LandCloudMotion.G),Wrap(LandCloudMotion.B),0,0));
+			}
+}
+
+void UACEDatSubsystem::RegisterLandSky(UMaterialInstanceDynamic* Material)
+{
+	LandSkyInstances.Add(Material);
+	Material->SetScalarParameterValue(TEXT("EmissiveStrength"), WorldEmissiveScale);
+	if (LandCloudMask) Material->SetTextureParameterValue(TEXT("CloudMask"),LandCloudMask);
+	Material->SetVectorParameterValue(TEXT("CloudMotion"),LandCloudMotion);
+	Material->SetVectorParameterValue(TEXT("LandSkyTint"),LandSkyTint);
+}
+
+void UACEDatSubsystem::SetLandSky(UTexture2D* Mask,const FLinearColor& Motion,const FLinearColor& Tint)
+{
+	const bool MaskChanged = LandCloudMask != Mask || LandCloudMotion != Motion;
+	if (!MaskChanged && LandSkyTint.Equals(Tint,.008f)) return;
+	LandCloudMask = Mask;
+	LandCloudMotion = Motion;
+	LandSkyTint = Tint;
+	for (auto It=LandSkyInstances.CreateIterator(); It; ++It)
+	{
+		auto* Mid=It->Get();
+		if (!Mid) { It.RemoveCurrent(); continue; }
+		if (MaskChanged)
+		{
+			Mid->SetTextureParameterValue(TEXT("CloudMask"),Mask);
+			Mid->SetVectorParameterValue(TEXT("CloudMotion"),Motion);
+		}
+		Mid->SetVectorParameterValue(TEXT("LandSkyTint"),Tint);
+	}
 }
 
 UMaterialInterface* UACEDatSubsystem::GetPortalStencilWriterMaterial()
@@ -2768,11 +2982,11 @@ UMaterialInterface* UACEDatSubsystem::RemapLandMaterialWithDepthBias(UMaterialIn
 		Out->SetTextureParameterValue(TEXT("Texture"), Tex);
 		Out->SetTextureParameterValue(TEXT("SlateUI"), Tex);
 	}
-	Out->SetScalarParameterValue(TEXT("EmissiveStrength"), WorldEmissiveScale);
 	Out->SetScalarParameterValue(TEXT("LandDepthBias"), DepthBiasCm);
 	ApplyDistanceFogToMid(Out);
 	ApplyOutdoorPortalLandClipToMid(Out);
 	ApplyLandInteriorClipToMid(Out);
+	RegisterLandSky(Out);
 	return Out;
 }
 
@@ -3218,7 +3432,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceSkyVertexColorMaterialBase()
 
 UMaterialInterface* UACEDatSubsystem::EnsureAceSkyColorFillMaterialBase()
 {
-	static constexpr int32 SkyFillMatVersion = 6;
+	static constexpr int32 SkyFillMatVersion = 8;
 	static int32 AppliedSkyFillMatVersion = 0;
 	if (AppliedSkyFillMatVersion != SkyFillMatVersion)
 	{
@@ -3233,7 +3447,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceSkyColorFillMaterialBase()
 	// Two-sided so winding cannot hide the fill. Translucent so clouds still composite.
 	// FillColor vector param (not PMC vertex A) — see CreateAceOverlayMaterial.
 	SkyColorFillMaterialBase = CreateAceOverlayMaterial(
-		TEXT("M_ACESkyColorFill_v7"), EACEAceMaterialKind::VertexColorTranslucent,
+		TEXT("M_ACESkyColorFill_v8"), EACEAceMaterialKind::VertexColorTranslucent,
 		/*bDisableFog*/ true, /*bDisableDepthTest*/ false, /*bForceUvWrap*/ false,
 		/*bEmissiveTimesOpacity*/ false, /*bTwoSided*/ true, false, false, false, false, false, false, /*bRetailSky*/ true);
 	if (SkyColorFillMaterialBase)
@@ -3246,7 +3460,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceSkyColorFillMaterialBase()
 
 UMaterialInterface* UACEDatSubsystem::EnsureAceWeatherTranslucentMaterialBase()
 {
-	static constexpr int32 WxTransMatVersion = 13;
+	static constexpr int32 WxTransMatVersion = 14;
 	static int32 AppliedWxTransMatVersion = 0;
 	if (AppliedWxTransMatVersion != WxTransMatVersion)
 	{
@@ -3259,14 +3473,12 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceWeatherTranslucentMaterialBase()
 	}
 
 	// One-sided: camera sits inside rain cylinders — two-sided faces z-fight as a
-	// flickering white sheet. Emissive×Opacity so DAT Translucency (rain 0.5) fades.
-	// Retail's after-sky pass disables depth in its ordered cell renderer. UE
-	// submits these curtains after the opaque world: use hardware depth testing
-	// so walls/terrain occlude rain, including MSAA samples in both VR eyes.
+	// flickering white sheet. Use the same DAT lighting and opacity as the before-pass.
+	// GameSky::Draw(after) composites the outdoor rain after DrawBlock, without depth testing.
 	WeatherTranslucentMaterialBase = CreateAceOverlayMaterial(
-		TEXT("M_ACEWeatherTranslucent_v13"), EACEAceMaterialKind::Translucent,
-		/*bDisableFog*/ true, /*bDisableDepthTest*/ false, /*bForceUvWrap*/ true,
-		/*bEmissiveTimesOpacity*/ true, /*bTwoSided*/ false);
+		TEXT("M_ACEWeatherTranslucent_v14"), EACEAceMaterialKind::Translucent,
+		/*bDisableFog*/ true, /*bDisableDepthTest*/ true, /*bForceUvWrap*/ true,
+		/*bEmissiveTimesOpacity*/ false, /*bTwoSided*/ false, false, false, false, false, false, false, /*bRetailSky*/ true);
 	if (WeatherTranslucentMaterialBase)
 	{
 		return WeatherTranslucentMaterialBase;
@@ -3277,7 +3489,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceWeatherTranslucentMaterialBase()
 
 UMaterialInterface* UACEDatSubsystem::EnsureAceWeatherAdditiveMaterialBase()
 {
-	static constexpr int32 WxAddMatVersion = 13;
+	static constexpr int32 WxAddMatVersion = 14;
 	static int32 AppliedWxAddMatVersion = 0;
 	if (AppliedWxAddMatVersion != WxAddMatVersion)
 	{
@@ -3290,9 +3502,9 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceWeatherAdditiveMaterialBase()
 	}
 
 	WeatherAdditiveMaterialBase = CreateAceOverlayMaterial(
-		TEXT("M_ACEWeatherAdditive_v13"), EACEAceMaterialKind::Additive,
-		/*bDisableFog*/ true, /*bDisableDepthTest*/ false, /*bForceUvWrap*/ true,
-		/*bEmissiveTimesOpacity*/ true, /*bTwoSided*/ false);
+		TEXT("M_ACEWeatherAdditive_v14"), EACEAceMaterialKind::Additive,
+		/*bDisableFog*/ true, /*bDisableDepthTest*/ true, /*bForceUvWrap*/ true,
+		/*bEmissiveTimesOpacity*/ false, /*bTwoSided*/ false, false, false, false, false, false, false, /*bRetailSky*/ true);
 	if (WeatherAdditiveMaterialBase)
 	{
 		return WeatherAdditiveMaterialBase;
@@ -4102,12 +4314,12 @@ UMaterialInterface* UACEDatSubsystem::GetOrCreateLandMaterial(uint32 PCode, cons
 	MID->SetTextureParameterValue(TEXT("SlateUI"), Tex);
 	MID->SetTextureParameterValue(TEXT("Texture"), Tex);
 	MID->SetTextureParameterValue(TEXT("ACETexture"), Tex);
-	MID->SetScalarParameterValue(TEXT("EmissiveStrength"), WorldEmissiveScale);
 	MID->SetScalarParameterValue(TEXT("LandDepthBias"), 0.f);
 	ApplyDistanceFogToMid(MID);
 	ApplyOutdoorPortalLandClipToMid(MID);
 	ApplyLandInteriorClipToMid(MID);
 	LandMaterialCache.Add(PCode, MID);
+	RegisterLandSky(MID);
 	return MID;
 }
 
@@ -6909,12 +7121,12 @@ void UACEDatSubsystem::SetWorldEmissiveScale(float LandScale, float SceneryScale
 			Mid->SetVectorParameterValue(TEXT("WorldAmbientTint"), WorldAmbientTint);
 		}
 	}
-	for (auto& Pair : LandMaterialCache)
+	for (auto It = LandSkyInstances.CreateIterator(); It; ++It)
 	{
-		if (UMaterialInstanceDynamic* Mid = Pair.Value.Get())
-		{
+		if (auto* Mid = It->Get())
 			Mid->SetScalarParameterValue(TEXT("EmissiveStrength"), WorldEmissiveScale);
-		}
+		else
+			It.RemoveCurrent();
 	}
 	if (LandGpuMaterialInstance)
 	{
@@ -7039,7 +7251,7 @@ void UACEDatSubsystem::SetWorldDistanceFog(float StartCm, float EndCm, const FLi
 	if (FMath::IsNearlyEqual(WorldFogStartCm, NewStart, 8.f)
 		&& FMath::IsNearlyEqual(WorldFogEndCm, NewEnd, 8.f)
 		&& FMath::IsNearlyEqual(WorldFogAmount, NewAmount, 0.02f)
-		&& WorldFogColor.Equals(Color, 0.008f))
+		&& WorldFogColor.Equals(Color, 0.0002f))
 	{
 		return;
 	}
@@ -7885,6 +8097,7 @@ UMaterialInstanceDynamic* UACEDatSubsystem::FindSurfaceMaterial(TMap<uint32,TObj
 void UACEDatSubsystem::TrimTextureResolverCaches(int32 MaxTextures, int32 MaxDecodedSurfaces, int64 MaxBytes)
 {
 	for (auto It = LandMaterialCache.CreateIterator(); It; ++It) if (!It.Value().IsValid()) It.RemoveCurrent();
+	for (auto It = LandSkyInstances.CreateIterator(); It; ++It) if (!It->IsValid()) It.RemoveCurrent();
 	for (auto It = LandTextureCache.CreateIterator(); It; ++It) if (!It.Value().IsValid()) It.RemoveCurrent();
 	// A converted material can outlive the source MID. Keep its weak record while
 	// visible so daylight/fog updates still reach it after the source is collected.

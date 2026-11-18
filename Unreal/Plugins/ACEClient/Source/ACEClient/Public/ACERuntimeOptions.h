@@ -25,6 +25,7 @@ inline constexpr FOption Values[] = {
  {TEXT("CursorScale"),TEXT("Cursor size"),1,.5f,3},
  {TEXT("ObjectGlow"),TEXT("Custom object highlighting"),1,0,1},
  {TEXT("UniformDungeonLighting"),TEXT("Uniform dungeon lighting"),0,0,1},
+ {TEXT("LegionsSky"),TEXT("Use imported AC2 sky"),0,0,1},
  {TEXT("ConstrainUIWindows"),TEXT("Keep UI windows on screen"),1,0,1},
  {TEXT("DynamicLightingQuality"),TEXT("Dynamic lights"),2,0,2},
  {TEXT("CameraAlignToSlope"),TEXT("Align camera to slope"),1,0,1},
@@ -32,7 +33,7 @@ inline constexpr FOption Values[] = {
  {TEXT("PersonalFarTerrain"),TEXT("Far Terrain"),0,0,1}, // personal: far-terrain
  {TEXT("PersonalFarTerrainRadius"),TEXT("Far Terrain Radius"),43,43,96}, // personal: far-terrain
  {TEXT("PersonalFarScenery"),TEXT("Far Terrain Objects"),0,0,1}, // personal: far-scenery
- {TEXT("PersonalFarSceneryRadius"),TEXT("Far Terrain Objects Radius"),6,3,8}, // personal: far-scenery
+ {TEXT("PersonalFarSceneryRadius"),TEXT("Far Terrain Objects Radius"),6,3,24}, // personal: far-scenery
  {TEXT("PersonalFarTerrainTextures"),TEXT("Far Terrain Textures"),0,0,1}, // personal: far-textures
  {TEXT("PersonalSkyHorizon"),TEXT("Far Terrain Horizon"),0,0,1}, // personal: sky-horizon
  {TEXT("PersonalFarSceneryFog"),TEXT("Hide Far Terrain with Fog"),0,0,1}, // personal: far-scenery
@@ -45,11 +46,12 @@ ACECLIENT_API void Apply();
 /** Applied lighting preference: 0 off, 1 reduced, 2 full. No config reads per effect. */
 ACECLIENT_API int32 DynamicLightingQuality();
 ACECLIENT_API bool UniformDungeonLighting();
+ACECLIENT_API bool LegionsSky();
 ACECLIENT_API float SoundGain(bool bAmbient);
 /** Retail EnumIDMap 25000012; actual glyph atlases from the user's DAT on every platform. */
 ACECLIENT_API uint32 ChatFontId();
 /** Shared by plugin labels and editable controls; at most one config read per frame. */
 ACECLIENT_API float PluginTextScale();
-ACECLIENT_API float DesktopUIScale(FIntPoint ViewportSize, bool bVR);
-ACECLIENT_API void ApplyDesktopUIScale(FIntPoint ViewportSize, bool bVR);
+ACECLIENT_API float DesktopUIScale(FIntPoint ViewportSize, bool bVR, float WindowDPIScale = 1.f);
+ACECLIENT_API void ApplyDesktopUIScale(FIntPoint ViewportSize, bool bVR, float WindowDPIScale = 1.f);
 }

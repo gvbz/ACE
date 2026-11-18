@@ -7,8 +7,10 @@ namespace PersonalFarScenery
 {
 	/** The client draws its own scenery within this many landblocks of the player's. */
 	inline constexpr int32 NearRing = 2;
-	/** Far scenery ends here: past it the far terrain is smoothed and objects would not stand on it. */
-	inline constexpr int32 LastRing = 8;
+	/** The shell keeps the selected scenery rings at native terrain resolution. */
+	inline constexpr int32 LastRing = 24;
+	/** Interior room meshes and window panels are only useful in the nearer rings. */
+	inline constexpr int32 InteriorRings = 8;
 	inline constexpr int32 WorldLandblocks = 255;
 
 	/** Check box "Far Terrain Objects". */

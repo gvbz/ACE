@@ -24,8 +24,6 @@ class UPersonalFarTerrainSubsystem : public UWorldSubsystem
 public:
 	/** Seconds between checks of the player's landblock, the loaded terrain and the setting. */
 	static constexpr float UpdateSeconds = 0.1f;
-	/** Pushes the shell's depth back, so loaded terrain wins while both cover the same ground. */
-	static constexpr float DepthBiasCm = 100.f;
 
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
@@ -34,7 +32,11 @@ public:
 	/** The world data, shared with the far scenery. Null until it is loaded; it loads when the far terrain is first shown. */
 	PersonalFarTerrainBake::FBakePtr GetBake() const { return Bake; }
 
+	/** Landblocks of distant ground currently drawn around the player. */
+	int32 VisibleRadius() const;
+
 private:
+	friend class FACELegionsSkyTest;
 	void Update();
 	/** True when the bake is loaded. Starts the load on first use. */
 	bool EnsureBake(const FString& DatDirectory);
@@ -68,10 +70,10 @@ private:
 	/** What the current mesh was built from. */
 	FIntPoint BuiltCenter = FIntPoint(MIN_int32, MIN_int32);
 	int32 BuiltRadius = 0;
+	int32 RequestedSceneryRadius = 0;
 	TSet<FIntPoint> BuiltHoles;
 	/** A worker is building a mesh. */
 	bool bBuilding = false;
-	float AppliedEmissive = -1.f;
 	bool bWireframe = false;
 
 	/** Detail texture: the terrain textures of the landblocks around DetailCenter. */

@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([ValidateRange(1, 999)][int]$InstallerRevision = 10)
+param([ValidateRange(1, 999)][int]$InstallerRevision = 11)
 $ErrorActionPreference = 'Stop'
 $apk = Join-Path $PSScriptRoot 'Packaged\Android_ASTC\ACUnreal-arm64.apk'
 $aapt = Join-Path $PSScriptRoot 'AndroidSDK\build-tools\35.0.1\aapt.exe'
@@ -23,7 +23,9 @@ if ((Test-Path -LiteralPath $folder) -or (Test-Path -LiteralPath $zip) -or (Test
 }
 New-Item -ItemType Directory -Path $folder -Force | Out-Null
 Copy-Item -LiteralPath $apk -Destination (Join-Path $folder 'AC-VR-arm64.apk')
-foreach ($file in @('Install-Quest.ps1', 'Install-Quest.cmd', 'Update-Quest.cmd', 'Repair-Quest.cmd', 'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1', 'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt', 'RELEASE-NOTES.md')) {
+$helpers = @('Install-Quest.ps1', 'Install-Quest.cmd', 'Update-Quest.cmd', 'Repair-Quest.cmd', 'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1', 'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt')
+if ($InstallerRevision -ge 11) { $helpers += 'Install-AC2-Sky.cmd' }
+foreach ($file in ($helpers + 'RELEASE-NOTES.md')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Sharing\$file") -Destination (Join-Path $folder $file)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\LICENSE') -Destination (Join-Path $folder 'LICENSE')
@@ -45,10 +47,10 @@ $copiedApk = Join-Path $folder 'AC-VR-arm64.apk'
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $folder 'manifest.json') -Encoding UTF8
 # APK is already compressed. The explicit file allowlist keeps Saved/configs,
 # credentials, DAT files, SDK tools, and future unrelated files out of the ZIP.
-$files = @('AC-VR-arm64.apk', 'Install-Quest.ps1', 'Install-Quest.cmd', 'Update-Quest.cmd', 'Repair-Quest.cmd', 'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1', 'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt', 'RELEASE-NOTES.md', 'LICENSE', 'manifest.json', 'START-HERE.html', 'AC-Icon.png')
+$files = $helpers + @('AC-VR-arm64.apk', 'RELEASE-NOTES.md', 'LICENSE', 'manifest.json', 'START-HERE.html', 'AC-Icon.png')
 $paths = @($files | ForEach-Object { Join-Path $folder $_ })
 Compress-Archive -LiteralPath $paths -DestinationPath $zip -CompressionLevel NoCompression
-$patchPaths = @('Install-Quest.ps1', 'Install-Quest.cmd', 'Update-Quest.cmd', 'Repair-Quest.cmd', 'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1', 'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt') | ForEach-Object { Join-Path $folder $_ }
+$patchPaths = @($helpers | ForEach-Object { Join-Path $folder $_ })
 $patchPaths += Join-Path $PSScriptRoot 'Sharing\INSTALLER-UPDATE.txt'
 Compress-Archive -LiteralPath $patchPaths -DestinationPath $patchZip -CompressionLevel Optimal
 Get-Item -LiteralPath $zip, $patchZip | Select-Object FullName, Length | Format-Table -AutoSize

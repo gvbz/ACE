@@ -93,7 +93,7 @@ FVector Origin(FIntPoint Center, float WorldScale)
 
 void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
 	const TSet<FIntPoint>& Holes, int32 HoleRadius, float WorldScale, FPersonalFarTerrainMesh& Out,
-	const FIntRect* DetailCells)
+	const FIntRect* DetailCells, int32 SceneryRadius)
 {
 	Out = FPersonalFarTerrainMesh();
 	Out.Center = Center;
@@ -105,7 +105,7 @@ void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
 
 	FFarTerrainShellBuilder Builder{Bake, Out, Center * FarCells, WorldScale};
 	// The full-detail level always reaches past the holes, so only it borders loaded terrain.
-	const int32 FineLimit = FMath::Max(FineRings, HoleRadius + 1);
+	const int32 FineLimit = FMath::Max3(FineRings, HoleRadius + 1, FMath::Min(Radius,SceneryRadius));
 	int32 VertexCount = 0;
 	for (int32 K = 0; K < FPersonalFarTerrainBake::LevelCount; ++K)
 	{

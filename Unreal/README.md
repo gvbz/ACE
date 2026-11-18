@@ -28,6 +28,17 @@ If compile fails with **“No available Windows SDKs”** / **Sdk: not found**, 
 winget install --id Microsoft.WindowsSDK.10.0.19041 --accept-package-agreements
 ```
 
+### Optional AC2 sky
+
+In **Graphics Options**, click **Browse…** and choose your **Asheron's Call 2: Legions** `portal.dat` (Windows and Linux). You can also paste the folder or file path. Click **Import**, then enable **Use imported AC2 sky**. If `highres.dat` is in the same folder, the importer uses its higher-resolution textures where available.
+
+The client keeps a local copy in `Saved/Skies/Legions.sky`. Outdoors, the AC1 server clock and your AC1 DAT determine the weather and the positions of the sun and both moons. The Legions moon follows the larger AC1 moon's track. The smaller moon keeps its AC1 artwork. The Legions palette follows the AC1 dawn and dusk transitions. AC1 controls when cloud banks, rain and lightning arrive. The imported Legions dawn and daytime rain records supply the storm haze, cloud art and lighting. The asteroid belt fades behind cloud cover and disappears in fully opaque storm haze. Reimport your Legions DAT once to add storm skies to an older import. Turn the option off to return to the AC1 sky and lighting.
+
+For controlled comparisons, install the optional [admin sky preview server mod](../Source/Mods/LocalSkyPreview/README.md).
+It provides `/weather`, `/time set`, and `/timelapse [multiplier]` for admin
+characters. Classic and imported clouds follow the preview clock; imported
+clouds use the classic sky's travel direction, and sun/moon tracks stay aligned.
+
 ## Layout
 
 ```

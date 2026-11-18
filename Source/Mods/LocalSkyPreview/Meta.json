@@ -1,0 +1,8 @@
+{
+  "Name": "LocalSkyPreview",
+  "Description": "Per-session retail sky and weather preview for the local ACE test world",
+  "Version": "1.4",
+  "Enabled": true,
+  "HotReload": false,
+  "RegisterCommands": true
+}

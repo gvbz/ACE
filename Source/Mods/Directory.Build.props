@@ -1,0 +1,19 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <!-- Build against the checkout by default, or the exact installed server ABI. -->
+  <ItemGroup Condition="'$(ServerBin)' == ''">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)../ACE.Server/ACE.Server.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ServerBin)' != ''">
+    <Reference Include="ACE.Server" HintPath="$(ServerBin)/ACE.Server.dll" />
+    <Reference Include="ACE.Common" HintPath="$(ServerBin)/ACE.Common.dll" />
+    <Reference Include="ACE.Entity" HintPath="$(ServerBin)/ACE.Entity.dll" />
+    <Reference Include="ACE.DatLoader" HintPath="$(ServerBin)/ACE.DatLoader.dll" />
+    <Reference Include="0Harmony" HintPath="$(ServerBin)/0Harmony.dll" />
+    <Reference Include="log4net" HintPath="$(ServerBin)/log4net.dll" />
+  </ItemGroup>
+</Project>

@@ -302,8 +302,13 @@ bool FACEMobileShadowTest::RunTest(const FString&)
     Quality.ShadowQuality=0; Scalability::SetQualityLevels(Quality);
     IConsoleManager::Get().CallAllConsoleVariableSinks(); Sky->UpdateWorldLighting(Key,Key,0,.5f);
     const auto SettingsOff=Render(TEXT("Shadow-Settings-Off.png"));
+    // Changing scalability also changes sky rendering. Isolate the caster
+    // at the same quality so that background changes cannot count as shadow.
+    Player->Appearance->SetPartsCastShadow(false,false);
+    const auto SettingsOffControl=Render(TEXT("Shadow-Settings-Off-Control.png"));
+    Player->Appearance->SetPartsCastShadow(true,false);
     int32 RemainingShadow=0;
-    for(int32 I=0;I<Without.Num();++I) RemainingShadow+=int32(Without[I].R)-SettingsOff[I].R>12;
+    for(int32 I=0;I<SettingsOffControl.Num();++I) RemainingShadow+=int32(SettingsOffControl[I].R)-SettingsOff[I].R>12;
     TestTrue(TEXT("Video Shadows Off removes rendered shadows while preserving the scene"),RemainingShadow<10);
     Quality.ShadowQuality=3; Scalability::SetQualityLevels(Quality);
     // ApplyNonResolutionSettings runs these sinks in gameplay. They rebuild

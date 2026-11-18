@@ -70,6 +70,13 @@ if ($args -contains 'getprop') {
 # Only the update preflight may ask about existing data in these fixtures.
 if (($args -join ' ') -match 'shell run-as com.acecommunity.questtest test -s files/ACUnreal/Saved/DAT/') { exit 0 }
 $cmd = $args -join ' '
+if ($scenario -eq 'sky-only') {
+    if ($cmd -match 'shell am force-stop com.acecommunity.questtest$|shell run-as com.acecommunity.questtest mkdir -p files/ACUnreal/Saved/Skies/Import$') { exit 0 }
+    if ($cmd -match 'if \[ -f files/ACUnreal/Saved/Skies/Import/Legions.source \]') {
+        Write-Output ((Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'Legions.sky')).Hash.ToLowerInvariant() + '  file')
+        exit 0
+    }
+}
 if ($cmd -match 'if \[ -d files/ACEViewer \]; then echo legacy; fi') {
     if ($scenario -eq 'legacy-profile') { Write-Output 'legacy' }
     exit 0
@@ -106,7 +113,7 @@ function Test-Case {
     $installs = [int](Get-Content -LiteralPath (Join-Path $workspace 'installs.txt') -Raw)
     if ($installs -ne $ExpectedInstalls) { throw "Case $Scenario attempted $installs installs; expected $ExpectedInstalls" }
     $commands = Get-Content -LiteralPath (Join-Path $workspace 'commands.txt') -Raw
-    if ($commands -match '\buninstall\b|\bkill-server\b|\bclear\b' -or ($Scenario -notin @('data-repair','legacy-profile') -and $commands -match '\bforce-stop\b')) { throw "Case $Scenario used a destructive or unrelated command" }
+    if ($commands -match '\buninstall\b|\bkill-server\b|\bclear\b' -or ($Scenario -notin @('data-repair','legacy-profile','sky-only') -and $commands -match '\bforce-stop\b')) { throw "Case $Scenario used a destructive or unrelated command" }
     Write-Output "PASS $Scenario $($Options -join ' ')"
 }
 Test-Case 'none' 'cannot see the requested headset' 1 @('-CheckConnection','-ConnectionTimeoutSeconds','0')
@@ -124,4 +131,7 @@ Test-Case 'install-storage' 'INSTALL_FAILED_INSUFFICIENT_STORAGE' 1 @('-SkipData
 Test-Case 'data-repair' 'Installation complete' 0 @('-RepairData','-DatDirectory',$fixtureDat,'-ConnectionTimeoutSeconds','0') 0
 Test-Case 'invalid-options' 'cannot be combined' 1 @('-RepairData','-SkipData','-ConnectionTimeoutSeconds','0') 0
 Test-Case 'legacy-profile' 'Existing game data, login and settings migrated' 0 @('-SkipData','-ConnectionTimeoutSeconds','0') 1
-Write-Output "All 15 installer cases passed under Windows PowerShell. Evidence: $workspace"
+[IO.File]::WriteAllBytes((Join-Path $workspace 'Legions.sky'),[Text.Encoding]::ASCII.GetBytes('LSK2fixture!'))
+'deliberately stale fixture checksum' | Set-Content -LiteralPath $fixtureApk
+Test-Case 'sky-only' 'Transfer verified' 0 @('-SkyOnly','-AC2SkyPath',(Join-Path $workspace 'Legions.sky'),'-ConnectionTimeoutSeconds','0')
+Write-Output "All 16 installer cases passed under Windows PowerShell. Evidence: $workspace"

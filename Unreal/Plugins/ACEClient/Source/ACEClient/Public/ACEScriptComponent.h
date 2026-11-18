@@ -76,6 +76,7 @@ public:
 	void InitializeForEnvironment(float InWorldScale);
 	/** Sky particle children inherit their celestial object's before/after draw order. */
 	void SetEnvironmentScriptDrawOrder(uint32 ScriptId, int32 SortPriority);
+	void SetEnvironmentSkyTime(double Seconds) { EnvironmentSkyTime = Seconds; }
 	void SetEnvironmentLighting(const FLinearColor& Ambient, const FLinearColor& SunColor, const FLinearColor& Direction);
 
 	/**
@@ -369,6 +370,7 @@ private:
 	bool bSuppressRootOmega = false;
 	/** Sky rain/lightning PES — particles sort in front of world geometry (2D SFX). */
 	bool bEnvironmentWeather = false;
+	TOptional<double> EnvironmentSkyTime, PreviousEnvironmentSkyTime;
 	/** Terrain scenery surface luminosity is self-brightness, not a local light.
 	 * Gameplay FX and placed props retain their inferred fill lighting. */
 	bool bAllowInferredParticleLights = true;

@@ -4,6 +4,8 @@
 #include "ACEClientSubsystem.h"
 #include "ACEDatSubsystem.h"
 #include "ACESkyDomeActor.h"
+#include "Sky/ACESkyMotion.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "ACETerrainPresenterComponent.h"
 #include "Protocol/ACEHash32.h"
 #include "ProceduralMeshComponent.h"
@@ -112,6 +114,25 @@ bool FACERetailNetworkWeatherTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Network noon hides the star shell"),StarsVisible());
     TestFalse(TEXT("Network noon updates sky/fog tint"),Sky->LastFillColor.Equals(NightFill,.01f));
     TestTrue(TEXT("Network noon updates actual world lighting"),Sky->AppliedDirIntensity>NightLight);
+
+    // Exercise the real authenticated TimeSync -> actor -> material route.
+    // DeltaSeconds stays fixed: accelerated timestamps must move the clouds.
+    for (double Rate : {.125, 4., 64., 1000.})
+    {
+        Sync(ClearNoon);
+        const auto* Cloud = Sky->Slots.FindByPredicate([](const auto& S)
+        { return !S.bWeather && !S.bAfterPass && S.Mesh && S.Mesh->IsVisible() && S.Def.TexVelocityX != 0.f; });
+        if (!TestNotNull(TEXT("Clear forecast provides a scrolling cloud"),Cloud)) return false;
+        const int32 Index = Cloud->ObjectIndex;
+        Sync(ClearNoon + Rate*.25);
+        const auto& After = Sky->Slots[Index];
+        const auto UV = After.Mids[0]->K2_GetVectorParameterValue(TEXT("UVOffset"));
+        const double Expected = ACESkyMotion::Offset(ClearNoon+Rate*.25,After.Def.TexVelocityX);
+        const double Difference = FMath::Abs(double(UV.R)-Expected);
+        TestTrue(TEXT("Cloud UV follows accelerated server seconds, not frame delta"),FMath::Min(Difference,1.-Difference)<.003);
+        TestTrue(TEXT("Timelapse packet reaches the current sky date"),Sky->BuiltDayNumber==39755);
+    }
+    Sync(RainNoon);
 
     // Repeatedly disabling an already-disabled real-time capture calls an
     // unguarded UE setter, which queues six cube faces and GPU readback per frame.

@@ -3,6 +3,7 @@
 #include "ACECombatTargeting.h"
 #include "VR/ACEVRLocomotion.h"
 #include "ACEInventoryRules.h"
+#include "ACEVendorPricing.h"
 #include "ACEProfiling.h"
 #include "ACERetailChat.h"
 #include "ACECharacterOptions.h"
@@ -5458,6 +5459,8 @@ void FACESession::SendBuyItems(int32 VendorGuid, const TArray<TPair<int32, int32
 		else Available.Emplace(FMath::Min(Pair.Key,Limit),Pair.Value);
 	}
 	if (Available.IsEmpty()) return;
+	// Only one alternate-currency debit can await the vendor's refresh/UseDone.
+	if (VendorCurrencyWeenie && PendingVendorCurrencyCost) return;
 	FACEBinaryWriter W;
 	W.WriteUInt32(static_cast<uint32>(VendorGuid));
 	W.WriteUInt32(static_cast<uint32>(Available.Num()));
@@ -5470,6 +5473,23 @@ void FACESession::SendBuyItems(int32 VendorGuid, const TArray<TPair<int32, int32
 	// including zero for pyreals. Stock ACE ignores it, but servers that read
 	// the complete retail request cannot process a packet without the trailer.
 	W.WriteUInt32(VendorCurrencyWeenie);
+	if (VendorCurrencyWeenie && VendorReportedCurrencyWeenie == VendorCurrencyWeenie)
+	{
+		// Inventory currencies already reconcile each debit through stack updates.
+		GetVendorCurrencyCount();
+		if (!bVendorCurrencyInInventory)
+		{
+			int64 Cost = 0;
+			for (const auto& Row : Available)
+			{
+				const auto& Stock = *VendorMerchandise.FindByPredicate([&](const auto& Item){return Item.Guid == Row.Value;});
+				Cost += ACEVendorPricing::VendorSellCost(Stock, Row.Key, VendorSellRate);
+			}
+			PendingVendorCurrencyCost = int32(FMath::Min<int64>(Cost, MAX_int32));
+			VendorServerFunds -= PendingVendorCurrencyCost;
+			VendorPurseRevision = MAX_uint64;
+		}
+	}
 	SendGameAction(ACEGameAction::Buy, W.GetData(), ACEQueue::WeenieQueue);
 }
 
@@ -6737,6 +6757,7 @@ void FACESession::HandleApproachVendor(FACEBinaryReader& Reader)
 		return;
 	}
 	const int32 VendorGuid = static_cast<int32>(Reader.ReadUInt32());
+	const bool SameVendor = OpenVendorGuid == VendorGuid;
 	OpenVendorGuid = VendorGuid;
 	VendorMerchandise.Reset();
 	VendorBuyRate = 1.f;
@@ -6757,12 +6778,21 @@ void FACESession::HandleApproachVendor(FACEBinaryReader& Reader)
 		VendorCurrencyWeenie = Reader.ReadUInt32();
 	}
 	VendorCurrencyName.Reset(); VendorCurrencyCount = 0;
+	if (!SameVendor || VendorReportedCurrencyWeenie != VendorCurrencyWeenie)
+	{
+		bVendorCurrencyInInventory = false;
+		PendingVendorCurrencyCost = 0;
+	}
+	VendorReportedCurrencyWeenie = VendorCurrencyWeenie;
 	VendorPurseRevision = MAX_uint64;
 	// altCurrencyCount
 	if (Reader.CanRead(4))
 	{
-		VendorCurrencyCount = Reader.ReadUInt32();
+		VendorCurrencyCount = int32(FMath::Min(Reader.ReadUInt32(), uint32(MAX_int32)));
 	}
+	// Retail trade_num includes the purchase currently completing (m_last_sale).
+	// This also supports server-managed currency without an inventory object.
+	VendorServerFunds = FMath::Max(0, VendorCurrencyCount - PendingVendorCurrencyCost);
 	// altCurrency plural name (String16L)
 	if (Reader.CanRead(4))
 	{
@@ -7095,6 +7125,12 @@ void FACESession::HandleUseDone(FACEBinaryReader& Reader)
 {
 	if (!Reader.CanRead(4)) return;
 	const uint32 Err = Reader.ReadUInt32();
+	if (Err && PendingVendorCurrencyCost)
+	{
+		VendorServerFunds = int32(FMath::Min<int64>(int64(VendorServerFunds) + PendingVendorCurrencyCost, MAX_int32));
+		VendorPurseRevision = MAX_uint64;
+	}
+	PendingVendorCurrencyCost = 0;
 	ReleaseCursorUse();
 	ClearPendingUse();
 	OnUseDone.Broadcast(Err);
@@ -7661,6 +7697,14 @@ void FACESession::HandleInventoryServerSaveFailed(FACEBinaryReader& Reader)
 	const int32 ItemGuid = static_cast<int32>(Reader.ReadUInt32());
 	// A rejection completes this inventory request too. Leaving it pending
 	// needlessly blocks another hand/F attempt until the timeout expires.
+	// ACE also rejects vendor validation with the player's GUID here, followed
+	// by a successful UseDone. Release the reservation on this explicit failure.
+	if (ItemGuid == PlayerGuid && PendingVendorCurrencyCost)
+	{
+		VendorServerFunds = int32(FMath::Min<int64>(int64(VendorServerFunds) + PendingVendorCurrencyCost, MAX_int32));
+		PendingVendorCurrencyCost = 0;
+		VendorPurseRevision = MAX_uint64;
+	}
 	PendingInventoryTransfers.Remove(ItemGuid);
 	if (ItemGuid == PendingEquipmentGuid || PendingEquipmentRemovals.Contains(ItemGuid)) CancelEquipmentSwap();
 
@@ -7816,11 +7860,17 @@ int32 FACESession::GetVendorCurrencyCount() const
 			const auto* Parent = WorldObjects.Find(Container);
 			Container = Parent ? Parent->ContainerId : 0;
 		}
-		if (Container == PlayerGuid && PlayerGuid) Count += Item.MaxStackSize > 0 ? FMath::Max(0, Item.StackSize) : 1;
+		if (Container == PlayerGuid && PlayerGuid)
+		{
+			bVendorCurrencyInInventory = true;
+			Count += Item.MaxStackSize > 0 ? FMath::Max(0, Item.StackSize) : 1;
+		}
 	}
-	// ApproachVendor deliberately includes currency already spent. Retail's
-	// current purse follows inventory ownership/stack updates, not that snapshot.
+	// Physical purses follow ownership/stack updates. Remember seeing one even
+	// after its last stack disappears, so the opening snapshot cannot revive it.
 	VendorPurseRevision = InventoryDataRevision; VendorPurseWeenie = VendorCurrencyWeenie;
+	if (VendorCurrencyWeenie && VendorReportedCurrencyWeenie == VendorCurrencyWeenie && !bVendorCurrencyInInventory)
+		return VendorPurseCount = FMath::Max(0, VendorServerFunds);
 	return VendorPurseCount = int32(FMath::Min<int64>(Count, MAX_int32));
 }
 

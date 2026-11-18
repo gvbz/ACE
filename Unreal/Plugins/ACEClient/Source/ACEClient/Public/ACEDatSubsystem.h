@@ -308,6 +308,9 @@ public:
 	void SetWorldEmissiveScale(float LandScale, float SceneryScale = -1.f, const FLinearColor& AmbientTint = FLinearColor::White);
 	float GetWorldEmissiveScale() const { return WorldEmissiveScale; } // personal: far-terrain
 	float GetWorldFogEndCm() const { return WorldFogEndCm; } // personal: far-scenery
+	void RegisterLandSky(UMaterialInstanceDynamic* Material);
+	void SetLandSky(UTexture2D* Mask, const FLinearColor& Motion, const FLinearColor& AmbientTint);
+	void SetSkyAnimationTime(double Seconds);
 
 	/** Retail linear distance fog (MinWorldFog→MaxWorldFog) on land/scenery materials. */
 	void SetWorldDistanceFog(float StartCm, float EndCm, const FLinearColor& Color, float Amount);
@@ -910,6 +913,11 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> LandMaterialBase;
+	TSet<TWeakObjectPtr<UMaterialInstanceDynamic>> LandSkyInstances;
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> LandCloudMask;
+	FLinearColor LandCloudMotion = FLinearColor::Transparent;
+	FLinearColor LandSkyTint = FLinearColor::White;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> LandLookOutMaterialBase;

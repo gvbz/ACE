@@ -172,7 +172,9 @@ public:
 		const TSharedPtr<FACEUIElement> Element = Label->GetRetailElement();
 		// The canvas flattens DAT children into one Slate layer. Reapply ancestor
 		// clipping here so a scrolled label cannot paint over the panel's frame.
-		FSlateRect Clip = Geometry.GetLayoutBoundingRect().IntersectionWith(CullingRect);
+		// Glyph quads use the accumulated render transform. Layout bounds omit
+		// render scaling (including DPI compensation) and can clip the text early.
+		FSlateRect Clip = Geometry.GetRenderBoundingRect().IntersectionWith(CullingRect);
 		if (Element && Label->UsesDatAncestorClipping())
 		{
 			const auto* Canvas = Label->GetTypedOuter<UACEUICanvasWidget>();
@@ -207,8 +209,11 @@ public:
 			- Lines.Num() * DatFont->MaxCharHeight * Scale.Y);
 		if (Element && Element->TextVerticalJustification == 1) Top += FMath::FloorToFloat(SpareHeight * .5f);
 		else if (Element && Element->TextVerticalJustification == 5) Top += SpareHeight;
+		const FVector2D RasterScale = Scale * Geometry.GetAccumulatedLayoutTransform().GetScale();
+		const bool IntegerScale = FMath::IsNearlyEqual(RasterScale.X,FMath::RoundToDouble(RasterScale.X),1.e-4)
+			&& FMath::IsNearlyEqual(RasterScale.Y,FMath::RoundToDouble(RasterScale.Y),1.e-4);
 		const ESlateDrawEffect Effects = (ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect)
-			| (Scale.Equals(FVector2D(1,1)) ? ESlateDrawEffect::None : ESlateDrawEffect::NoPixelSnapping);
+			| (IntegerScale ? ESlateDrawEffect::None : ESlateDrawEffect::NoPixelSnapping);
 		if (Label->IsSelectable() && Anchor!=Caret)
 		{
 			for (int32 L=0; L<Lines.Num(); ++L)

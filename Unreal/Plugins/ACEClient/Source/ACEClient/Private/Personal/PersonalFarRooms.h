@@ -53,7 +53,7 @@ namespace PersonalFarRooms
 	/** Far rooms are made out to the ring where far scenery draws buildings. */
 	inline bool IsWanted(FIntPoint Block, FIntPoint Center, int32 OuterRing)
 	{
-		return PersonalFarScenery::Ring(Block, Center) <= FMath::Min(OuterRing, PersonalFarScenery::LastRing)
+		return PersonalFarScenery::Ring(Block, Center) <= FMath::Min(OuterRing, PersonalFarScenery::InteriorRings)
 			&& Block.X >= 0 && Block.Y >= 0 && Block.X < PersonalFarScenery::WorldLandblocks && Block.Y < PersonalFarScenery::WorldLandblocks;
 	}
 

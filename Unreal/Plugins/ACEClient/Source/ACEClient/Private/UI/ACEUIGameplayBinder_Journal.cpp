@@ -163,6 +163,19 @@ void UACEUIGameplayBinder::RefreshJournalOverlays()
   JournalNotes->OnTextChanged.AddDynamic(this,&UACEUIGameplayBinder::HandleJournalEdited);
  }
  JournalPageIndex=FMath::Clamp(JournalPageIndex,0,JournalPages.Num()-1);
+ // DAT buttons start ghosted until gmJournalUI populates the journal.
+ // Update their input state as well as their captions after every page change.
+ auto Enable=[&](const TCHAR* Name,bool Enabled)
+ {
+  if(auto Button=Manager->FindElementUnder(ActiveQuestTab,Name))
+  { Button->bActivatable=Enabled; Button->bGhosted=!Enabled; }
+ };
+ Enable(TEXT("NewPageButton"),true);
+ Enable(TEXT("JournalPreviousButton"),JournalPageIndex>0);
+ Enable(TEXT("FirstPageButton"),JournalPageIndex>0);
+ Enable(TEXT("JournalNextButton"),JournalPageIndex+1<JournalPages.Num());
+ Enable(TEXT("LastPageButton"),JournalPageIndex+1<JournalPages.Num());
+ Enable(TEXT("DeletePageButton"),JournalPages.IsValidIndex(JournalPageIndex));
  const auto& P=JournalPages[JournalPageIndex];
  if(bJournalFieldsDirty)
  {

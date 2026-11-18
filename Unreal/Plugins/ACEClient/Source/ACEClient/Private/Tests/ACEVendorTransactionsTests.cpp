@@ -188,6 +188,47 @@ bool FACEVendorTransactionsTest::RunTest(const FString&)
     Session.VendorCurrencyWeenie = 0; Session.VendorCurrencyName = TEXT("Pyreals");
     TestTrue(TEXT("Ordinary vendor remains pyreal-based with a nonempty label"), Session.VendorUsesPyreals());
     TestFalse(TEXT("Stale stock is not partially purchased"), UI->SubmitVendorPurchase({{1, Book.Guid}, {1, 999}})); NoPurchase();
+
+    auto AbilityPointOffer = [&](uint32 Balance)
+    {
+        FACEBinaryWriter W;
+        W.WriteUInt32(Vendor); W.WriteUInt32(MAX_uint32);
+        W.WriteInt32(-1); W.WriteInt32(-1); W.WriteUInt32(0);
+        W.WriteFloat(1); W.WriteFloat(1); W.WriteUInt32(76543);
+        W.WriteUInt32(Balance); W.WriteString16L(TEXT("Class Ability Points")); W.WriteUInt32(0);
+        FACEBinaryReader R(W.GetData()); Session.HandleApproachVendor(R);
+        Book.Value=1; Session.VendorMerchandise={Book};
+    };
+    AbilityPointOffer(1);
+    TestEqual(TEXT("Server-managed points need no inventory token"),Session.GetVendorPurchaseFunds(),1);
+    TestTrue(TEXT("One advertised ability point buys one class token"),UI->SubmitVendorPurchase({{1,Book.Guid}}));
+    CheckWire(ACEGameAction::Buy,{{1,Book.Guid}},76543);
+    TestEqual(TEXT("Pending purchase reserves its ability point"),Session.GetVendorPurchaseFunds(),0);
+    AbilityPointOffer(1); // Retail refresh includes the one point just spent.
+    Complete(0);
+    TestEqual(TEXT("Vendor refresh does not restore a spent virtual point"),Session.GetVendorPurchaseFunds(),0);
+    ++Session.InventoryDataRevision;
+    TestEqual(TEXT("Unrelated inventory updates preserve the virtual balance"),Session.GetVendorPurchaseFunds(),0);
+    TestFalse(TEXT("A spent point cannot fund another token"),UI->SubmitVendorPurchase({{1,Book.Guid}})); NoPurchase();
+    AbilityPointOffer(2);
+    TestTrue(TEXT("Later server balance is honored"),UI->SubmitVendorPurchase({{1,Book.Guid}}));
+    CheckWire(ACEGameAction::Buy,{{1,Book.Guid}},76543);
+    UI->VendorBuyCart={{1,Book.Guid}};UI->BuyVendorCart();
+    TestTrue(TEXT("Pending virtual purchase cannot dispatch a second transaction"),Session.CachedC2SPackets.IsEmpty());
+    TestEqual(TEXT("Pending virtual purchase preserves the staged cart"),UI->VendorBuyCart.Num(),1);
+    Complete(1);
+    TestEqual(TEXT("Failed purchase releases the reserved point"),Session.GetVendorPurchaseFunds(),2);
+    TestTrue(TEXT("A rejected purchase can be retried"),UI->SubmitVendorPurchase({{1,Book.Guid}}));
+    CheckWire(ACEGameAction::Buy,{{1,Book.Guid}},76543);
+    FACEBinaryWriter Rejected;Rejected.WriteInt32(Session.PlayerGuid);
+    FACEBinaryReader Rejection(Rejected.GetData());Session.HandleInventoryServerSaveFailed(Rejection);
+    Complete(0); // Stock ACE reports validation failure separately from UseDone.
+    TestEqual(TEXT("Inventory rejection releases virtual points exactly once"),Session.GetVendorPurchaseFunds(),2);
+
+    Coins.WeenieClassId=76543; Coins.StackSize=2; Session.UpsertWorldObject(Coins);
+    TestEqual(TEXT("Physical currencies still follow inventory"),Session.GetVendorPurchaseFunds(),2);
+    Session.WorldObjects.Remove(Coins.Guid); ++Session.InventoryDataRevision;
+    TestEqual(TEXT("Removing the last currency stack cannot resurrect the opening balance"),Session.GetVendorPurchaseFunds(),0);
     return true;
 }
 #endif

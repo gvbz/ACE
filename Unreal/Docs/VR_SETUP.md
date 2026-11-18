@@ -23,7 +23,7 @@ The existing capability response, subscriptions and VR action formats are unchan
 3. Keep the complete `Unreal/PackagedVR/Windows` directory together. Double-click the adjacent **`Launch-VR.bat`**, which handles PowerShell's script policy for this process only and checks the startup log for VR activation. The package requires the existing retail DAT installation; it does not include DAT files.
 4. Point either controller at the login card. Pull its trigger to click a field. Use the virtual keyboard below the card, then log in and select or create a character.
 5. Click the left stick to open VR settings. Use **Recenter / Calibrate height** while looking forward. Choose seated mode when playing seated.
-6. Connect to the extended server described below. The VR settings panel should report **VR combat ready** after entering the world.
+6. Connect to an ACE server. Extended servers report **VR combat ready**. Standard servers support retail-targeted spell casting and item spells from the VR controls; free-aim combat requires the extension described below.
 
 For development from source, run `Unreal/Launch-VR.ps1`. It builds the editor target, checks the selected runtime, and starts `UnrealEditor` with `-game -vr`. `-BuildOnly` compiles without launching. Desktop play remains available through the existing launcher; use `-nohmd` for desktop play when a headset runtime is running.
 
@@ -54,7 +54,7 @@ Open the spellbook through the retail menus or the VR settings shortcut. Hold a 
 
 Pull the weapon-hand trigger while aiming away from UI to cast. Selecting a UI control never also casts. The wrist uses the actual active retail bank; if it is empty, A/B can select known spells until you populate it. The wielded item's built-in spell is also available through A/B.
 
-Projectile spells originate at the visible wand/staff tip, directed outward along its rendered shaft, sampled when the trigger is pressed. They retain ACE windup, mana, component, proficiency, damage, and recoil logic; they travel without homing toward a selected creature. Self buffs and other non-projectile spells use ACE's normal target rules. A teleport or weapon/stance change during windup invalidates the pending aimed cast.
+On extended servers, projectile spells originate at the visible wand/staff tip, directed outward along its rendered shaft, sampled when the trigger is pressed. They retain ACE windup, mana, component, proficiency, damage, and recoil logic; they travel without homing toward a selected creature. Self buffs and other non-projectile spells use ACE's normal target rules. A teleport or weapon/stance change during windup invalidates the pending aimed cast. On standard servers, select a valid retail target before casting an offensive spell.
 ## Melee and missiles
 
 For melee, equip a weapon and enter melee stance. Swing through a creature deliberately: at least 18 cm of net weapon travel at 1.4 m/s or faster. Movement comes from the controller in tracking space; body/weapon animation, locomotion, and small tracking jitter cannot produce a hit. Continuous motion registers at most one contact; briefly rest the weapon before another swing. Retail auto attack is disabled in VR. The server checks the sweep, target visibility/reach, equipment, and attack timing, then runs normal ACE damage and stamina logic. A contact can still miss or deal reduced damage under ACE combat rules.
@@ -68,6 +68,10 @@ The current swing detector uses the primary melee weapon. Independent offhand at
 ## Settings and comfort
 
 The VR menu has a **Movement: Run / Walk** toggle above the sliders for **Menu scale**, **Menu distance**, **Hotbar scale**, **Movement speed**, and **Wrist stabilization**. The first four pin controls let you attach the main menus or hotbar to the camera view and keep vitals/chat visible in the view. Main menus default to a fixed world position; the hotbar defaults to the left wrist. Head-pinned panels participate in the headset's late pose update.
+
+**Inventory recenter radius** in VR settings adjusts the body-anchored menu's minimum follow angle from 30 to 120 degrees (default 55). Wider or offset panels expand the angle further so you can inspect their edges. Changes apply in the headset and save when you release the slider. The setting is disabled for head and world anchors.
+
+The desktop-style panel has an **Unlock retail windows** control below it. Use that to move and resize individual retail windows; the neighboring panel lock controls the whole floating surface. Either controller can activate inventory items, and equipped items support inspection and removal.
 
 **Arms only** hides the torso, legs, head, and non-arm accessories from your own view while retaining all parts for shadows. The regular body option keeps the local head hidden and still casts its shadow. Recenter while upright to calibrate body scale; select seated mode before calibrating when seated.
 

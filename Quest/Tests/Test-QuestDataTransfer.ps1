@@ -49,7 +49,7 @@ function Invoke-Adb { param([string[]]$Arguments)
         if($LASTEXITCODE){throw "ADB push failed: $($output -join ' ')"}
         return
     }
-    if ($cmd -match "shell run-as com.acecommunity.questtest sh -c 'cat > files/ACUnreal/Saved/DAT/(client_\w+\.dat\.installing)' < /data/local/tmp/(ace-dat-[0-9a-f]{32}\.tmp)$") {
+    if ($cmd -match "shell run-as com.acecommunity.questtest sh -c 'cat > files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source)\.installing)' < /data/local/tmp/(ace-dat-[0-9a-f]{32}\.tmp)$") {
         [IO.File]::Copy((Join-Path $deviceDir $Matches[2]),(Join-Path $deviceDir $Matches[1]),$true)
         return
     }
@@ -59,19 +59,23 @@ function Invoke-Adb { param([string[]]$Arguments)
         if(Test-Path -LiteralPath $tempPath){Remove-Item -LiteralPath $tempPath -Force}
         return
     }
-    if ($cmd -match 'shell am force-stop com.acecommunity.questtest$|shell run-as com.acecommunity.questtest mkdir -p files/ACUnreal/Saved/DAT$') { return }
-    if ($cmd -match 'if \[ -f files/ACUnreal/Saved/DAT/(client_\w+\.dat) \]') {
+    if ($cmd -match 'shell run-as com.acecommunity.questtest rm -f files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source)\.installing)$') {
+        [IO.File]::Delete((Join-Path $deviceDir $Matches[1]))
+        return
+    }
+    if ($cmd -match 'shell am force-stop com.acecommunity.questtest$|shell run-as com.acecommunity.questtest mkdir -p files/ACUnreal/Saved/(?:DAT|Skies/Import)$') { return }
+    if ($cmd -match 'if \[ -f files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source)) \]') {
         $path = Join-Path $deviceDir $Matches[1]
         if (Test-Path -LiteralPath $path) { return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $path }
         return
     }
-    if ($cmd -match 'stat -c %s files/ACUnreal/Saved/DAT/(client_\w+\.dat\.installing)$') {
+    if ($cmd -match 'stat -c %s files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source)\.installing)$') {
         return [string](Get-Item -LiteralPath (Join-Path $deviceDir $Matches[1])).Length
     }
-    if ($cmd -match 'sha256sum files/ACUnreal/Saved/DAT/(client_\w+\.dat\.installing)$') {
+    if ($cmd -match 'sha256sum files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source)\.installing)$') {
         return (Get-FileHash -LiteralPath (Join-Path $deviceDir $Matches[1]) -Algorithm SHA256).Hash.ToLowerInvariant() + '  file'
     }
-    if ($cmd -match 'mv files/ACUnreal/Saved/DAT/(client_\w+\.dat\.installing) files/ACUnreal/Saved/DAT/(client_\w+\.dat)$') {
+    if ($cmd -match 'mv files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source)\.installing) files/ACUnreal/Saved/(?:DAT|Skies/Import)/((?:client_\w+\.dat|Legions\.source))$') {
         # Test fixtures only; both resolved targets must remain in this device directory.
         $from = [IO.Path]::GetFullPath((Join-Path $deviceDir $Matches[1]))
         $to = [IO.Path]::GetFullPath((Join-Path $deviceDir $Matches[2]))
@@ -123,5 +127,33 @@ try {
         Write-Output "PASS $mode preserves installed files and reports the failure"
     }
     if (@(Get-ChildItem -LiteralPath $deviceDir -Filter 'ace-dat-*.tmp').Count) { throw 'Staging file leaked' }
-    Write-Output "All 7 data-transfer checks passed. Evidence: $fixture"
+    '' | Set-Content -LiteralPath (Join-Path $deviceDir 'mode')
+    $sky = Join-Path $sourceDir 'Legions.sky'
+    foreach ($header in @('LSK1','LSK2','LSK3')) {
+        [Text.Encoding]::ASCII.GetBytes($header).CopyTo($bytes,0)
+        [IO.File]::WriteAllBytes($sky,$bytes)
+        if ((Resolve-QuestSkySource $sky) -ne $sky) { throw "Rejected $header sky cache" }
+    }
+    $selected = Resolve-QuestSkySource $sky
+    Install-QuestSky $selected $fixture
+    $pending = Join-Path $deviceDir 'Legions.source'
+    if ((Get-FileHash $sky).Hash -ne (Get-FileHash $pending).Hash) { throw 'Wrong sky staged' }
+    $script:commands = @()
+    Install-QuestSky $selected $fixture
+    if (($script:commands -join ' ') -match '\bpush\b|\bmv\b') { throw 'Duplicate sky replaced' }
+    $portal = Join-Path $sourceDir 'portal.dat'
+    [BitConverter]::GetBytes([uint32]0x5442).CopyTo($bytes,300)
+    [BitConverter]::GetBytes([uint32]1024).CopyTo($bytes,304)
+    [BitConverter]::GetBytes([uint32]$bytes.Length).CopyTo($bytes,308)
+    [BitConverter]::GetBytes([uint32]1).CopyTo($bytes,312)
+    [IO.File]::WriteAllBytes($portal,$bytes)
+    if ((Resolve-QuestSkySource $sourceDir) -ne $portal) { throw 'AC2 folder selection failed' }
+    'storage' | Set-Content -LiteralPath (Join-Path $deviceDir 'mode')
+    $failed = $false
+    try { Install-QuestSky (Resolve-QuestSkySource $portal) $fixture } catch { $failed = $_.Exception.Message -match 'Install-AC2-Sky.cmd' }
+    if (!$failed -or (Get-FileHash $sky).Hash -ne (Get-FileHash $pending).Hash) { throw 'Failed replacement lost pending sky' }
+    $failed = $false
+    try { Resolve-QuestSkySource (Join-Path $sourceDir 'client_portal.dat') } catch { $failed = $true }
+    if (!$failed) { throw 'Sky picker accepted an AC1 database' }
+    Write-Output "PASS sky staging, repeat transfer, failed replacement, and source validation. Evidence: $fixture"
 } finally { $env:ACE_TEST_PIPE_DIR = $oldPipeDir }

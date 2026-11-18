@@ -136,6 +136,11 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
             const auto& Source = Authored->Parts[0].Sections[0];
             bool bSame = Section && Section->ProcIndexBuffer.Num() == Source.Triangles.Num();
             if (bSame) for (int32 T=0; T<Source.Triangles.Num(); ++T) bSame &= Section->ProcIndexBuffer[T] == uint32(Source.Triangles[T]);
+            bool bAuthoredUVs = Section && Section->ProcVertexBuffer.Num()==Source.UVs.Num();
+            if (bAuthoredUVs)
+                for (int32 V=0; V<Source.UVs.Num(); ++V)
+                    bAuthoredUVs &= FVector2D(Section->ProcVertexBuffer[V].UV0).Equals(Source.UVs[V],.0001);
+            TestTrue(TEXT("Each rain curtain retains its own DAT streak spacing and size"),bAuthoredUVs);
             TestTrue(TEXT("Weather preserves authored polygon sides and winding"), bSame);
         }
     }
@@ -155,6 +160,12 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
     for (auto& Slot : Sky->Slots)
     {
         TestTrue(TEXT("Rain is enabled at the authored rainy time"), Slot.Mesh && Slot.Mesh->IsVisible());
+        for (const auto* Mid : Slot.Mids)
+        {
+            float Opacity=0.f;
+            TestTrue(TEXT("Fully active rain keeps the DAT's half-translucent surface"),
+                Mid && Mid->GetScalarParameterValue(TEXT("OpacityMul"),Opacity) && FMath::IsNearlyEqual(Opacity,.5f));
+        }
         if (Slot.Mesh) TestEqual(TEXT("GameSky fixes weather at absolute Z=-120 AC"), Slot.Mesh->GetComponentLocation().Z, -12000.0);
     }
     if (FApp::CanEverRender() && RainCount == 2)
@@ -185,9 +196,8 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
         TArray64<uint8> PNG; FImageUtils::PNGCompressImageArray(256,256,RainPixels,PNG);
         FFileHelper::SaveArrayToFile(PNG, *(FPaths::ProjectSavedDir()/TEXT("Automation/RetailParity/Weather.png")));
 
-        // A curtain is not a screen overlay: opaque world geometry must stop
-        // the rain behind it. Exercise actual DAT geometry, offset eye origins,
-        // a wall and downward views of sloping ground in desktop/mobile renderers.
+        // Retail draws the fine curtain before DrawBlock and the coarse curtain
+        // after it. Compare each with the dry scene for both eye origins.
         auto* Occluder=NewObject<UProceduralMeshComponent>(Sky);
         Occluder->RegisterComponent(); Occluder->SetWorldLocation(Sky->GetActorLocation());
         Occluder->SetMaterial(0,UMaterial::GetDefaultMaterial(MD_Surface));
@@ -199,11 +209,16 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
                 Capture->SetWorldLocation(Sky->GetActorLocation()+FVector(0,EyeOffset,0));
                 for (auto& Slot:Sky->Slots) Slot.Mesh->SetVisibility(false);
                 const auto Dry=Read();
-                for (auto& Slot:Sky->Slots) Slot.Mesh->SetVisibility(true);
-                const auto Wet=Read();
-                int32 Changed=0;
-                for (int32 P=0;P<Dry.Num();++P) if (Dry[P]!=Wet[P]) ++Changed;
-                TestEqual(FString::Printf(TEXT("%s occludes rain for eye %.1f"),Label,EyeOffset),Changed,0);
+                for (auto& Slot:Sky->Slots)
+                {
+                    Slot.Mesh->SetVisibility(true);
+                    const auto Wet=Read();
+                    int32 Changed=0;
+                    for (int32 P=0;P<Dry.Num();++P) if (Dry[P]!=Wet[P]) ++Changed;
+                    TestTrue(FString::Printf(TEXT("%s, eye %.1f, rain %08X (%d changed pixels)"),Label,EyeOffset,Slot.ActiveGfxId,Changed),
+                        Slot.bAfterPass ? Changed>0 : Changed==0);
+                    Slot.Mesh->SetVisibility(false);
+                }
             }
         };
         Occluder->CreateMeshSection_LinearColor(0,
@@ -216,10 +231,11 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
         Capture->SetWorldRotation(FRotator(-65,0,0));
         CompareOcclusion(TEXT("Sloping terrain"));
         Occluder->DestroyComponent(); Capture->ShowOnlyComponents.Remove(Occluder);
+        for (auto& Slot:Sky->Slots) Slot.Mesh->SetVisibility(true);
         Capture->SetWorldLocation(Sky->GetActorLocation()); Capture->SetWorldRotation(FRotator::ZeroRotator);
         TestTrue(TEXT("Occlusion does not disable unobstructed rain"),LitPixels(Read())>100);
         for (auto* Material:{Dat->EnsureAceWeatherTranslucentMaterialBase(),Dat->EnsureAceWeatherAdditiveMaterialBase()})
-            TestTrue(TEXT("Both weather blend modes use per-sample hardware world depth"),Material && !Material->GetMaterial()->bDisableDepthTest);
+            TestTrue(TEXT("Both after-pass weather blend modes draw over the landscape"),Material && Material->GetMaterial()->bDisableDepthTest);
         Sky->UpdateSky(.1f,.25f);
         const auto MovedPixels = Read();
         TestTrue(TEXT("DAT texture velocity animates rainfall"), RainPixels != MovedPixels);
@@ -368,6 +384,18 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
                     for (const auto& Emitter:Sky->WeatherScripts->ActiveEmitters)
                         if (Emitter.AuthoredEmitterId==0x32000455)
                             TestEqual(TEXT("Long-lived sky clouds retain their DAT lifespan"),Emitter.Info.Lifespan,3300.0);
+					Sky->WeatherScripts->SetEnvironmentSkyTime(100.);
+					Sky->WeatherScripts->TickEmitters(.01f);
+					const auto* CloudEmitter=Sky->WeatherScripts->ActiveEmitters.FindByPredicate([](const auto& E){return E.AuthoredEmitterId==0x32000455;});
+					if (CloudEmitter)
+					{
+						const double Age=CloudEmitter->Age;
+						Sky->WeatherScripts->SetEnvironmentSkyTime(104.);
+						Sky->WeatherScripts->TickEmitters(.01f);
+						CloudEmitter=Sky->WeatherScripts->ActiveEmitters.FindByPredicate([](const auto& E){return E.AuthoredEmitterId==0x32000455;});
+						TestTrue(TEXT("Scripted sky clouds age by server time rather than frame time"),CloudEmitter && FMath::IsNearlyEqual(CloudEmitter->Age,Age+4.,.001));
+					}
+					Sky->WeatherScripts->EnvironmentSkyTime.Reset(); Sky->WeatherScripts->PreviousEnvironmentSkyTime.Reset();
                     const int32 Before=Sky->WeatherScripts->ActiveEmitters.Num();
                     Sky->SetWeatherEnabled(false);
                     TestEqual(TEXT("Disabling weather retains before-pass celestial particles"),Sky->WeatherScripts->ActiveEmitters.Num(),Before);

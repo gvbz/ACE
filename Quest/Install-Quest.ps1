@@ -2,10 +2,13 @@
 param(
     [string]$Serial,
     [string]$DatDirectory = "C:\Turbine\Asheron's Call",
+    [string]$AC2SkyPath,
     [switch]$SkipData,
     [switch]$NoLaunch
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Sharing/Quest-DataTransfer.ps1')
+if ($AC2SkyPath) { $AC2SkyPath = Resolve-QuestSkySource $AC2SkyPath }
 $adb = Join-Path $PSScriptRoot 'AndroidSDK\platform-tools\adb.exe'
 $package = 'com.acecommunity.questtest'
 $devices = @(& $adb devices | Select-String '^([^\s]+)\s+device$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
@@ -37,7 +40,6 @@ Write-Host "Installing $apk on $model"
 & $adb @deviceArgs install -r $apk
 if ($LASTEXITCODE -ne 0) { throw 'APK installation failed.' }
 # Use the same atomic, verified transfer as the friend installer.
-. (Join-Path $PSScriptRoot 'Sharing/Quest-DataTransfer.ps1')
 . (Join-Path $PSScriptRoot 'Sharing/Quest-ProfileMigration.ps1')
 $AdbPath = $adb
 function Invoke-Adb {
@@ -65,6 +67,7 @@ Move-QuestLegacyProfile
 if (!$SkipData) {
     Install-QuestData -DatDirectory $DatDirectory -DiagnosticDirectory (Join-Path $PSScriptRoot 'Logs')
 }
+if ($AC2SkyPath) { Install-QuestSky $AC2SkyPath (Join-Path $PSScriptRoot 'Logs') }
 if (!$NoLaunch) {
     $powerState = (& $adb @deviceArgs shell dumpsys power | Out-String)
     if ($powerState -match 'mWakefulness=Awake') {

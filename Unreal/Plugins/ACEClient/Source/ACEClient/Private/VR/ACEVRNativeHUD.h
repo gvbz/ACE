@@ -56,22 +56,36 @@ public:
  bool Refresh()
  {
   const bool Locked=!Rig.IsValid() || Rig->IsPanelLocked(Panel);
-  if(Locked==bLocked)return false;
-  bLocked=Locked;Invalidate(EInvalidateWidgetReason::Paint);return true;
+  const bool Retail=Rig.IsValid() && Panel=="Menu" && Rig->bUseDesktopMenu;
+  const bool WindowsLocked=!Rig.IsValid() || Rig->IsRetailLayoutLocked();
+  if(Locked==bLocked && Retail==bRetail && WindowsLocked==bWindowsLocked)return false;
+  const auto Reason=Retail!=bRetail?EInvalidateWidgetReason::Layout:EInvalidateWidgetReason::Paint;
+  bLocked=Locked;bRetail=Retail;bWindowsLocked=WindowsLocked;Invalidate(Reason);return true;
  }
- virtual FVector2D ComputeDesiredSize(float)const override{return FVector2D(480,48);}
+ virtual FVector2D ComputeDesiredSize(float)const override{return FVector2D(bRetail?720:480,48);}
  virtual int32 OnPaint(const FPaintArgs&,const FGeometry& G,const FSlateRect&,FSlateWindowElementList& Out,int32 L,const FWidgetStyle&,bool)const override
- {ACEVRHUDArt::Controls(Out,L,G,480,0,48,bLocked);return L+1;}
+ {
+  ACEVRHUDArt::Controls(Out,L,G,480,0,48,bLocked);
+  if(bRetail)
+  {
+   ACEVRHUDArt::Box(Out,L,G,{482,2},{236,44},FLinearColor(.025f,.02f,.015f),4);
+   ACEVRHUDArt::Text(Out,L+1,G,{600,24},bWindowsLocked?TEXT("Unlock retail windows"):TEXT("Lock retail windows"),
+    16,FLinearColor(.95f,.82f,.53f),true,true);
+  }
+  return L+1;
+ }
  virtual FReply OnMouseButtonDown(const FGeometry& G,const FPointerEvent& E)override
  {
   if(!Rig.IsValid())return FReply::Unhandled();
-  ACEVRHUDArt::PressControl(Rig.Get(),Panel,G.AbsoluteToLocal(E.GetScreenSpacePosition()).X,480,E.GetPointerIndex()==0);
+  const FVector2D Point=G.AbsoluteToLocal(E.GetScreenSpacePosition());
+  if(bRetail && Point.X>=480)Rig->ToggleRetailLayoutLock();
+  else ACEVRHUDArt::PressControl(Rig.Get(),Panel,Point.X,480,E.GetPointerIndex()==0);
   return FReply::Handled().CaptureMouse(SharedThis(this));
  }
  virtual FReply OnMouseButtonUp(const FGeometry&,const FPointerEvent& E)override
  {if(Rig.IsValid())Rig->EndPanelEdit(true,E.GetPointerIndex());return FReply::Handled().ReleaseMouseCapture();}
 private:
- TWeakObjectPtr<UACEVRComponent> Rig;FName Panel;bool bLocked=true;
+ TWeakObjectPtr<UACEVRComponent> Rig;FName Panel;bool bLocked=true,bRetail=false,bWindowsLocked=true;
 };
 
 /** Headset-sized charge feedback drawn directly from the controller's charge. */

@@ -121,12 +121,13 @@ namespace PersonalFarWindows
 	inline int32 OuterRing(float FogEndCm, float WorldScale)
 	{
 		const int32 Fog = PersonalFarScenery::FogRing(FogEndCm, 192.f * WorldScale);
-		return FMath::Min(PersonalFarScenery::HideWithFog() ? Fog : PersonalFarScenery::LastRing, PersonalFarScenery::Radius());
+		const int32 ExteriorRing = FMath::Min(PersonalFarScenery::Radius(), PersonalFarScenery::InteriorRings);
+		return PersonalFarScenery::HideWithFog() ? FMath::Min(Fog, ExteriorRing) : ExteriorRing;
 	}
 	/** Landblocks with door panels while the player is in Center. */
 	inline bool IsPrepared(FIntPoint Block, FIntPoint Center, int32 InOuterRing)
 	{
-		return PersonalFarScenery::Ring(Block, Center) <= FMath::Min(InOuterRing, PersonalFarScenery::LastRing)
+		return PersonalFarScenery::Ring(Block, Center) <= FMath::Min(InOuterRing, PersonalFarScenery::InteriorRings)
 			&& Block.X >= 0 && Block.Y >= 0 && Block.X < PersonalFarScenery::WorldLandblocks && Block.Y < PersonalFarScenery::WorldLandblocks;
 	}
 

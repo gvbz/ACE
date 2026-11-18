@@ -932,7 +932,10 @@ void AACEPlayerController::PlayerTick(float DeltaTime)
 	if (IsLocalController())
 	{
 		int32 Width=0,Height=0; GetViewportSize(Width,Height);
-		ACERuntimeOptions::ApplyDesktopUIScale(FIntPoint(Width,Height),bVR || bMobile);
+		const auto* Viewport=GetWorld()?GetWorld()->GetGameViewport():nullptr;
+		const auto Window=Viewport?Viewport->GetWindow():TSharedPtr<SWindow>();
+		ACERuntimeOptions::ApplyDesktopUIScale(FIntPoint(Width,Height),bVR || bMobile,
+			Window?Window->GetDPIScaleFactor():1.f);
 		UpdateFrameRateOverlay();
 	}
 	if (bVR) VR->PrepareMovement(DeltaTime);

@@ -196,6 +196,8 @@ def build_release(root, args):
                     'Repair-Quest.cmd', 'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt', 'RELEASE-NOTES.md', 'LICENSE', 'manifest.json', 'START-HERE.html', 'AC-Icon.png'}
         if version >= 154:
             expected.update({'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1'})
+        if args.installer_revision >= 11:
+            expected.add('Install-AC2-Sky.cmd')
         require(set(archive.namelist()) == expected, 'Unexpected Quest bundle contents')
         require(archive.testzip() is None, 'Quest ZIP checksum failure')
         manifest = json.loads(archive.read('manifest.json').decode('utf-8-sig'))
@@ -211,6 +213,8 @@ def build_release(root, args):
             helpers = {'Install-Quest.ps1', 'Install-Quest.cmd', 'Update-Quest.cmd',
                        'Repair-Quest.cmd', 'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1',
                        'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt'}
+            if args.installer_revision >= 11:
+                helpers.add('Install-AC2-Sky.cmd')
             with zipfile.ZipFile(quest_update_zip) as update:
                 require(set(update.namelist()) == helpers | {'INSTALLER-UPDATE.txt'}, 'Unexpected Quest installer-only contents')
                 require(update.testzip() is None, 'Quest installer-only ZIP checksum failure')
@@ -300,7 +304,7 @@ def main():
     parser.add_argument('--quest-version', type=int, required=True)
     parser.add_argument('--windows-version', required=True)
     parser.add_argument('--linux-version', help='Required for release 88 onward; must match the Windows/Quest display version')
-    parser.add_argument('--installer-revision', type=int, default=10)
+    parser.add_argument('--installer-revision', type=int, default=11)
     parser.add_argument('--android-version', help='Include the verified Android phone/tablet preview APK')
     args = parser.parse_args()
     try:

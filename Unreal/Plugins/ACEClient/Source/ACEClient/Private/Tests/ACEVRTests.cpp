@@ -246,6 +246,12 @@ bool FACEVRMathTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Legacy saved inventory position survives migration"),Settings->MenuViewOffset.Equals(FVector(120,25,-15)));
 	Settings->PanelLayouts.Reset(); Settings->MenuViewOffset=FVector(90,0,-10); Settings->MenuViewRotation=FRotator::ZeroRotator;
 	Settings->Sanitize(); TestEqual(TEXT("Invalid snap resets safely"), Settings->SnapDegrees, 30.f); TestEqual(TEXT("Draw range bounded"), Settings->BowFullDraw, 30.f);
+	Settings->MenuRecenterDegrees=std::numeric_limits<float>::quiet_NaN();Settings->Sanitize();
+	TestEqual(TEXT("Invalid inventory recenter radius restores the default"),Settings->MenuRecenterDegrees,55.f);
+	Settings->MenuRecenterDegrees=-1;Settings->Sanitize();
+	TestEqual(TEXT("Inventory recenter radius retains a usable lower bound"),Settings->MenuRecenterDegrees,30.f);
+	Settings->MenuRecenterDegrees=999;Settings->Sanitize();
+	TestEqual(TEXT("Inventory recenter radius cannot prevent all body follow"),Settings->MenuRecenterDegrees,120.f);
 	Settings->MovementDirection=-1;Settings->bHeadRelativeMovement=false;Settings->Sanitize();
 	TestEqual(TEXT("Existing hand-relative preference migrates"),Settings->MovementDirection,1);
 	Settings->MovementDirection=2;Settings->Sanitize();TestEqual(TEXT("Stick-only direction survives settings sanitation"),Settings->MovementDirection,2);
@@ -1161,7 +1167,17 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 		// Slate can restore text focus when clicking non-focusable window chrome.
 		VR->RightPointer->SetFocus(Gameplay->ChatEntry); PaintRetail();
 		TestFalse(TEXT("Restored Slate focus alone cannot open the keyboard"), VR->bTextKeyboardOpen);
-		Gameplay->ShowPanelPage(TEXT("InventoryPanel_Field")); Manager->SetUiLocked(false); PaintRetail();
+		Gameplay->ShowPanelPage(TEXT("InventoryPanel_Field")); Manager->SetUiLocked(true); PaintRetail();
+		const bool PlacementLocked=VR->Settings->bMenuLocked;
+		auto ClickRetailLock=[&]()
+		{
+			VR->UpdatePanels();VR->MenuControlsPanel->SetRedrawTime(0);VR->MenuControlsPanel->RequestRedraw();
+			VR->MenuControlsPanel->TickComponent(.016f,LEVELTICK_All,nullptr);FlushRenderingCommands();
+			PointAt(VR->MenuControlsPanel,FVector2D(600,24));VR->Trigger(false,true);VR->Trigger(false,false);PaintRetail();
+		};
+		ClickRetailLock();
+		TestFalse(TEXT("VR toolbar unlocks the individual retail windows"),Manager->IsUiLocked());
+		TestEqual(TEXT("Retail window unlock preserves floating panel placement lock"),VR->Settings->bMenuLocked,PlacementLocked);
 		if (const auto Window = Manager->FindElementByName(TEXT("RootGameplay_FloatyPanel_Field")))
 		{
 			Manager->BringFloatyToFront(Window); PaintRetail();
@@ -1191,7 +1207,8 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("Controller close button closes the original panel"), Gameplay->ActivePanelPage.IsEmpty());
 			}
 		}
-		Manager->SetUiLocked(true);
+		ClickRetailLock();
+		TestTrue(TEXT("VR toolbar can relock the individual retail windows"),Manager->IsUiLocked());
 		VR->Settings->bVitalsLocked = false;
 		PointAt(VR->VitalsPanel, VR->VitalsPanel->GetDrawSize() * FVector2D(.5, .25));
 		VR->BeginVitalsDrag(false); VR->UpdateVitalsDrag();
@@ -1385,6 +1402,7 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 		const FTransform BodyMenuAnchor=VR->MenuAnchorFrame;
 		VR->Head->AddWorldRotation(FRotator(0,.1f,0)); VR->UpdateMenuAnchor(.016f);
 		TestTrue(TEXT("Body inventory ignores tiny head rotations while reading"),VR->MenuAnchorFrame.Equals(BodyMenuAnchor,.01f));
+
 		VR->Head->SetWorldTransform(HeadBeforeMenuPin); VR->Settings->MenuAnchorMode=2; VR->bMenuAnchorReady=false; VR->UpdatePanels();
 		PointAt(VR->MenuControlsPanel,FVector2D(400,24)); VR->Trigger(false,true);
 		VR->bInventoryOpen=false; VR->UpdatePanels();
@@ -1414,6 +1432,8 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 		PointAt(VR->SettingsPanel,FVector2D(300,100));
 		TestEqual(TEXT("Overlapping VR settings take hit priority over main UI"),VR->RightPointer->GetHoveredWidgetComponent(),VR->SettingsPanel.Get());
 		VR->SettingsPanel->SetVisibility(false);VR->SettingsPanel->SetWorldTransform(SettingsBefore);VR->UpdatePanels();
+
+		VR->UpdatePanels();
 		{
 			auto& Session=*VR->Client->Session;
 			Session.Book.bOpen=true; Session.Book.BookGuid=70001;Session.Book.CurrentPage=0;Session.Book.NumPages=2;
@@ -1533,6 +1553,34 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("B has no effect outside VR"), VR->Client->GetIdentifyRequestSerial(), IdentifyBefore+1);
 			VR->bActive=true;
 			Gameplay->CancelPointerGestures();
+			{
+				TGuardValue<uint32> StandardServer(Session.VRCapabilities,0);
+				Gameplay->ShowPanelPage(TEXT("InventoryPanel_Field"));PaintRetail();
+				TGuardValue<int32> Usable(Session.WorldObjects[Bread.Guid].ItemUseable,8);
+				for(bool Left:{false,true})
+				{
+					PointAt(VR->RetailPanel,LocalCenter(Gameplay->InventorySlots[BreadIndex]));
+					const auto Pose=VR->RightAim->GetComponentTransform();
+					VR->LeftAim->SetWorldLocationAndRotation(FVector(0,0,200),FRotator(0,180,0));
+					if(Left)
+					{
+						VR->LeftAim->SetWorldTransform(Pose);
+						VR->RightAim->SetWorldLocationAndRotation(FVector(0,0,200),FRotator(0,180,0));
+					}
+					// Do not tick the pointers: an action must refresh the current aim.
+					VR->FeedbackHand=Left?0:1;Session.ClearPendingUse();Session.CachedC2SPackets.Reset();
+					Gameplay->CancelPendingUseWith();VR->SelectPressed();
+					int32 Uses=0;
+					for(const auto& Packet:Session.CachedC2SPackets)
+					{
+						FACEBinaryReader Wire(Packet.Value.Payload);Wire.Skip(16);
+						if(Wire.ReadUInt32()!=ACEOpcode::GameAction)continue;Wire.ReadUInt32();
+						if(Wire.ReadUInt32()==ACEGameAction::Use){++Uses;TestEqual(TEXT("Either hand uses its pointed retail item"),Wire.ReadUInt32(),uint32(Bread.Guid));}
+					}
+					TestEqual(TEXT("Primary action refreshes either controller and uses once on a stock server"),Uses,1);
+				}
+				Session.ClearPendingUse();PollHands();PaintRetail();
+			}
 			FACEWorldObject NPC; NPC.Guid = 601; NPC.ItemType = ACEItemType::Creature; NPC.bHasPosition = true;
 			NPC.UseRadius = .6f; NPC.Position.CellId = 1;
 			auto* Actor = World->SpawnActor<AACEWorldEntityActor>();
@@ -1792,11 +1840,12 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 		PollHands();
 		VR->RightPointer->TickComponent(.016f, LEVELTICK_All, nullptr);
 		VR->Trigger(false, true); VR->Trigger(false, false);
-		TestTrue(TEXT("Unsupported server gives a visible casting reason"), VR->GetCastFeedback().Contains(TEXT("server")));
+		TestFalse(TEXT("A standard server does not block casting on VR capability negotiation"), VR->GetCastFeedback().Contains(TEXT("Waiting for server")));
 		FACEBinaryWriter CombatAck; CombatAck.WriteUInt32(100); CombatAck.WriteUInt32(2); CombatAck.WriteUInt32(0xF7D0);
 		CombatAck.WriteUInt32(1); CombatAck.WriteUInt32(15); CombatAck.WriteUInt32(0); CombatAck.WriteUInt32(0);
 		FACEBinaryReader CombatAckInput(CombatAck.GetData()); VR->Client->Session->HandleGameEvent(CombatAckInput);
 		const uint32 BeforeCast = VR->Client->Session->VRSequence;
+		VR->LastCast=-100;
 		VR->Trigger(false, true); VR->Trigger(false, false);
 		TestEqual(TEXT("A trigger after selecting produces one VR spell action"), VR->Client->Session->VRSequence, BeforeCast+1u);
 		{
@@ -1958,6 +2007,45 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 					TestTrue(TEXT("Spell wheel retains self-cast guidance"),!VR->bSpellWheelOpen && VR->SelectedSpell==2 && VR->GetCastFeedback().Contains(TEXT("cast on yourself")));
 					TestEqual(TEXT("Self spell wheel confirmation does not cast prematurely"),CombatSession.VRSequence,BeforeConfirm);
 					CombatSession.SpellBars=Bars; CombatSession.ActiveSpellBar=ActiveTab;
+				}
+				// Ordinary ACE servers never advertise VR capabilities. Exercise the
+				// physical trigger and inspect standard actions, including built-in wands.
+				{
+					TGuardValue<uint32> StandardServer(CombatSession.VRCapabilities, 0);
+					Blocker->SetActorLocation(FVector(0,0,-10000));
+					auto StandardCast = [&](int32 SpellId, int32 Selection, int32 ExpectedTarget, bool BuiltIn, bool Expected)
+					{
+						TGuardValue<int32> ItemSpell(CombatSession.WorldObjects[Wand.Guid].SpellDID, BuiltIn ? SpellId : 0);
+						VR->SelectSpell(SpellId); VR->Client->SelectObject(Selection); VR->LastCast=-100;
+						CombatSession.ClearPendingUse(); CombatSession.CachedC2SPackets.Reset();
+						VR->Trigger(VR->Settings->bLeftHanded,true); VR->Trigger(VR->Settings->bLeftHanded,false);
+						int32 Count=0;
+						for(const auto& Packet:CombatSession.CachedC2SPackets)
+						{
+							FACEBinaryReader Wire(Packet.Value.Payload); Wire.Skip(16);
+							if(Wire.ReadUInt32()!=ACEOpcode::GameAction)continue; Wire.ReadUInt32();
+							const uint32 Action=Wire.ReadUInt32();
+							TestNotEqual(TEXT("Stock server never receives a VR combat opcode"),Action,0xF7D0u);
+							if(Action!=ACEGameAction::CastTargetedSpell && Action!=ACEGameAction::CastUntargetedSpell && Action!=ACEGameAction::UseWithTarget)continue;
+							++Count;
+							TestEqual(TEXT("Stock cast uses the appropriate retail action"),Action,BuiltIn?ACEGameAction::UseWithTarget:ACEGameAction::CastTargetedSpell);
+							TestEqual(TEXT("Stock cast retains target or casting item"),Wire.ReadUInt32(),uint32(BuiltIn?Wand.Guid:ExpectedTarget));
+							TestEqual(TEXT("Stock cast retains spell or built-in target"),Wire.ReadUInt32(),uint32(BuiltIn?ExpectedTarget:SpellId));
+						}
+						TestEqual(TEXT("Standard ACE trigger emits one cast or rejects an invalid target"),Count,Expected?1:0);
+					};
+					for(bool Left:{false,true})
+					{
+						VR->Settings->bLeftHanded=Left; PointAtPlayer();
+						StandardCast(2,0,CombatSession.GetPlayerGuid(),false,true);
+						StandardCast(1,Other.Guid,Recipient.Guid,false,true);
+						StandardCast(27,Other.Guid,Other.Guid,false,true);
+						StandardCast(2,0,CombatSession.GetPlayerGuid(),true,true);
+						Player->SetActorLocation(FVector(0,0,-10000)); Body->SetWorldLocation(FVector(0,0,-10000));
+						StandardCast(27,0,0,false,false); // Stock projectiles require a target.
+					}
+					TestFalse(TEXT("Standard server status does not wait for optional VR extensions"),VR->GetStatusText().Contains(TEXT("Waiting")));
+					CombatSession.ClearPendingUse();
 				}
 				Blocker->Destroy(); Player->Destroy();
 				CombatSession.WorldObjects.Remove(Recipient.Guid); CombatSession.WorldObjects.Remove(Other.Guid);
@@ -2813,6 +2901,65 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
                     return Result;
                 };
                 const uint32 OldCaps=NativeSession.VRCapabilities;
+                {
+                    TGuardValue<uint32> StandardServer(NativeSession.VRCapabilities,0);
+                    FACEWorldObject Helmet;Helmet.Guid=99221;Helmet.Name=TEXT("VR equipment test");
+                    Helmet.ContainerId=VR->Client->GetPlayerGuid();Helmet.ItemType=ACEItemType::Armor;
+                    Helmet.ItemUseable=1;Helmet.ValidLocations=ACEEquipMask::HeadWear;
+                    for(bool Left:{false,true})
+                    {
+                        NativeSession.WorldObjects.Add(Helmet.Guid,Helmet);NativeSession.ClearPendingUse();
+                        NativeSession.CancelEquipmentSwap();PC->DatGameplayBinder->CancelPendingUseWith();
+                        Menu->OpenPage("Inventory");Menu->SelectItem(Helmet.Guid);PaintMenu();
+                        NativeSession.CachedC2SPackets.Reset();ClickMenu(Left,"Use / Equip");
+                        const auto Equip=ActionPayload(ACEGameAction::GetAndWieldItem);
+                        if(TestTrue(TEXT("Standard equipment action carries item and slot"),Equip.Num()>=8))
+                        {
+                            FACEBinaryReader EquipReader(Equip);TestEqual(TEXT("Controller equips the selected armor"),EquipReader.ReadUInt32(),uint32(Helmet.Guid));
+                            TestEqual(TEXT("Controller uses the armor's retail slot"),EquipReader.ReadUInt32(),uint32(ACEEquipMask::HeadWear));
+                        }
+                        FACEBinaryWriter Wield;Wield.WriteUInt32(Helmet.Guid);Wield.WriteUInt32(ACEEquipMask::HeadWear);
+                        FACEBinaryReader WieldAck(Wield.GetData());NativeSession.HandleWieldItem(WieldAck);
+                        TestFalse(TEXT("Standard equip acknowledgement completes the pending swap"),NativeSession.IsUseBusy());
+                        Menu->OpenPage("Equipment");PaintMenu();ClickMenu(Left,"Item_99221");
+                        TestEqual(TEXT("Controller selects the worn armor"),Menu->Selected,Helmet.Guid);
+                        TestFalse(TEXT("Worn gear cannot be offered directly to another player"),FindVRMenuControl(Menu->TakeWidget(),"Give")->IsEnabled());
+                        TestFalse(TEXT("Worn gear must be removed before a world drop"),FindVRMenuControl(Menu->TakeWidget(),"Drop")->IsEnabled());
+                        Menu->BeginItemPointer(Helmet.Guid);TestEqual(TEXT("Worn gear can start a drag back to a pack"),Menu->DragItem,Helmet.Guid);Menu->CancelItemPointer();
+                        Menu->ContentScroll->ScrollDescendantIntoView(FindVRMenuControl(Menu->TakeWidget(),"Use / Equip"),false,EDescendantScrollDestination::Center);PaintMenu();
+                        NativeSession.CachedC2SPackets.Reset();ClickMenu(Left,"Use / Equip");
+                        const auto Unequip=ActionPayload(ACEGameAction::PutItemInContainer);
+                        if(TestTrue(TEXT("Standard unequip action carries item and pack"),Unequip.Num()>=8))
+                        {
+                            FACEBinaryReader UnequipReader(Unequip);TestEqual(TEXT("Controller unequips the selected armor"),UnequipReader.ReadUInt32(),uint32(Helmet.Guid));
+                            TestEqual(TEXT("Controller returns armor to the main pack"),UnequipReader.ReadUInt32(),uint32(Helmet.ContainerId));
+                        }
+                        FACEBinaryWriter Put;Put.WriteUInt32(Helmet.Guid);Put.WriteUInt32(Helmet.ContainerId);Put.WriteInt32(0);Put.WriteInt32(0);
+                        FACEBinaryReader PutAck(Put.GetData());NativeSession.HandleInventoryPutObjInContainer(PutAck);
+                    }
+                    NativeSession.WorldObjects.Remove(Helmet.Guid);Menu->bDirty=true;
+                }
+                {
+                    TGuardValue<uint32> StandardServer(NativeSession.VRCapabilities,0);
+                    Menu->OpenPage("Inventory");Menu->SelectItem(Item.Guid);PaintMenu();
+                    NativeSession.WorldObjects[Item.Guid].ItemUseable=8;
+                    NativeSession.ClearPendingUse();PC->DatGameplayBinder->CancelPendingUseWith();
+                    const auto Button=FindVRMenuControl(Menu->TakeWidget(),"Use / Equip");
+                    const auto G=Button->GetCachedGeometry();
+                    const FVector2D Pixel=Menu->GetCachedGeometry().AbsoluteToLocal(G.LocalToAbsolute(G.GetLocalSize()*.5));
+                    const FVector2D Size=VR->GameplayMenuPanel->GetDrawSize();
+                    const FVector Point=VR->GameplayMenuPanel->GetComponentTransform().TransformPosition(FVector(0,Size.X*.5-Pixel.X,Size.Y*.5-Pixel.Y));
+                    VR->RightAim->SetWorldLocationAndRotation(Point+VR->GameplayMenuPanel->GetForwardVector()*90,(-VR->GameplayMenuPanel->GetForwardVector()).Rotation());
+                    VR->RightPointer->TickComponent(.016f,LEVELTICK_All,nullptr);
+                    NativeSession.CachedC2SPackets.Reset();VR->Trigger(false,true);
+                    const int32 BeforeRefresh=Menu->GetRefreshCount();
+                    VR->Client->OnObjectCreated.Broadcast(NativeSession.WorldObjects[Item.Guid]);PaintMenu();
+                    TestEqual(TEXT("Inventory updates preserve a pressed native action until release"),Menu->GetRefreshCount(),BeforeRefresh);
+                    VR->Trigger(false,false);PaintMenu();
+                    ActionPayload(ACEGameAction::Use);
+                    TestTrue(TEXT("Deferred inventory refresh resumes after release"),Menu->GetRefreshCount()>BeforeRefresh);
+                    NativeSession.ClearPendingUse();
+                }
                 // Physical A/B route to native actions, retain separate world
                 // bindings, and never synthesize trigger clicks or begin a drag.
                 const auto SavedMenuBindings=VR->Settings->MenuButtonBindings;
@@ -3400,6 +3547,153 @@ bool FACEVRRigTest::RunTest(const FString& Parameters)
 	VR->Client->Session->State = EACESessionState::Disconnected;
 	Login->NativeDestruct(); IFileManager::Get().Delete(*Login->ProfilePath,false,true);
 	Pawn->Destroy(); PC->Destroy(); GI->Shutdown(); GEngine->DestroyWorldContext(World); World->DestroyWorld(false);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEVRMenuRecenterTest, "ACE.VR.MenuRecenter", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FACEVRMenuRecenterTest::RunTest(const FString& Parameters)
+{
+	TStrongObjectPtr<UACEVRSettings> SavedPreferences(NewObject<UACEVRSettings>());
+	ON_SCOPE_EXIT { SavedPreferences->Persist(); };
+	const auto Values = UWorld::InitializationValues().AllowAudioPlayback(false).RequiresHitProxies(false)
+		.CreatePhysicsScene(true).CreateNavigation(false).CreateAISystem(false);
+	auto* World = UWorld::CreateWorld(EWorldType::Game, false, NAME_None, nullptr, true, ERHIFeatureLevel::Num, &Values);
+	auto* GI = NewObject<UGameInstance>(GEngine); GI->InitializeStandalone();
+	auto* DummyWorld = GI->GetWorld();
+	GI->GetWorldContext()->SetCurrentWorld(World); World->SetGameInstance(GI); DummyWorld->DestroyWorld(false);
+	auto* PC = World->SpawnActor<AACEPlayerController>(); auto* Pawn = World->SpawnActor<APawn>();
+	PC->SetPlayer(NewObject<ULocalPlayer>(GEngine));
+	World->AddController(PC);
+	auto* Capsule = NewObject<UCapsuleComponent>(Pawn); Capsule->InitCapsuleSize(34, 96); Pawn->SetRootComponent(Capsule); Capsule->RegisterComponent();
+	auto* Camera = NewObject<UCameraComponent>(Pawn); Camera->SetupAttachment(Capsule); Camera->RegisterComponent();
+	PC->Possess(Pawn);
+	auto* VR = NewObject<UACEVRComponent>(Pawn); Pawn->AddInstanceComponent(VR); VR->RegisterComponent();
+	VR->PC = PC; VR->Client = GI->GetSubsystem<UACEClientSubsystem>();
+	VR->Settings = NewObject<UACEVRSettings>(); VR->ActivateRig();
+	VR->Client->GetSession()->State=EACESessionState::InWorld;
+	VR->Settings->MenuAnchorMode=1;
+	VR->SettingsPanel->SetRedrawTime(0);
+	FVRTestControllers Controllers;
+	for(auto* Hand:{VR->LeftGrip.Get(),VR->RightGrip.Get(),VR->LeftAim.Get(),VR->RightAim.Get()})
+		Hand->TickComponent(.016f,LEVELTICK_All,nullptr);
+	VR->Head->SetRelativeLocationAndRotation(FVector(0,0,165),FRotator::ZeroRotator);
+	VR->UpdateTrackingState(true);VR->bInventoryOpen=true;VR->bUseDesktopMenu=true;VR->UpdatePanels();
+	{
+		TGuardValue<FVector> MenuOffset(VR->Settings->MenuViewOffset,FVector(90,0,-10));
+		TGuardValue<FRotator> MenuRotation(VR->Settings->MenuViewRotation,FRotator::ZeroRotator);
+		TGuardValue<float> MenuScale(VR->Settings->PanelScale,.11f);
+		TGuardValue<float> MenuRadius(VR->Settings->MenuRecenterDegrees,55.f);
+		TGuardValue<bool> RetailMode(VR->bUseDesktopMenu,true);
+		for (float Side : {-1.f,1.f})
+		{
+			VR->Head->SetWorldRotation(FRotator(0,170,0));VR->bMenuAnchorReady=false;VR->UpdateMenuAnchor(0);
+			const FTransform ReadingFrame=VR->MenuAnchorFrame;
+			VR->Head->SetWorldRotation(FRotator(25,170+Side*50,0));
+			for(int32 Frame=0;Frame<180;++Frame)VR->UpdateMenuAnchor(1.f/90);
+			TestTrue(TEXT("Inventory stays still through a sustained 50 degree edge scan"),VR->MenuAnchorFrame.Equals(ReadingFrame,.001));
+			VR->Head->SetWorldRotation(FRotator(0,170+Side*80,0));
+			float Previous=0;
+			for(int32 Frame=0;Frame<180;++Frame)
+			{
+				VR->UpdateMenuAnchor(1.f/90);
+				const float Progress=Side*FMath::FindDeltaAngleDegrees(170,VR->MenuAnchorFrame.Rotator().Yaw);
+				TestTrue(TEXT("A deliberate turn recenters inventory smoothly across the yaw seam"),Progress>=Previous-.001f && Progress-Previous<1.5f);
+				Previous=Progress;
+			}
+			TestTrue(TEXT("Inventory still follows a deliberate turn beyond its reading radius"),Previous>30.f && Previous<37.f);
+			TestFalse(TEXT("Inventory settles without hunting at the follow boundary"),VR->bMenuAnchorTurning);
+		}
+		// A compact panel permits the full slider range, including a smaller radius.
+		VR->Settings->PanelScale=.05f;VR->Settings->MenuViewOffset=FVector(180,0,-10);
+		VR->Head->SetWorldRotation(FRotator::ZeroRotator);VR->bMenuAnchorReady=false;VR->UpdateMenuAnchor(0);
+		VR->SetSliderSetting("MenuRecenter",1.f);
+		TestEqual(TEXT("Slider reaches the maximum inventory reading radius"),VR->Settings->MenuRecenterDegrees,120.f);
+		const FTransform TunedFrame=VR->MenuAnchorFrame;
+		VR->Head->SetWorldRotation(FRotator(0,80,0));
+		for(int32 Frame=0;Frame<90;++Frame)VR->UpdateMenuAnchor(1.f/90);
+		TestTrue(TEXT("Increasing the radius immediately allows a wider head scan"),VR->MenuAnchorFrame.Equals(TunedFrame,.001));
+		VR->SetSliderSetting("MenuRecenter",0.f);
+		TestEqual(TEXT("Slider reaches the minimum inventory reading radius"),VR->Settings->MenuRecenterDegrees,30.f);
+		VR->UpdateMenuAnchor(1.f/90);
+		TestTrue(TEXT("Reducing the radius starts follow without reopening inventory"),VR->bMenuAnchorTurning && VR->MenuAnchorFrame.Rotator().Yaw>0);
+		const FTransform MovingFrame=VR->MenuAnchorFrame;
+		VR->SetSliderSetting("MenuRecenter",1.f);
+		for(int32 Frame=0;Frame<90;++Frame)VR->UpdateMenuAnchor(1.f/90);
+		TestTrue(TEXT("Increasing the radius stops active follow without resetting its anchor"),!VR->bMenuAnchorTurning && VR->MenuAnchorFrame.Equals(MovingFrame,.001));
+		TestTrue(TEXT("Radius tuning preserves panel placement and scale"),VR->Settings->MenuViewOffset.Equals(FVector(180,0,-10)) && VR->Settings->MenuViewRotation.IsZero() && VR->Settings->PanelScale==.05f);
+		VR->SetSliderSetting("MenuRecenter",0.f);
+		VR->Settings->PanelScale=.15f;VR->Settings->MenuViewOffset=FVector(70,75,-10);
+		VR->Settings->MenuViewRotation=FRotator(10,15,5);
+		VR->Head->SetWorldRotation(FRotator::ZeroRotator);VR->bMenuAnchorReady=false;VR->UpdateMenuAnchor(0);
+		const FTransform WideFrame=VR->MenuAnchorFrame;
+		// Read the actual panel corners, rather than assume the stock centered size.
+		VR->PositionPanel(VR->RetailPanel);VR->RetailPanel->SetWorldScale3D(FVector(.15f));
+		for(float Side:{-1.f,1.f})for(float Up:{-1.f,1.f})
+		{
+			const auto Size=VR->RetailPanel->GetDrawSize();
+			const FVector Corner=VR->RetailPanel->GetComponentTransform().TransformPosition(FVector(0,Side*Size.X*.5,Up*Size.Y*.5));
+			VR->Head->SetWorldRotation((Corner-VR->Head->GetComponentLocation()).Rotation());
+			for(int32 Frame=0;Frame<90;++Frame)VR->UpdateMenuAnchor(1.f/90);
+			TestTrue(TEXT("Resizing and offsetting inventory retains a stable view of every corner"),VR->MenuAnchorFrame.Equals(WideFrame,.001));
+		}
+	}
+	VR->Head->SetRelativeRotation(FRotator::ZeroRotator);VR->bMenuAnchorReady=false;VR->UpdatePanels();
+	if(FApp::CanEverRender())
+	{
+		TGuardValue<float> Radius(VR->Settings->MenuRecenterDegrees,55.f);
+		TGuardValue<int32> AnchorMode(VR->Settings->MenuAnchorMode,1);
+		TGuardValue<bool> OptionsOpen(VR->bSettingsOpen,true);
+		auto* Options=Cast<UACEVRWidget>(VR->SettingsPanel->GetUserWidgetObject());
+		if(TestNotNull(TEXT("VR settings widget is available in the headset"),Options))
+		{
+			TGuardValue<int32> Category(Options->SettingsCategory,1);
+			VR->UpdatePanels();VR->FocusPanelSurface(VR->SettingsPanel);
+			auto PaintOptions=[&]()
+			{for(int32 Pass=0;Pass<3;++Pass){VR->SettingsPanel->RequestRedraw();VR->SettingsPanel->TickComponent(.016f,LEVELTICK_All,nullptr);FlushRenderingCommands();}};
+			PaintOptions(); // The switcher's active children update during the Slate prepass.
+			const auto Slider=FindVRMenuControl(Options->TakeWidget(),"MenuRecenter");
+			const auto Panels=FindVRMenuControl(Options->TakeWidget(),"Panels");
+			if(TestTrue(TEXT("Panels settings expose the recenter slider"),Slider.IsValid() && Panels.IsValid()))
+			{
+				StaticCastSharedPtr<SScrollBox>(Panels)->ScrollDescendantIntoView(Slider,false,EDescendantScrollDestination::Center);PaintOptions();
+				for(bool Left:{false,true})
+				{
+					auto AimAtSlider=[&](float Fraction)
+					{
+						const FGeometry G=Slider->GetCachedGeometry();
+						const FVector2D Pixel=Options->GetCachedGeometry().AbsoluteToLocal(G.LocalToAbsolute(G.GetLocalSize()*FVector2D(Fraction,.5)));
+						const auto Size=VR->SettingsPanel->GetDrawSize();
+						const FVector Point=VR->SettingsPanel->GetComponentTransform().TransformPosition(FVector(0,Size.X*.5-Pixel.X,Size.Y*.5-Pixel.Y));
+						const FVector From=Point+VR->SettingsPanel->GetForwardVector()*35;
+						(Left?VR->LeftAim:VR->RightAim)->SetWorldLocationAndRotation(From,(Point-From).Rotation());
+						auto* Pointer=Left?VR->LeftPointer.Get():VR->RightPointer.Get();Pointer->TickComponent(.016f,LEVELTICK_All,nullptr);
+						TestEqual(TEXT("Controller reaches the settings slider"),Pointer->GetHoveredWidgetComponent(),VR->SettingsPanel.Get());
+					};
+					AimAtSlider(.3f);VR->Trigger(Left,true);PaintOptions();
+					const float PressedRadius=VR->Settings->MenuRecenterDegrees;
+					AimAtSlider(.5f);PaintOptions();
+					AimAtSlider(.75f);PaintOptions();
+					TestTrue(FString::Printf(TEXT("Dragging the %s controller updates the radius before release (pressed %.2f, dragged %.2f)"),Left?TEXT("left"):TEXT("right"),PressedRadius,VR->Settings->MenuRecenterDegrees),VR->Settings->MenuRecenterDegrees>95.f && VR->Settings->MenuRecenterDegrees<102.f);
+					TestTrue(TEXT("Slider thumb reads the live setting"),FMath::IsNearlyEqual(VR->GetSliderSetting("MenuRecenter"),(VR->Settings->MenuRecenterDegrees-30.f)/90.f));
+					VR->Trigger(Left,false);PaintOptions();
+					auto* Reloaded=NewObject<UACEVRSettings>();Reloaded->LoadConfig();
+					TestEqual(TEXT("Releasing either controller saves the radius across restart"),Reloaded->MenuRecenterDegrees,VR->Settings->MenuRecenterDegrees);
+				}
+				for(int32 Mode:{0,2})
+				{
+					VR->Settings->MenuAnchorMode=Mode;PaintOptions();
+					TestFalse(TEXT("Recenter slider is inactive for Head and World anchors"),Slider->IsEnabled());
+				}
+			}
+		}
+	}
+	VR->Client->GetSession()->State=EACESessionState::Disconnected;
+	// Clear render-thread provider references before the scoped controller goes away.
+	Controllers.Connected=false;
+	for(auto* Hand:{VR->LeftGrip.Get(),VR->RightGrip.Get(),VR->LeftAim.Get(),VR->RightAim.Get()})
+		Hand->TickComponent(.016f,LEVELTICK_All,nullptr);
+	FlushRenderingCommands();
+	Pawn->Destroy();PC->Destroy();GI->Shutdown();GEngine->DestroyWorldContext(World);World->DestroyWorld(false);
 	return true;
 }
 #endif

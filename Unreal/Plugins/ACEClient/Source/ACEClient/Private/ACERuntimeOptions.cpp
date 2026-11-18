@@ -19,9 +19,11 @@ namespace
  float AmbientGain=1.f,EffectsGain=1.f;
  int32 AppliedDynamicLightingQuality=2;
  bool bUniformDungeonLighting=false;
+ bool bLegionsSky=false;
 }
 int32 DynamicLightingQuality() { return AppliedDynamicLightingQuality; }
 bool UniformDungeonLighting() { return bUniformDungeonLighting; }
+bool LegionsSky() { return bLegionsSky; }
 float Get(const TCHAR* Key)
 {
  for (const auto& O : Values) if (FCString::Strcmp(O.Key,Key)==0) {
@@ -60,6 +62,7 @@ void Set(const TCHAR* Key,float Value)
 }
 void Apply()
 {
+ bLegionsSky=Get(TEXT("LegionsSky"))>.5f;
  SoundSettingsFrame=MAX_uint64;
  PluginTextSettingsFrame=MAX_uint64;
  UACEWorldTextureMipProvider::RefreshQuality();
@@ -129,7 +132,7 @@ float PluginTextScale()
  }
  return CachedPluginTextScale;
 }
-float DesktopUIScale(FIntPoint Size,bool bVR)
+float DesktopUIScale(FIntPoint Size,bool bVR,float WindowDPIScale)
 {
  if (bVR || Size.X<=0 || Size.Y<=0) return 1.f;
  // A small/unsupported display mode must still expose the complete interface
@@ -138,12 +141,15 @@ float DesktopUIScale(FIntPoint Size,bool bVR)
  if (MinimumFit<1.f) return FMath::Max(.01f,MinimumFit);
  // Whole quarter steps, with room for the complete native 800x600 interface.
  const float Fit=FMath::Max(1.f,FMath::FloorToFloat(FMath::Min(Size.X/800.f,Size.Y/600.f)*4.f)/4.f);
- return FMath::Min(FMath::RoundToFloat(Get(TEXT("DesktopUIScale"))*4.f)/4.f,Fit);
+ // SGameLayerManager cancels the window's native DPI. Include it here once
+ // so all retail chrome, content and hit targets share the Windows scale.
+ const float NativeScale=FMath::IsFinite(WindowDPIScale)?FMath::Clamp(WindowDPIScale,.5f,8.f):1.f;
+ return FMath::Min(FMath::RoundToFloat(Get(TEXT("DesktopUIScale"))*4.f)/4.f*NativeScale,Fit);
 }
-void ApplyDesktopUIScale(FIntPoint Size,bool bVR)
+void ApplyDesktopUIScale(FIntPoint Size,bool bVR,float WindowDPIScale)
 {
  // Slate applies this once to the whole viewport, including child controls,
  // text rasterization and input coordinates. VR surfaces have their own scale.
- GetMutableDefault<UUserInterfaceSettings>()->ApplicationScale=DesktopUIScale(Size,bVR);
+ GetMutableDefault<UUserInterfaceSettings>()->ApplicationScale=DesktopUIScale(Size,bVR,WindowDPIScale);
 }
 }

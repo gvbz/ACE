@@ -128,3 +128,7 @@ summary files and logs remain in `Performance/20261017-Standalone` and
 `Performance/Comparison-20261017-041629-858`. Automatic approval review blocked
 removing the complete directories. These results do not
 establish live combat performance or a sustained 90 FPS target.
+
+## Optional AC2 sky on Quest
+
+After installing the current APK, connect the headset by USB and run `Install-AC2-Sky.cmd` from the extracted Quest bundle. Select your AC2 Legions `portal.dat` or an existing desktop `Saved/Skies/Legions.sky` cache. In AC:VR, open **Options → VR settings → Graphics → Import and use AC2 sky**. The **AC2 sky** toggle remembers your choice. For a scripted installation, pass `-AC2SkyPath` to the installer.

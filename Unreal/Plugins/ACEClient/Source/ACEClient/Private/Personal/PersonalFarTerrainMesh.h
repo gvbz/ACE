@@ -52,7 +52,7 @@ namespace PersonalFarTerrainMesh
 	 */
 	void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
 		const TSet<FIntPoint>& Holes, int32 HoleRadius, float WorldScale, FPersonalFarTerrainMesh& Out,
-		const FIntRect* DetailCells = nullptr);
+		const FIntRect* DetailCells = nullptr, int32 SceneryRadius = 0);
 
 	/** World position of the mesh origin for a center landblock. */
 	FVector Origin(FIntPoint Center, float WorldScale);

@@ -9,6 +9,7 @@ bool UACEUIGameplayBinder::SubmitVendorPurchase(const TArray<TPair<int32,int32>>
 	const auto Session = Client ? Client->GetSession() : nullptr;
 	if (!Session || Session->GetState() != EACESessionState::InWorld || !OpenVendorGuid
 		|| OpenVendorGuid != Session->GetOpenVendorGuid() || Items.IsEmpty()) return false;
+	if (Session->HasPendingVendorCurrencyPurchase()) return false;
 
 	// Retail gmVendorUI::BuySingleItem and Buy All both gate the request before
 	// CM_Vendor::Event_Buy. Keep this UI policy out of the transport: Item Tools

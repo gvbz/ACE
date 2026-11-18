@@ -43,6 +43,7 @@ class UPersonalFarScenerySubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
 	friend class FPersonalFarSceneryDrawTest;
+	friend class FACELegionsSkyTest;
 public:
 	/** Seconds between updates. Nothing runs per frame. */
 	static constexpr float UpdateSeconds = 0.1f;

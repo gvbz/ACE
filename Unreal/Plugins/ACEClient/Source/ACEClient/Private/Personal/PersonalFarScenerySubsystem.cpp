@@ -499,7 +499,8 @@ void UPersonalFarScenerySubsystem::PlanUnits(UACEDatSubsystem& Dat, FIntPoint Ce
 		const FIntPoint Block = Pair.Key;
 		const int32 Ring = PersonalFarScenery::Ring(Block, Center);
 		// Landblocks next to the client's own scenery stay on their own, so each can be hidden and shown for the handoff.
-		const int32 Size = Ring <= PersonalFarScenery::NearRing ? 1 : Group;
+		const int32 FarGroup = Ring > PersonalFarScenery::InteriorRings ? FMath::Max(4, Group) : Group;
+		const int32 Size = Ring <= PersonalFarScenery::NearRing ? 1 : FarGroup;
 		const FIntVector Key(FMath::FloorToInt32(float(Block.X) / Size) * Size, FMath::FloorToInt32(float(Block.Y) / Size) * Size, Size);
 		FUnit& Unit = Units.FindOrAdd(Key);
 		if (Unit.PlanSerial != PlanSerial)
@@ -1072,8 +1073,9 @@ void UPersonalFarScenerySubsystem::Stream(UACEDatSubsystem& Dat, const PersonalF
 	// Fog rule: nothing is created past the fog end. What exists is kept one ring further,
 	// so objects do not come and go while the fog end moves.
 	const int32 FogRing = PersonalFarScenery::FogRing(FogEnd, BlockLength * WorldScale);
-	const int32 BuildRing = FMath::Min(PersonalFarScenery::HideWithFog() ? FogRing : PersonalFarScenery::LastRing, PersonalFarScenery::Radius());
-	const int32 KeepRing = FMath::Min(BuildRing + 1, PersonalFarScenery::LastRing);
+	const int32 VisibleRadius = FMath::Min(PersonalFarScenery::Radius(), PersonalFarTerrain::Radius());
+	const int32 BuildRing = PersonalFarScenery::HideWithFog() ? FMath::Min(FogRing, VisibleRadius) : VisibleRadius;
+	const int32 KeepRing = FMath::Min(BuildRing + 1, VisibleRadius);
 	const bool bScaleChanged = WorldScale != BuiltWorldScale;
 	BuiltWorldScale = WorldScale;
 	if (bScaleChanged)

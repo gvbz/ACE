@@ -561,7 +561,7 @@ FString UACEVRComponent::GetStatusText() const
 	const bool Supported = Client->GetSession() && Client->GetSession()->SupportsVRCombat();
 	const TCHAR* Mode = GetCombatMode() == 8 ? TEXT("Magic") : GetCombatMode() == 4 ? TEXT("Missile") : GetCombatMode() == 2 ? TEXT("Melee") : TEXT("Peace");
 	return FString::Printf(TEXT("%s  |  Health %d/%d  Mana %d/%d\n%s"), Mode, V.Health, V.MaxHealth, V.Mana, V.MaxMana,
-		Supported ? TEXT("VR combat ready") : TEXT("Waiting for a VR-enabled ACE server"));
+		Supported ? TEXT("VR combat ready") : TEXT("Standard server: targeted spell casting ready"));
 }
 
 void UACEVRComponent::ChangeSetting(FName Setting)
@@ -636,6 +636,7 @@ float UACEVRComponent::GetSliderSetting(FName Setting) const
 	if (Setting == "Height") return (Settings->EyeHeightOffset + 30.f) / 60.f;
 	if (Setting == "Panel") return (Settings->PanelScale - .05f) / .1f;
 	if (Setting == "Distance") return (Settings->PanelDistance - 70.f) / 110.f;
+	if (Setting == "MenuRecenter") return (Settings->MenuRecenterDegrees - 30.f) / 90.f;
 	if (Setting == "Wrist") return (Settings->WristScale - .03f) / .055f;
 	if (Setting == "CompassSize") return (Settings->CompassScale - .04f) / .11f;
 	if (Setting == "OptionsSize") return (Settings->OptionsScale - .06f) / .09f;
@@ -655,6 +656,12 @@ void UACEVRComponent::SetSliderSetting(FName Setting, float Value)
 	else if (Setting == "BowAnchor") Settings->BowAnchorOffset = Value * 20.f;
 	else if (Setting == "Panel") { Settings->PanelScale = .05f + Value * .1f; if (bSettingsOpen) PositionPanel(RetailPanel); }
 	else if (Setting == "Distance") { Settings->PanelDistance = 70.f + Value * 110.f; Settings->MenuViewOffset.X=Settings->PanelDistance; Settings->PanelLayouts.Reset(); PositionPanel(RetailPanel); PositionPanel(SettingsPanel); }
+	else if (Setting == "MenuRecenter")
+	{
+		Settings->MenuRecenterDegrees = 30.f + Value * 90.f;
+		// Re-evaluate the start threshold without moving the saved anchor/layout.
+		bMenuAnchorTurning = false;
+	}
 	else if (Setting == "Wrist") Settings->WristScale = .03f + Value * .055f;
 	else if (Setting == "CompassSize") Settings->CompassScale = .04f + Value * .11f;
 	else if (Setting == "OptionsSize") Settings->OptionsScale = .06f + Value * .09f;

@@ -1146,7 +1146,8 @@ void UPersonalFarWindowsSubsystem::Mark(const FString& What)
 		{
 			const FPolygon& Other = Chosen.Polygons[P];
 			if (Group.Contains(P) || FMath::Abs(FVector::DotProduct(Other.Normal, Hit.Normal)) < 0.995
-				|| FMath::Abs(FVector::DotProduct(Other.Middle - Hit.Middle, Hit.Normal)) > Close || !Touch(From, Other) && !Touch(Other, From))
+				|| FMath::Abs(FVector::DotProduct(Other.Middle - Hit.Middle, Hit.Normal)) > Close
+				|| (!Touch(From, Other) && !Touch(Other, From)))
 			{
 				continue;
 			}

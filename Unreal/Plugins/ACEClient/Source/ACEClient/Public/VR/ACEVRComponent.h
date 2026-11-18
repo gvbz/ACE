@@ -30,6 +30,7 @@ class ACECLIENT_API UACEVRComponent : public UActorComponent
 {
 	GENERATED_BODY()
 	friend class FACEVRRigTest;
+	friend class FACEVRMenuRecenterTest;
 	friend class FACEInteractionEffectsTest;
 	friend class FACEVRInteriorTest;
 	friend class FACEEntranceTransitionTest;
@@ -110,6 +111,8 @@ public:
 	bool IsPanelLocked(FName Panel) const;
 	bool ShouldShowPanelControls(FName Panel) const;
 	void TogglePanelLock(FName Panel);
+	bool IsRetailLayoutLocked() const;
+	void ToggleRetailLayoutLock();
 	void BeginPanelEdit(FName Panel, bool bLeft, bool bResize);
 	void ConfigureButton(FName Input,FName Action);
 	void ResetButtonBindings();

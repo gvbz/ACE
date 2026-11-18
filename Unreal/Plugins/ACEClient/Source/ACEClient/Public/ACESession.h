@@ -118,6 +118,7 @@ class ACECLIENT_API FACESession : public TSharedFromThis<FACESession>
 	friend class FACEInteractionRecoveryTest;
 	friend class FACEVRRenderReplicationTest;
 	friend class FACEVRRigTest;
+	friend class FACEVRMenuRecenterTest;
     friend class FACEMobileTouchTest;
 	friend class FACESpellDataRevisionTest;
 	friend class FACESalvageTest;
@@ -168,6 +169,7 @@ class ACECLIENT_API FACESession : public TSharedFromThis<FACESession>
 	friend class FACELoginHandshakeTest;
 	friend class FACEGDLEInteractionTransportTest;
 	friend class FACERetailNetworkWeatherTest;
+	friend class FACELegionsSkyTest;
 	friend class FACERetailWorldEntryTest;
 	friend class FACEPortalDropTest;
 	friend class FACEPortalMotionTest;
@@ -537,6 +539,7 @@ public:
 	float GetVendorSellRate() const { return VendorSellRate; }
 	FString GetVendorCurrencyName() const { return VendorCurrencyName; }
 	int32 GetVendorCurrencyCount() const;
+	bool HasPendingVendorCurrencyPurchase() const { return PendingVendorCurrencyCost > 0; }
 	bool VendorUsesPyreals() const { return VendorCurrencyWeenie == 0; }
 	/** Retail UI reads CoinValue (20), not custom bank qualities or inferred coin stacks. */
 	int32 GetVendorPurchaseFunds() const { return VendorUsesPyreals() ? FMath::Max(0, PlayerVitals.StatQualityInts.FindRef(20)) : GetVendorCurrencyCount(); }
@@ -1228,6 +1231,10 @@ private:
 	float VendorSellRate = 1.f;
 	FString VendorCurrencyName;
 	int32 VendorCurrencyCount = 0;
+	uint32 VendorReportedCurrencyWeenie = 0;
+	int32 VendorServerFunds = 0;
+	int32 PendingVendorCurrencyCost = 0;
+	mutable bool bVendorCurrencyInInventory = false;
 	mutable uint64 VendorPurseRevision = MAX_uint64;
 	mutable uint32 VendorPurseWeenie = 0;
 	mutable int32 VendorPurseCount = 0;

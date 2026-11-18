@@ -380,7 +380,7 @@ bool FACEDungeonHeadingLightTest::RunTest(const FString&)
     ON_SCOPE_EXIT { ShadowQuality->SetWithCurrentPriority(PreviousShadowQuality); };
     Preferences.Mode->Set(-1,ECVF_SetByCode);
     Budget.Set(0); // The transient FX count is independent of full desktop fixtures.
-    for (const int32 Quality : {1,2,3,4})
+    for (const int32 Quality : {0,1,2,3,4})
     {
         ShadowQuality->SetWithCurrentPriority(Quality);
         F.Lights->RefreshLights(.1f);
@@ -388,7 +388,7 @@ bool FACEDungeonHeadingLightTest::RunTest(const FString&)
         TestEqual(TEXT("Shadow quality preserves every fixture"),Lamps.Num(),11);
         int32 ShadowCount=0;
         for (const auto* Lamp:Lamps) ShadowCount+=bool(Lamp->CastShadows);
-        TestEqual(TEXT("Only shadow count scales with shadow quality"),ShadowCount,Quality>=3 ? 11 : 2);
+        TestEqual(TEXT("Only shadow count scales with shadow quality"),ShadowCount,Quality==0 ? 0 : Quality>=3 && F.World->GetFeatureLevel()>=ERHIFeatureLevel::SM5 ? 11 : 2);
     }
     // Model a camera-visible room outside the occupied cell's visibility list.
     const auto* ExtraCell=Dat->GetOrBuildEnvCellMesh(0x015D0251,100);

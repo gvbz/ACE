@@ -26,6 +26,8 @@ namespace PersonalSkyHorizon
 	int32 ExtendRim(TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals,
 		TArray<FVector2D>& UVs, TArray<FLinearColor>& Colors);
 
+	bool IsEnabled();
+
 	/** For one section of a sky mesh: extends the stars layer when the option and the far terrain are on. */
 	void ExtendSection(uint32 GfxId, TArray<FVector>& Vertices, TArray<int32>& Triangles, TArray<FVector>& Normals,
 		TArray<FVector2D>& UVs, TArray<FLinearColor>& Colors);

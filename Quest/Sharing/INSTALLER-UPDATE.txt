@@ -1,4 +1,4 @@
-AC:VR - INSTALLER AND DIAGNOSTIC TOOLS (revision 10)
+AC:VR - INSTALLER AND DIAGNOSTIC TOOLS (revision 11)
 
 This small ZIP updates the Windows installer and diagnostic tools. It does not contain the APK
 or game data, and it does not change the game version.
@@ -8,7 +8,7 @@ or game data, and it does not change the game version.
    must already contain AC-VR-arm64.apk and manifest.json.
 3. Replace the installer files when asked; also extract the new
    Quest-DataTransfer.ps1, Quest-ProfileMigration.ps1, Repair-Quest.cmd,
-   Update-Quest.cmd, Diagnose-Quest.cmd, and Diagnose-Quest.ps1 files.
+   Update-Quest.cmd, Install-AC2-Sky.cmd, Diagnose-Quest.cmd, and Diagnose-Quest.ps1 files.
    Installing or repairing requires a v48-or-newer bundle;
    use the complete installer ZIP when upgrading an older release.
    Keep the existing APK, manifest.json, platform-tools folder, and DAT files.
@@ -16,6 +16,9 @@ or game data, and it does not change the game version.
    If the APK already installed but a DAT file failed, run Repair-Quest.cmd.
    Otherwise run Install-Quest.cmd.
    The first verification message identifies the APK version from your manifest.
+
+The optional AC2 sky helper requires a headset build with the AC2 sky option
+under VR settings > Graphics. Use the new full bundle to update an older APK.
 
 DAT files now use ADB push and a temporary file outside Android shared storage,
 then copy into app storage. This fixes binary truncation and ADB restarts seen

@@ -5,6 +5,9 @@
 #include "Components/WidgetComponent.h"
 #include "Components/WidgetInteractionComponent.h"
 #include "ACEVRNativeHUD.h"
+#include "ACEPlayerController.h"
+#include "UI/ACEUIGameplayBinder.h"
+#include "UI/ACEUIElementManager.h"
 
 namespace
 {
@@ -30,7 +33,7 @@ FTransform UACEVRComponent::GetVitalsAnchorTransform() const
 namespace
 {
 	void UpdateHUDAnchor(FTransform& Frame, FVector& PreviousOwner, bool& Ready, bool& Turning, const FTransform& Head,
-		const FVector& Owner, int32 Mode, bool Held, float Dt)
+		const FVector& Owner, int32 Mode, bool Held, float Dt, float FollowAngle = 28.f)
 	{
 		const FTransform Target(FRotator(0, Head.Rotator().Yaw, 0), Head.GetLocation());
 		const FVector Travel = Ready ? Owner - PreviousOwner : FVector::ZeroVector;
@@ -50,10 +53,10 @@ namespace
 		const float Difference = FMath::FindDeltaAngleDegrees(Frame.Rotator().Yaw, Target.Rotator().Yaw);
 		// Separate start/stop thresholds prevent tracking noise at the edge of
 		// the viewing cone from repeatedly starting and stopping the follow.
-		if (!Turning && FMath::Abs(Difference) > 28.f) Turning = true;
-		if (Turning && FMath::Abs(Difference) < 18.f) Turning = false;
+		if (!Turning && FMath::Abs(Difference) > FollowAngle) Turning = true;
+		if (Turning && FMath::Abs(Difference) < FollowAngle - 10.f) Turning = false;
 		if (Turning)
-			Frame.SetRotation(FRotator(0, Frame.Rotator().Yaw + (Difference - FMath::Sign(Difference)*15.f)
+			Frame.SetRotation(FRotator(0, Frame.Rotator().Yaw + (Difference - FMath::Sign(Difference)*(FollowAngle - 13.f))
 				* (1.f-FMath::Exp(-Dt*3.f)), 0).Quaternion());
 	}
 }
@@ -94,8 +97,24 @@ FTransform UACEVRComponent::GetMenuAnchorTransform() const
 
 void UACEVRComponent::UpdateMenuAnchor(float Dt)
 {
+	// Inventory is much wider than the small HUD meters. Allow an edge-to-edge
+	// head scan, including resized/offset panels, before body follow begins.
+	float FollowAngle = Settings->MenuRecenterDegrees;
+	const FQuat PanelRotation = Settings->MenuViewRotation.Quaternion() * FRotator(0,180,0).Quaternion();
+	auto IncludePanel = [&](FVector2D Size, FVector Offset)
+	{
+		for (float Side : {-1.f, 1.f}) for (float Up : {-1.f, 1.f})
+		{
+			const FVector Corner = Settings->MenuViewOffset + PanelRotation.RotateVector(
+				(Offset + FVector(0, Side*Size.X*.5, Up*Size.Y*.5)) * Settings->PanelScale);
+			FollowAngle = FMath::Max(FollowAngle, float(FMath::Abs(FMath::RadiansToDegrees(FMath::Atan2(Corner.Y, Corner.X)))) + 12.f);
+		}
+	};
+	IncludePanel(!bUseDesktopMenu && GameplayMenuPanel ? GameplayMenuPanel->GetDrawSize() : RetailPanel->GetDrawSize(), FVector::ZeroVector);
+	if (!bUseDesktopMenu && MenuInspectionPanel && MenuInspectionPanel->IsVisible())
+		IncludePanel(MenuInspectionPanel->GetDrawSize(), MenuInspectionPanel->GetRelativeLocation());
 	UpdateHUDAnchor(MenuAnchorFrame, MenuOwnerLocation, bMenuAnchorReady, bMenuAnchorTurning, Head->GetComponentTransform(),
-		GetOwner()->GetActorLocation(), Settings->MenuAnchorMode, EditingPanel == "Menu", Dt);
+		GetOwner()->GetActorLocation(), Settings->MenuAnchorMode, EditingPanel == "Menu", Dt, FMath::Min(FollowAngle, 179.f));
 }
 void UACEVRComponent::UpdateChatAnchor(float Dt)
 {
@@ -266,6 +285,18 @@ void UACEVRComponent::EndPanelEdit(bool bSave, int32 Pointer)
 	if (bSave) Settings->Persist();
 }
 
+bool UACEVRComponent::IsRetailLayoutLocked() const
+{
+	const auto* Manager = PC && PC->DatGameplayBinder ? PC->DatGameplayBinder->Manager.Get() : nullptr;
+	return !Manager || Manager->IsUiLocked();
+}
+
+void UACEVRComponent::ToggleRetailLayoutLock()
+{
+	if (bUseDesktopMenu && PC && PC->DatGameplayBinder && PC->DatGameplayBinder->Manager)
+		PC->DatGameplayBinder->Manager->ToggleUiLocked();
+}
+
 void UACEVRComponent::UpdatePanelControls(bool MainVisible, bool OptionsVisible)
 {
 	for (FName Name : {FName("Menu"), FName("Options")})
@@ -276,8 +307,10 @@ void UACEVRComponent::UpdatePanelControls(bool MainVisible, bool OptionsVisible)
 		const bool WasVisible = Controls->IsVisible();
 		Controls->SetVisibility(Visible); Controls->SetComponentTickEnabled(Visible);
 		Controls->SetCollisionEnabled(Visible ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
-		// Separate hit surface below the menu, so no retail button or text field is covered.
-		Controls->SetRelativeLocationAndRotation(FVector(.1, 0, -Surface->GetDrawSize().Y*.5 - 30), FRotator::ZeroRotator);
+		const bool Retail = Name == "Menu" && bUseDesktopMenu;
+		Controls->SetDrawSize(FVector2D(Retail ? 720 : 480, 48));
+		// Extend alongside the existing controls; a second row overlaps the wrist hotbar.
+		Controls->SetRelativeLocationAndRotation(FVector(.1, Retail ? -120 : 0, -Surface->GetDrawSize().Y*.5 - 30), FRotator::ZeroRotator);
 		if (Visible)
 		{
 			const auto Widget = StaticCastSharedPtr<SACEVRPanelControls>(Controls->GetSlateWidget());

@@ -287,14 +287,14 @@ bool FPersonalFarSceneryRulesTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Ring 1 is the client's"), IsWanted(Center + FIntPoint(1, -1), Center, LastRing));
 	TestTrue(TEXT("Ring 2 is in the set, prepared for the handoff"), IsWanted(Center + FIntPoint(2, -2), Center, LastRing));
 	TestTrue(TEXT("Ring 8 gets far scenery, corners too"), IsWanted(Center + FIntPoint(-8, 8), Center, LastRing));
-	TestFalse(TEXT("Ring 9 is past the radius"), IsWanted(Center + FIntPoint(0, 9), Center, LastRing));
-	TestFalse(TEXT("Ring 9 stays out with a larger outer ring"), IsWanted(Center + FIntPoint(0, 9), Center, 20));
+	TestTrue(TEXT("Distant scenery reaches the selected ring"), IsWanted(Center + FIntPoint(0, LastRing), Center, LastRing));
+	TestFalse(TEXT("Scenery stays within its maximum radius"), IsWanted(Center + FIntPoint(0, LastRing+1), Center, LastRing+2));
 	TestFalse(TEXT("Ring 5 is out when the outer ring is 4"), IsWanted(Center + FIntPoint(5, 0), Center, 4));
 	TestFalse(TEXT("Nothing is wanted with outer ring 1"), IsWanted(Center + FIntPoint(2, 0), Center, 1));
 	int32 Count = 0;
-	for (int32 DX = -10; DX <= 10; ++DX)
-		for (int32 DY = -10; DY <= 10; ++DY) Count += IsWanted(Center + FIntPoint(DX, DY), Center, LastRing) ? 1 : 0;
-	TestEqual(TEXT("Landblocks in rings 2 to 8"), Count, 17 * 17 - 3 * 3);
+	for (int32 DX = -LastRing; DX <= LastRing; ++DX)
+		for (int32 DY = -LastRing; DY <= LastRing; ++DY) Count += IsWanted(Center + FIntPoint(DX, DY), Center, LastRing) ? 1 : 0;
+	TestEqual(TEXT("Landblocks across the supported rings"), Count, FMath::Square(2*LastRing+1) - 3 * 3);
 	TestFalse(TEXT("Nothing below landblock 0"), IsWanted(FIntPoint(-1, 4), FIntPoint(3, 4), LastRing));
 	TestTrue(TEXT("Landblock 254 is in the world"), IsWanted(FIntPoint(254, 100), FIntPoint(250, 100), LastRing));
 	TestFalse(TEXT("Landblock 255 is not"), IsWanted(FIntPoint(255, 100), FIntPoint(250, 100), LastRing));
@@ -364,10 +364,10 @@ bool FPersonalFarSceneryRulesTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Console variable 0 is off with the check box on"), IsOn());
 		Draw->Set(-1);
 
-		for (const float Saved : {0.f, 3.f, 5.f, 8.f, 20.f})
+		for (const float Saved : {0.f, 3.f, 5.f, 8.f, 20.f, 32.f})
 		{
 			ACERuntimeOptions::Set(RadiusKey, Saved);
-			TestEqual(*FString::Printf(TEXT("Slider at %g: within 3 to 8"), Saved), Radius(), FMath::Clamp(FMath::RoundToInt32(Saved), 3, 8));
+			TestEqual(*FString::Printf(TEXT("Slider at %g: within the supported range"), Saved), Radius(), FMath::Clamp(FMath::RoundToInt32(Saved), 3, LastRing));
 		}
 		RadiusVar->Set(7);
 		TestEqual(TEXT("Radius console variable overrides the slider"), Radius(), 7);

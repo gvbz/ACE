@@ -160,11 +160,16 @@ int32 PersonalSkyHorizon::ExtendRim(TArray<FVector>& Vertices, TArray<int32>& Tr
 	return Rim.Num() * 2;
 }
 
+bool PersonalSkyHorizon::IsEnabled()
+{
+	return ACERuntimeOptions::Get(OptionKey) > 0.5f && PersonalFarTerrain::IsOn();
+}
+
 void PersonalSkyHorizon::ExtendSection(uint32 GfxId, TArray<FVector>& Vertices, TArray<int32>& Triangles,
 	TArray<FVector>& Normals, TArray<FVector2D>& UVs, TArray<FLinearColor>& Colors)
 {
 	// Without the far terrain nothing covers the lower sky, so the sky stays as authored.
-	if (GfxId != StarsGfxId || ACERuntimeOptions::Get(OptionKey) <= 0.5f || !PersonalFarTerrain::IsOn())
+	if (GfxId != StarsGfxId || !IsEnabled())
 	{
 		return;
 	}

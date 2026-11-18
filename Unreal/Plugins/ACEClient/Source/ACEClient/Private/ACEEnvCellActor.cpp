@@ -308,7 +308,7 @@ void AACEEnvCellActor::SetSunCastShadow(bool bCast)
 	// The room also occludes its local entrance light when PView hides its draw.
 	const bool bDoorwayShadows = ACERuntimeOptions::DynamicLightingQuality() == 2 && !DoorwayLights.IsEmpty();
 	const bool bLocalShadows = bDoorwayShadows || (EnvCellId && !bSeenOutside && !ACERuntimeOptions::UniformDungeonLighting() &&
-		GetWorld()->GetFeatureLevel() >= ERHIFeatureLevel::SM5 && ACERuntimeOptions::DynamicLightingQuality()==2);
+		ACERuntimeOptions::DynamicLightingQuality()==2);
 	bCast = bCast || bLocalShadows;
 	if (static_cast<bool>(CellMesh->CastShadow) != bCast || CellMesh->bCastDynamicShadow != bCast
 		|| CellMesh->bCastHiddenShadow != bLocalShadows)

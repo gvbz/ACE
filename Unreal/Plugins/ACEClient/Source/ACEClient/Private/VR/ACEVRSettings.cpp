@@ -91,6 +91,7 @@ void UACEVRSettings::Sanitize()
 	Clamp(SeatedEyeHeight, 165.f, 100.f, 210.f);
 	Clamp(EyeHeightOffset, 0.f, -30.f, 30.f);
 	Clamp(PanelDistance, 90.f, 70.f, 180.f);
+	Clamp(MenuRecenterDegrees, 55.f, 30.f, 120.f);
 	Clamp(PanelScale, .11f, .05f, .15f);
 	Clamp(WristScale, .06f, .03f, .085f);
 	Clamp(VitalsScale, .0935f, .05f, .18f);

@@ -164,9 +164,11 @@ void UACEVRComponent::FireSpell()
 	const auto Slots = SpellSlots();
 	if (SelectedSpell == 0) { if (Slots.Num() == 0) { SetCastFeedback(TEXT("No spells available. Add a known spell or equip a casting item.")); return; } SelectedSpell = Slots[0]; }
 	const auto Weapon = EquippedWeapon();
-	if (Client->GetSession() && Client->GetSession()->GetVRCastPhase()==1) return;
+	const auto Session = Client->GetSession();
+	if (!Session || Session->GetState() != EACESessionState::InWorld) return;
+	const bool EnhancedCombat = Session->SupportsVRCombat();
+	if (EnhancedCombat && Session->GetVRCastPhase()==1) return;
 	if (Weapon.Guid == 0) { SetCastFeedback(TEXT("Equip a wand, staff, or orb before casting.")); return; }
-	if (!Client->GetSession() || !Client->GetSession()->SupportsVRCombat()) { SetCastFeedback(TEXT("Waiting for the server to enable VR combat.")); return; }
 	FVector Origin, Direction;
 	GetSpellAim(Origin, Direction);
 	int32 TargetGuid = 0;
@@ -187,19 +189,33 @@ void UACEVRComponent::FireSpell()
 		// must not silently replace a targeted debuff or an inventory-item buff.
 		// Free-aim projectiles still use Origin/Direction, independently of selection.
 		const int32 RequestedTarget = bPointedBuff ? Target->GetACEGuid() : Selected.bValid ? Selected.Guid : Target ? Target->GetACEGuid() : 0;
-		if (!Client->ResolveSpellCastTarget(SelectedSpell, RequestedTarget, TargetGuid, true))
+		if (!Client->ResolveSpellCastTarget(SelectedSpell, RequestedTarget, TargetGuid, EnhancedCombat))
 		{
 			SetCastFeedback(TEXT("Select an appropriate target for this spell."));
 			return;
 		}
 	}
-	if (auto Session = Client->GetSession(); Session && Session->SendVRCombat(1, PC->GetEffectiveCellId(), Weapon.Guid,
-		SelectedSpell, TargetGuid, ToAceOffset(Origin),
-		FACEPosition::AceVectorToUnreal(Direction), 1.f, 0.f))
+	bool Sent = false;
+	if (EnhancedCombat)
+		Sent = Session->SendVRCombat(1, PC->GetEffectiveCellId(), Weapon.Guid, SelectedSpell, TargetGuid,
+			ToAceOffset(Origin), FACEPosition::AceVectorToUnreal(Direction), 1.f, 0.f);
+	else
+	{
+		// Standard ACE uses retail targeting and spell requests. Send directly:
+		// Client->SendCastSpell deliberately only selects a spell while in VR.
+		if (Weapon.SpellDID == SelectedSpell)
+		{
+			if (Client->IsUseBusy()) { SetCastFeedback(TEXT("You're too busy!")); return; }
+			Session->SendUseWithTarget(Weapon.Guid, TargetGuid ? TargetGuid : Client->GetPlayerGuid());
+		}
+		else Session->SendCastSpell(SelectedSpell, TargetGuid);
+		Sent = true;
+	}
+	if (Sent)
 	{
 		LastCast = GetWorld()->GetTimeSeconds(); Pulse(Settings->bLeftHanded);
 		SetCastFeedback(TEXT("Casting ") + GetSelectionText());
-		UE_LOG(LogTemp, Log, TEXT("ACE VR cast sent: spell=%d weapon=0x%08X target=0x%08X cell=0x%08X"), SelectedSpell, Weapon.Guid, TargetGuid, PC->GetEffectiveCellId());
+		UE_LOG(LogTemp, Log, TEXT("ACE VR cast sent: protocol=%s spell=%d weapon=0x%08X target=0x%08X cell=0x%08X"), EnhancedCombat ? TEXT("VR") : TEXT("retail"), SelectedSpell, Weapon.Guid, TargetGuid, PC->GetEffectiveCellId());
 	}
 	else SetCastFeedback(TEXT("The cast could not be sent. Check the server connection."));
 }

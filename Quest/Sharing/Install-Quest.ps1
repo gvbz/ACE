@@ -2,6 +2,8 @@
 param(
     [string]$AdbPath,
     [string]$DatDirectory,
+    [string]$AC2SkyPath,
+    [switch]$SkyOnly,
     [string]$Serial,
     [switch]$SkipData,
     [switch]$NoLaunch,
@@ -17,19 +19,34 @@ if ($RepairData -and $SkipData) { throw '-RepairData and -SkipData cannot be com
 . (Join-Path $PSScriptRoot 'Quest-ProfileMigration.ps1')
 $package = 'com.acecommunity.questtest'
 $apk = Join-Path $PSScriptRoot 'AC-VR-arm64.apk'
-$manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
-if ($manifest.package -ne $package -or $manifest.apk -ne 'AC-VR-arm64.apk') {
-    throw 'Unexpected bundle manifest. Extract the complete original ZIP again.'
+if (!$SkyOnly) {
+    $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
+    if ($manifest.package -ne $package -or $manifest.apk -ne 'AC-VR-arm64.apk') {
+        throw 'Unexpected bundle manifest. Extract the complete original ZIP again.'
+    }
+    if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw 'APK missing. Extract the entire ZIP first.' }
+    Write-Host 'Verifying the APK checksum...'
+    if ((Get-Item -LiteralPath $apk).Length -ne $manifest.apkBytes -or
+        (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash -ne $manifest.apkSha256) {
+        throw 'APK checksum mismatch. Download and extract the ZIP again.'
+    }
+    $displayName = if ($manifest.displayName) { $manifest.displayName } else { 'AC:VR' }
+    Write-Host "Verified $displayName $($manifest.version) (bundle revision $($manifest.installerRevision))"
+    if ($ValidateOnly) { return }
 }
-if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw 'APK missing. Extract the entire ZIP first.' }
-Write-Host 'Verifying the APK checksum...'
-if ((Get-Item -LiteralPath $apk).Length -ne $manifest.apkBytes -or
-    (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash -ne $manifest.apkSha256) {
-    throw 'APK checksum mismatch. Download and extract the ZIP again.'
+
+if ($SkyOnly -and !$AC2SkyPath -and !$CheckConnection) {
+    Add-Type -AssemblyName System.Windows.Forms
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    try {
+        $dialog.Title = 'Choose your AC2 Legions portal.dat or imported Legions.sky'
+        $dialog.Filter = 'AC2 sky sources (portal.dat or *.sky)|portal.dat;*.sky'
+        if ($dialog.ShowDialog() -ne 'OK') { Write-Host 'Sky transfer cancelled.'; return }
+        $AC2SkyPath = $dialog.FileName
+    } finally { $dialog.Dispose() }
 }
-$displayName = if ($manifest.displayName) { $manifest.displayName } else { 'AC:VR' }
-Write-Host "Verified $displayName $($manifest.version) (bundle revision $($manifest.installerRevision))"
-if ($ValidateOnly) { return }
+if ($AC2SkyPath) { $AC2SkyPath = Resolve-QuestSkySource $AC2SkyPath }
+if ($SkyOnly -and $ValidateOnly) { Write-Host "Validated sky transfer source: $AC2SkyPath"; return }
 
 if (!$AdbPath) {
     $bundledAdb = Join-Path $PSScriptRoot 'platform-tools\adb.exe'
@@ -148,6 +165,10 @@ if ($CheckConnection) {
     Write-Host 'Connection check passed. No game files were installed or launched.'
     return
 }
+if ($SkyOnly) {
+    Install-QuestSky $AC2SkyPath $PSScriptRoot
+    return
+}
 $saved = 'files/ACUnreal/Saved/DAT'
 $required = @('client_portal.dat', 'client_cell_1.dat', 'client_local_English.dat')
 if (!$SkipData) {
@@ -208,6 +229,7 @@ if ($SkipData) {
 } else {
     Install-QuestData -DatDirectory $DatDirectory -DiagnosticDirectory $PSScriptRoot
 }
+if ($AC2SkyPath) { Install-QuestSky $AC2SkyPath $PSScriptRoot }
 Write-Host 'Installation complete. Updating this way preserves saved logins and settings.'
 Write-Host "Open $displayName from the Unknown Sources section of your app library."
 Write-Host 'Enter the server address and your own account details supplied by the server owner.'

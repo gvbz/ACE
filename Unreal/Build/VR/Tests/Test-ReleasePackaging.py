@@ -53,18 +53,18 @@ class ReleasePackagingTests(unittest.TestCase):
         self.site = Path(self.temp.name) / 'site'
         self.linux = self.root / 'Unreal/Saved/LinuxArchive/Linux'
 
-    def fixture(self, version=88, with_linux=True):
+    def fixture(self, version=88, with_linux=True, revision=6):
         display = f'2026.09.30.{version}'
         self.args = argparse.Namespace(quest_version=version, windows_version=display,
-                                       linux_version=display if with_linux else None, installer_revision=6)
+                                       linux_version=display if with_linux else None, installer_revision=revision)
         put(self.root, 'Unreal/Plugins/ACEClient/ClientMods/api.json',
             json.dumps({'lua_api': 2, 'supported_lua_apis': [1, 2]}))
         put(self.root, 'Unreal/Plugins/ACEClient/Source/ACEClient/Public/ACEClientBuild.h',
             f'inline constexpr int32 ReleaseNumber = {version};\nconst auto Version = "{display}";')
         apk = put(self.root, 'Quest/Packaged/Android_ASTC/ACUnreal-arm64.apk', b'fixture APK')
-        manifest = {'versionCode': version, 'installerRevision': 6, 'version': display,
+        manifest = {'versionCode': version, 'installerRevision': revision, 'version': display,
                     'displayName': 'AC:VR', 'apkSha256': build.sha(apk)}
-        quest_zip = put(self.root, f'Quest/Share/AC-VR-Quest-v{version}-installer-r6.zip')
+        quest_zip = put(self.root, f'Quest/Share/AC-VR-Quest-v{version}-installer-r{revision}.zip')
         with zipfile.ZipFile(quest_zip, 'w') as archive:
             for name in ('Install-Quest.ps1', 'Install-Quest.cmd', 'Update-Quest.cmd', 'Repair-Quest.cmd',
                          'Quest-DataTransfer.ps1', 'Quest-ProfileMigration.ps1', 'README.txt',
@@ -72,6 +72,8 @@ class ReleasePackagingTests(unittest.TestCase):
                 archive.writestr(name, b'fixture')
             archive.writestr('manifest.json', json.dumps(manifest))
             archive.writestr('AC-VR-arm64.apk', apk.read_bytes())
+            if revision >= 11:
+                archive.writestr('Install-AC2-Sky.cmd', b'sky launcher')
             if version >= 154:
                 archive.writestr('Diagnose-Quest.cmd', b'fixture diagnostic launcher')
                 archive.writestr('Diagnose-Quest.ps1', b'fixture diagnostic collector')
@@ -83,6 +85,8 @@ class ReleasePackagingTests(unittest.TestCase):
                              'Diagnose-Quest.cmd', 'Diagnose-Quest.ps1', 'Quest-DataTransfer.ps1',
                              'Quest-ProfileMigration.ps1', 'README.txt'):
                     update.writestr(name, archive.read(name))
+                if revision >= 11:
+                    update.writestr('Install-AC2-Sky.cmd', archive.read('Install-AC2-Sky.cmd'))
                 update.writestr('INSTALLER-UPDATE.txt', b'fixture installer update instructions')
         put(self.root, 'Unreal/Saved/VRWindowsArchive/Windows/ACUnreal/Binaries/Win64/ACUnreal.exe',
             b'MZ' + (display + '\0ACE.LocalCosmetics/1\0').encode('utf-16-le'))
@@ -168,11 +172,12 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(meta['clientPluginApis']['supportedLua'], [1, 2])
 
     def test_quest_diagnostics_ship_in_full_and_small_downloads(self):
-        self.fixture(version=154)
+        self.fixture(version=154, revision=11)
         release, meta = self.assemble()
         update = meta['questInstallerUpdate']
         with zipfile.ZipFile(release / update['file']) as archive:
             self.assertEqual(archive.read('Diagnose-Quest.ps1'), b'fixture diagnostic collector')
+            self.assertEqual(archive.read('Install-AC2-Sky.cmd'), b'sky launcher')
             self.assertNotIn('AC-VR-arm64.apk', archive.namelist())
         self.assertIn(update['file'], (release / 'SHA256SUMS.txt').read_text())
         public = self.publish_local(release)

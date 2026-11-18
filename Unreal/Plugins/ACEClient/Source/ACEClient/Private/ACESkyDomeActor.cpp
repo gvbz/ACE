@@ -1,4 +1,11 @@
 #include "ACESkyDomeActor.h"
+#include "Sky/ACELegionsSkyRenderer.h"
+#include "Sky/ACESkyMotion.h"
+#include "ACERuntimeOptions.h"
+#include "ACETerrainPresenterComponent.h"
+#include "GameFramework/GameModeBase.h"
+#include "Personal/PersonalFarTerrainSubsystem.h"
+#include "Async/Async.h"
 #include "ACEProfiling.h"
 #include "ACEDatSubsystem.h"
 #include "ACEClientSubsystem.h"
@@ -60,12 +67,34 @@ namespace
 			|| GfxId == 0x010015F0u || GfxId == 0x010015F1u || GfxId == 0x010015F2u;
 	}
 
+	// Vertical direction cosine at the top of the feathered horizon.
+	constexpr float HorizonFadeHeight = .18f;
+	constexpr float ClearHorizonFadeHeight = .035f; // two degrees above eye level
 
+	constexpr uint32 RetailSun = 0x01001348;
+	constexpr uint32 RetailPrimaryMoon = 0x01001F6A;
+	constexpr uint32 RetailSecondaryMoon = 0x01001F67;
+	constexpr uint32 RetailStars = 0x010015EF;
+	constexpr uint32 RetailOvercast = 0x01004C35;
+	bool IsClearCloud(uint32 Gfx)
+	{
+		return Gfx == 0x01004C39 || Gfx == 0x01004C3A;
+	}
+	bool IsCloudDeck(const FACEDatSkyObject& Def)
+	{
+		return !(Def.Properties & (SkyProp_After | SkyProp_Weather)) &&
+		       (!FMath::IsNearlyZero(Def.TexVelocityX) || !FMath::IsNearlyZero(Def.TexVelocityY));
+	}
+	bool ReplacedByLegions(uint32 Gfx)
+	{
+		return IsRetailSkyShellGfx(Gfx) || Gfx == RetailSun || Gfx == RetailPrimaryMoon || IsClearCloud(Gfx);
+	}
 }
 
 int32 AACESkyDomeActor::SlotDrawOrder(const FSkySlot& Slot)
 {
-	if (Slot.bWeather || Slot.bAfterPass) return 2000+Slot.ObjectIndex;
+	if (Slot.bAfterPass) return 2000+Slot.ObjectIndex;
+	if (Slot.bWeather) return -900+Slot.ObjectIndex;
 	// Keep the authored order within each layer, but atmospheric sheets must
 	// composite over celestial cards. A planet's later DAT index otherwise
 	// draws it in front of nearer moving clouds in Unreal's translucent pass.
@@ -207,8 +236,22 @@ bool AACESkyDomeActor::BracketTimeOfDay(const TArray<FACEDatSkyTimeOfDay>& Keys,
 	return true;
 }
 
-void AACESkyDomeActor::ClearSky()
+void AACESkyDomeActor::EndPlay(const EEndPlayReason::Type Reason)
 {
+	ResetImportedSky();
+	Super::EndPlay(Reason);
+}
+
+void AACESkyDomeActor::ClearSky(bool KeepImported)
+{
+	// AC1 day groups and material caches rebuild independently of the imported DAT.
+	if (!KeepImported) ResetImportedSky();
+	else if (bImportedVisible)
+	{
+		ImportedSky->SetVisible(false);
+		bImportedVisible=false;
+		if (DatSubsystem) DatSubsystem->SetLandSky(nullptr,FLinearColor::Transparent,FLinearColor::White);
+	}
 	for (FSkySlot& Slot : Slots)
 	{
 		if (Slot.bPesPlaying && WeatherScripts && Slot.PesScriptId != 0)
@@ -222,6 +265,7 @@ void AACESkyDomeActor::ClearSky()
 	SlotMeshes.Reset();
 	SlotMids.Reset();
 	ActiveGroup = FACEDatSkyDayGroup();
+	LastImportedTime = -1.f;
 	bBuilt = false;
 	BuiltSkyMeshFormat = 0;
 	FogUpdateAccumulator = 0.f;
@@ -248,6 +292,7 @@ void AACESkyDomeActor::DestroySlotMesh(FSkySlot& Slot)
 	Slot.Mids.Reset();
 	Slot.SurfaceLighting.Reset();
 	Slot.ActiveGfxId = 0;
+	Slot.LocalBodyDirection = FVector::ZeroVector;
 }
 
 void AACESkyDomeActor::DestroyColorFillMesh()
@@ -257,6 +302,12 @@ void AACESkyDomeActor::DestroyColorFillMesh()
 		ColorFillMesh->DestroyComponent();
 		ColorFillMesh = nullptr;
 	}
+	if (HorizonMesh)
+	{
+		HorizonMesh->DestroyComponent();
+		HorizonMesh = nullptr;
+	}
+	HorizonMid = nullptr;
 	ColorFillMid = nullptr;
 	LastFillColor = FLinearColor::Transparent;
 }
@@ -274,24 +325,24 @@ void AACESkyDomeActor::EnsureColorFillMesh()
 		return;
 	}
 
-	ColorFillMesh = NewObject<UProceduralMeshComponent>(this);
-	ColorFillMesh->SetupAttachment(GetRootComponent());
-	ColorFillMesh->RegisterComponent();
-	ColorFillMesh->SetCastShadow(false);
-	ColorFillMesh->bCastDynamicShadow = false;
-	ColorFillMesh->bCastStaticShadow = false;
-	ColorFillMesh->bCastFarShadow = false;
-	ColorFillMesh->bCastInsetShadow = false;
-	ColorFillMesh->bCastContactShadow = false;
-	ColorFillMesh->bUseAsOccluder = false;
-	ColorFillMesh->bNeverDistanceCull = true;
-	ColorFillMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	ColorFillMesh->SetCanEverAffectNavigation(false);
-	ColorFillMesh->SetReceivesDecals(false);
-	ColorFillMesh->SetBoundsScale(8.f);
-	ColorFillMesh->SetTranslucentSortPriority(-3000);
-	ColorFillMesh->SetHiddenInGame(false);
-	ColorFillMesh->SetVisibility(true);
+	auto MakeSkyMesh = [this](int32 Order)
+	{
+		auto* Mesh = NewObject<UProceduralMeshComponent>(this);
+		Mesh->SetupAttachment(GetRootComponent());
+		Mesh->SetCastShadow(false);
+		Mesh->bUseAsOccluder = false;
+		Mesh->bNeverDistanceCull = true;
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetGenerateOverlapEvents(false);
+		Mesh->SetCanEverAffectNavigation(false);
+		Mesh->SetReceivesDecals(false);
+		Mesh->SetBoundsScale(8.f);
+		Mesh->SetTranslucentSortPriority(Order);
+		Mesh->RegisterComponent();
+		return Mesh;
+	};
+	ColorFillMesh = MakeSkyMesh(-3000);
+	HorizonMesh = MakeSkyMesh(-950);
 
 	const float Half = WorldScale * FMath::Max(0.5f, SkyDistanceScale) * 1080.f;
 	TArray<FVector> Verts;
@@ -345,6 +396,18 @@ void AACESkyDomeActor::EnsureColorFillMesh()
 	ColorFillMid->SetScalarParameterValue(TEXT("EmissiveStrength"), 1.f);
 	ColorFillMid->SetVectorParameterValue(TEXT("FillColor"), Seed);
 	ColorFillMesh->SetMaterial(0, ColorFillMid);
+
+	// Where no more landblocks exist, continue the fully fogged land color
+	// below the horizon. Only draw the lower hemisphere and its feathered rim.
+	const int32 FirstHorizonIndex = (LatSegments / 2 - 2) * LonSegments * 6;
+	Tris.RemoveAt(0,FirstHorizonIndex);
+	HorizonMesh->CreateMeshSection_LinearColor(0, Verts, Tris, Norms, UVs, Colors,
+		TArray<FProcMeshTangent>(), false);
+	HorizonMid = UMaterialInstanceDynamic::Create(Base,this);
+	HorizonMid->SetScalarParameterValue(TEXT("HorizonFalloff"),1.f / HorizonFadeHeight);
+	HorizonMid->SetScalarParameterValue(TEXT("EmissiveStrength"),1.f);
+	HorizonMid->SetVectorParameterValue(TEXT("FillColor"),Seed);
+	HorizonMesh->SetMaterial(0,HorizonMid);
 	UE_LOG(LogTemp, Log,
 			TEXT("ACESky: color-fill sphere verts=%d half=%.0f (fog-color backdrop)"),
 		Verts.Num(), Half);
@@ -362,13 +425,12 @@ void AACESkyDomeActor::UpdateColorFill(const FLinearColor& Color)
 	}
 	FLinearColor Fill = Color;
 	Fill.A = 1.f;
-	if (LastFillColor.Equals(Fill, 0.01f))
+	if (LastFillColor.Equals(Fill, 0.0002f))
 	{
 		return;
 	}
 	LastFillColor = Fill;
 	ColorFillMid->SetVectorParameterValue(TEXT("FillColor"), Fill);
-	ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"), 1.f);
 	ColorFillMid->SetScalarParameterValue(TEXT("EmissiveStrength"), 1.f);
 	static double LastTintLogSec = 0.0;
 	const double NowSec = FPlatformTime::Seconds();
@@ -389,8 +451,7 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 	}
 
 	const float ShellScale = WorldScale * FMath::Max(0.5f, SkyDistanceScale);
-	// Weather/after curtains stay camera-local; before-pass shells push far so depth test
-	// lets buildings occlude the cube (DEPTHTEST_ALWAYS is not usable as "draw on top" in UE).
+	// Weather curtains use their native dimensions around the viewer.
 	const float BuildScale = (Slot.bWeather || Slot.bAfterPass) ? WorldScale : ShellScale;
 	const auto Built = DatSubsystem->GetOrBuildSetupMeshShared(GfxId, BuildScale);
 	if (!Built || Built->IsEmpty())
@@ -404,7 +465,6 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 		}
 		DestroySlotMesh(Slot);
 		Slot.ActiveGfxId = GfxId;
-		Slot.AuthoredOpacity = 1.f;
 		return;
 	}
 
@@ -432,7 +492,7 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 	Mesh->SetBoundsScale(Slot.bWeather ? 4.f : 8.f);
 
 	// Before-pass: behind other translucents; depth test vs opaque world.
-	// After/weather: composite last, but opaque walls and ground still occlude rain.
+	// The outdoor after-pass composites over the landscape.
 	Mesh->SetTranslucentSortPriority(SlotDrawOrder(Slot));
 
 	if (Slot.bForceWeatherZ)
@@ -443,7 +503,7 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 	}
 
 	int32 SectionIndex = 0;
-	float SlotSurfOpac = 1.f;
+	ACESkyMotion::FUVBasis CloudBasis;
 
 	for (const FACEBuiltSetupPart& Part : Built->Parts)
 	{
@@ -472,13 +532,15 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 				Norms[v] = Part.BindTransform.TransformVectorNoScale(Norms[v]).GetSafeNormal();
 			}
 			PersonalSkyHorizon::ExtendSection(GfxId, Verts, Triangles, Norms, UVs, Colors); // personal: sky-horizon
+			if (IsCloudDeck(Slot.Def) && UVs.Num() == Verts.Num())
+				CloudBasis.Consider(Verts, UVs, Triangles);
 
 			// GameSky draws the authored polygons in DAT order without depth writes.
 			// The shared builder already converts winding. Reversing it here exposes
 			// the far walls; projecting the cloud cards onto a sphere bends the horizon.
 			const bool bSkyShell = !Slot.bWeather && IsRetailSkyShellGfx(GfxId);
 			const bool bCloudLayer = bScrolls && !bSkyShell && !Slot.bWeather;
-			const bool bNeedWrap = bCloudLayer || GfxId == 0x010015EFu;
+			const bool bNeedWrap = bCloudLayer || (Slot.bWeather && bScrolls) || GfxId == 0x010015EFu;
 
 			FACEDatDecodedSurface Decoded;
 			if (Resolver && Sec.SurfaceId != 0)
@@ -488,12 +550,6 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 					bAdditive = Decoded.bAdditive && !(Decoded.bClipMap && Decoded.bSurfaceTranslucent);
 					bSoftAlpha = Decoded.bUsesAlpha || Decoded.bSurfaceTranslucent;
 					bClipMap = Decoded.bClipMap;
-					if (Slot.bWeather || Slot.bAfterPass)
-					{
-						// DAT weather surfaces often carry Translucency≈1; using that as
-						// OpacityMul made rain curtains invisible.
-						SlotSurfOpac = 1.f;
-					}
 				}
 				Tex = Resolver->GetOrCreateSkyUTexture(Sec.SurfaceId, DatSubsystem, bNeedWrap);
 			}
@@ -539,7 +595,7 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 					Mesh->SetMaterial(SectionIndex, Mid);
 					Slot.Mids.Add(Mid);
 					Slot.SurfaceLighting.Add(FVector3f(Decoded.Luminosity, Decoded.Diffuse,
-						Decoded.bAdditive && !bAdditive ? 1.f - Decoded.Translucency : 1.f));
+						(Slot.bWeather || (Decoded.bAdditive && !bAdditive)) && Decoded.bSurfaceTranslucent ? 1.f - Decoded.Translucency : 1.f));
 					SlotMids.Add(Mid);
 					++SectionIndex;
 				}
@@ -553,11 +609,11 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 				continue;
 			}
 
-			// Weather keeps its own wrapping/blending; all sky passes test world depth.
+			// The after-sky cell draws after the landscape with DEPTHTEST_ALWAYS.
 			UMaterialInterface* Base = nullptr;
 			const bool bDayCube = bSkyShell && GfxId != 0x010015EFu && !bAdditive;
 
-			if (Slot.bWeather && !bDayCube)
+			if (Slot.bWeather && Slot.bAfterPass && !bDayCube)
 			{
 				Base = bAdditive
 					? DatSubsystem->EnsureAceWeatherAdditiveMaterialBase()
@@ -602,7 +658,7 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 				Mesh->SetMaterial(SectionIndex, Mid);
 				Slot.Mids.Add(Mid);
 				Slot.SurfaceLighting.Add(FVector3f(Decoded.Luminosity, Decoded.Diffuse,
-					Decoded.bAdditive && !bAdditive ? 1.f - Decoded.Translucency : 1.f));
+					(Slot.bWeather || (Decoded.bAdditive && !bAdditive)) && Decoded.bSurfaceTranslucent ? 1.f - Decoded.Translucency : 1.f));
 				SlotMids.Add(Mid);
 			}
 			if (bDayCube && SectionIndex == 0)
@@ -634,7 +690,9 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 
 	Slot.Mesh = Mesh;
 	Slot.ActiveGfxId = GfxId;
-	Slot.AuthoredOpacity = SlotSurfOpac;
+	Slot.LocalCloudTravel = CloudBasis.Travel(FVector2D(Slot.Def.TexVelocityX, Slot.Def.TexVelocityY));
+	if (Slot.Def.DefaultGfxObjectId == RetailSun || Slot.Def.DefaultGfxObjectId == RetailPrimaryMoon)
+		Slot.LocalBodyDirection = Mesh->CalcBounds(FTransform::Identity).Origin.GetSafeNormal();
 	SlotMeshes.Add(Mesh);
 }
 
@@ -662,6 +720,25 @@ bool AACESkyDomeActor::TryBuild()
 
 	ActiveGroup = Sky->DayGroups[GroupIdx];
 	BuiltDayNumber = DayNumber;
+	const int32 Stars = ActiveGroup.Objects.IndexOfByPredicate([](const FACEDatSkyObject& O)
+		{ return O.DefaultGfxObjectId == RetailStars; });
+	// Read the four ends of the two star-field fades once per server day.
+	// Older/custom regions without these keys retain the retail calendar defaults.
+	FVector4f Bounds(-1.f,-1.f,-1.f,-1.f);
+	for (const auto& Key : ActiveGroup.TimesOfDay)
+	{
+		const auto* R = Key.Replaces.FindByPredicate([Stars](const auto& Entry){ return Entry.ObjectIndex == Stars; });
+		if (!R) continue;
+		if (R->Transparent == 0.f && Bounds.Y < 0.f) Bounds.X = Key.Begin;
+		if (R->Transparent == 100.f)
+		{
+			if (Bounds.Y < 0.f) Bounds.Y = Key.Begin;
+			Bounds.Z = Key.Begin;
+		}
+		if (R->Transparent == 0.f && Bounds.Z >= 0.f && Bounds.W < 0.f) Bounds.W = Key.Begin;
+	}
+	Twilight = Bounds.X >= 0.f && Bounds.X < Bounds.Y && Bounds.Y < Bounds.Z && Bounds.Z < Bounds.W
+		? Bounds : FVector4f(.16f,.27f,.84f,.96f);
 
 	UE_LOG(LogTemp, Log,
 		TEXT("ACESky: day=%d group=%d/%d name='%s' chance=%.3f ticks=%.0f frac=%.3f"),
@@ -690,7 +767,7 @@ bool AACESkyDomeActor::TryBuild()
 		Slot.bWeather = (Def.Properties & SkyProp_Weather) != 0;
 		Slot.bForceWeatherZ = Slot.bWeather && (Def.Properties & SkyProp_NoWeatherZ) == 0;
 
-		if (Def.DefaultGfxObjectId != 0)
+		if (Def.DefaultGfxObjectId != 0 && (!ImportedSky || !IsRetailSkyShellGfx(Def.DefaultGfxObjectId)))
 		{
 			RebuildSlotMesh(Slot, Def.DefaultGfxObjectId);
 		}
@@ -810,7 +887,7 @@ void AACESkyDomeActor::Tick(float DeltaSeconds)
 		|| BuiltSkyMeshFormat != SkyMeshFormatVersion
 		|| SkyMatGen != AppliedSkyMaterialGeneration)
 	{
-		ClearSky();
+		ClearSky(ACERuntimeOptions::LegionsSky());
 		if (!TryBuild())
 		{
 			return;
@@ -818,16 +895,179 @@ void AACESkyDomeActor::Tick(float DeltaSeconds)
 	}
 
 	const float DayFraction = ClientSubsystem ? ClientSubsystem->GetGameDayFraction(0.5f) : 0.5f;
-	UpdateSky(DayFraction, DeltaSeconds);
+	UpdateSky(DayFraction, DeltaSeconds, ACERuntimeOptions::LegionsSky());
 }
 
-void AACESkyDomeActor::UpdateSky(float DayFraction, float DeltaSeconds)
+void AACESkyDomeActor::ResetImportedSky()
 {
+	if (bImportedVisible && DatSubsystem) DatSubsystem->SetLandSky(nullptr,FLinearColor::Transparent,FLinearColor::White);
+	if (ImportedSky) ImportedSky->Clear();
+	ImportedSky.Reset();
+	PendingSky={};
+	ImportedRevision=INDEX_NONE;
+	bImportedVisible=false;
+	LastImportedTime=-1.f;
+	if (ColorFillMesh) { ColorFillMesh->SetTranslucentSortPriority(-3000); ColorFillMesh->SetVisibility(true); }
+	if (ColorFillMid) ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"),1.f);
+	LastFogDayFraction=-1;
+	LastFillColor=FLinearColor::Transparent;
+}
+
+float AACESkyDomeActor::ImportedPaletteTime(float Time) const
+{
+	// Legions clear-day keys mark night, morning, afternoon and night again.
+	// Align those palette transitions with the active AC1 group's star-field fades.
+	auto Map = [](float X, float A, float B, float C, float D) { return FMath::Lerp(C,D,(X-A)/(B-A)); };
+	if (Time < Twilight.X || Time >= Twilight.W)
+		return Map(Time < Twilight.X ? Time + 1.f : Time,Twilight.W,Twilight.X+1.f,0.f,.18f);
+	if (Time < Twilight.Y) return Map(Time,Twilight.X,Twilight.Y,.18f,.45f);
+	if (Time < Twilight.Z) return Map(Time,Twilight.Y,Twilight.Z,.45f,.8f);
+	return Map(Time,Twilight.Z,Twilight.W,.8f,1.f);
+}
+
+bool AACESkyDomeActor::UpdateImportedSky(float DayFraction, bool bEnabled)
+{
+	if (!bEnabled || !DatSubsystem)
+	{
+		if (ImportedRevision!=INDEX_NONE) ResetImportedSky();
+		return false;
+	}
+	if (ImportedRevision!=ACELegionsSky::Revision())
+	{
+		ResetImportedSky();
+		ImportedRevision=ACELegionsSky::Revision();
+		const FString Path=ACELegionsSky::CachePath();
+		PendingSky=Async(EAsyncExecution::ThreadPool,[Path]() -> TSharedPtr<ACELegionsSky::FBackdrop>
+		{
+			auto Data=MakeShared<ACELegionsSky::FBackdrop>();
+			FString Error;
+			if (ACELegionsSky::Load(Path,*Data,Error)) return Data;
+			UE_LOG(LogTemp,Warning,TEXT("AC2 sky: %s"),*Error);
+			return nullptr;
+		});
+	}
+	if (PendingSky.IsValid() && PendingSky.IsReady())
+	{
+		auto Data=PendingSky.Get();
+		PendingSky={};
+		if (Data)
+		{
+			auto Renderer=MakeShared<FACELegionsSkyRenderer>();
+			if (Renderer->Build(*this,MoveTemp(*Data)))
+			{
+				Renderer->SetVisible(false);
+				ImportedSky=Renderer;
+			}
+		}
+	}
+	if (!ImportedSky) return false;
+	const bool Visible=!DatSubsystem->IsIndoorEnvironment();
+	if (Visible!=bImportedVisible)
+	{
+		ImportedSky->SetVisible(Visible);
+		if (Visible) EnsureColorFillMesh();
+		else
+		{
+			DatSubsystem->SetLandSky(nullptr,FLinearColor::Transparent,FLinearColor::White);
+			if (ColorFillMesh) ColorFillMesh->SetVisibility(true);
+		}
+		if (ColorFillMesh) ColorFillMesh->SetTranslucentSortPriority(Visible ? -2400 : -3000);
+		if (ColorFillMid) ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"),1.f);
+		LastFogDayFraction=-1;
+		LastImportedTime=-1.f;
+		bImportedVisible=Visible;
+	}
+	if (Visible)
+	{
+		LastImportedUpdate=GetWorld()->GetTimeSeconds();
+		LastImportedTime=DayFraction;
+		int32 A, B;
+		float Alpha;
+		BracketTimeOfDay(ActiveGroup.TimesOfDay,DayFraction,A,B,Alpha);
+		FACELegionsSkyFrame Frame;
+		Frame.Seconds = ClientSubsystem && ClientSubsystem->HasGameTime()
+			? ClientSubsystem->GetGameTimeTicks() : GetWorld()->GetTimeSeconds();
+		float WindOpacity = -1.f;
+		Frame.bClearForecast = ActiveGroup.DayName == TEXT("Clear") || ActiveGroup.DayName == TEXT("Sunny");
+		if (ActiveGroup.TimesOfDay.IsValidIndex(A) && ActiveGroup.TimesOfDay.IsValidIndex(B))
+		{
+			const auto& Before=ActiveGroup.TimesOfDay[A];
+			const auto& After=ActiveGroup.TimesOfDay[B];
+			Frame.WeatherFogMin=FMath::Lerp(Before.MinWorldFog,After.MinWorldFog,Alpha);
+			Frame.WeatherFogMax=FMath::Lerp(Before.MaxWorldFog,After.MaxWorldFog,Alpha);
+			Frame.WeatherFogColor=FMath::Lerp(ArgbToLinear(Before.WorldFogColor),ArgbToLinear(After.WorldFogColor),Alpha);
+			Frame.WeatherDirect=FMath::Lerp(Before.DirBright,After.DirBright,Alpha);
+			const float Pitch=FMath::DegreesToRadians(FMath::Lerp(Before.DirPitch,After.DirPitch,Alpha));
+			const float Heading=FMath::DegreesToRadians(FMath::Lerp(Before.DirHeading,After.DirHeading,Alpha));
+			Frame.LightDirection=-FACEPosition::AceVectorToUnreal(FVector(FMath::Cos(Pitch)*FMath::Sin(Heading),
+				FMath::Cos(Pitch)*FMath::Cos(Heading),FMath::Sin(Pitch)));
+		}
+		for (FSkySlot& Slot : Slots)
+		{
+			const uint32 Gfx=Slot.Def.DefaultGfxObjectId;
+			const bool CloudDeck=IsCloudDeck(Slot.Def);
+			const bool RainCurtain = Gfx == 0x01004C42 || Gfx == 0x01004C44;
+			if (Gfx != RetailSun && Gfx != RetailPrimaryMoon && !CloudDeck && !RainCurtain)
+				continue;
+			FCelestialState State;
+			ResolveCelestialState(DayFraction,A,B,Alpha,Slot.ObjectIndex,Slot.Def,State);
+			if (!State.bVisible) continue;
+			const float Opacity=1.f-FMath::Clamp(State.Transparent/100.f,0.f,1.f);
+			if (RainCurtain)
+			{
+				if (bWeatherEnabled) Frame.Rain=FMath::Max(Frame.Rain,Opacity);
+			}
+			else if (CloudDeck)
+			{
+				if (State.GfxId != Slot.ActiveGfxId) RebuildSlotMesh(Slot,State.GfxId);
+				if (Opacity > WindOpacity && !Slot.LocalCloudTravel.IsNearlyZero())
+				{
+					Frame.CloudDirection = CalcFrameQuat(State.HeadingDeg,State.RotationDeg)
+						.RotateVector(Slot.LocalCloudTravel).GetSafeNormal2D();
+					WindOpacity = Opacity;
+				}
+				if (State.GfxId == RetailOvercast) Frame.Overcast=Opacity;
+				else Frame.CloudOpacity=FMath::Max(Frame.CloudOpacity,Opacity);
+			}
+			else
+			{
+				if (State.GfxId != Slot.ActiveGfxId) RebuildSlotMesh(Slot,State.GfxId);
+				if (Slot.LocalBodyDirection.IsNearlyZero()) continue;
+				auto& Body=Gfx == RetailSun ? Frame.Sun : Frame.Moon;
+				Body.Direction=CalcFrameQuat(State.HeadingDeg,State.RotationDeg).RotateVector(Slot.LocalBodyDirection);
+				Body.Opacity=Opacity;
+			}
+		}
+		if (ImportedSky->HasRainDays())
+			Frame.CloudOpacity=FMath::Max3(Frame.CloudOpacity,Frame.Overcast,Frame.Rain);
+		else
+			Frame.CloudOpacity*=1.f-Frame.Overcast;
+		bImportedClouds=Frame.CloudOpacity > KINDA_SMALL_NUMBER;
+		const auto Haze=ImportedSky->Update(ImportedPaletteTime(DayFraction),Frame);
+		if (ColorFillMesh) ColorFillMesh->SetVisibility(Haze.A > KINDA_SMALL_NUMBER);
+		if (Haze.A > KINDA_SMALL_NUMBER)
+		{
+			UpdateColorFill(ImportedSky->SkyFogColor);
+			if (ColorFillMid) ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"),Haze.A);
+		}
+	}
+	return Visible;
+}
+
+void AACESkyDomeActor::UpdateSky(float DayFraction, float DeltaSeconds, bool bUseImported)
+{
+	const bool UseImported=UpdateImportedSky(DayFraction, bUseImported);
+	const double SkySeconds = ClientSubsystem && ClientSubsystem->HasGameTime()
+		? ClientSubsystem->GetGameTimeTicks() : GetWorld()->GetTimeSeconds();
+	if (WeatherScripts && ClientSubsystem && ClientSubsystem->HasGameTime())
+		WeatherScripts->SetEnvironmentSkyTime(SkySeconds);
 	const TArray<FACEDatSkyTimeOfDay>& Keys = ActiveGroup.TimesOfDay;
 	int32 IdxA = INDEX_NONE;
 	int32 IdxB = INDEX_NONE;
 	float Alpha = 0.f;
 	const bool bHaveTod = BracketTimeOfDay(Keys, DayFraction, IdxA, IdxB, Alpha);
+	if (HorizonMesh && HorizonMesh->IsVisible() != (bHaveTod && bDriveWorldFog))
+		HorizonMesh->SetVisibility(bHaveTod && bDriveWorldFog);
 
 	// Fog broadcasts touch all loaded material caches. Time-of-day changes are
 	// slow; keep that work at 10 Hz without throttling head tracking, sky motion,
@@ -848,17 +1088,19 @@ void AACESkyDomeActor::UpdateSky(float DayFraction, float DeltaSeconds)
 		ACE_PROFILE_SCOPE(SkyLighting);
 		UpdateWorldLighting(Keys[IdxA], Keys[IdxB], Alpha, DayFraction);
 	}
+	if (DatSubsystem && UseImported) DatSubsystem->SetSkyAnimationTime(SkySeconds);
 
 	for (FSkySlot& Slot : Slots)
 	{
 		FCelestialState State;
-		ResolveCelestialState(DayFraction, IdxA, IdxB, Alpha, Slot.ObjectIndex, Slot.Def, State);
-
 		// Outdoor weather / after-pass gated by LScape::weather_enabled equivalent.
-		if ((Slot.bWeather || Slot.bAfterPass) && !bWeatherEnabled)
+		if (((Slot.bWeather || Slot.bAfterPass) && !bWeatherEnabled)
+			|| (UseImported && (ReplacedByLegions(Slot.Def.DefaultGfxObjectId) || Slot.PesScriptId == 0x330007DB ||
+				(ImportedSky->HasRainDays() && IsCloudDeck(Slot.Def)))))
 		{
 			State.bVisible = false;
 		}
+		else ResolveCelestialState(DayFraction, IdxA, IdxB, Alpha, Slot.ObjectIndex, Slot.Def, State);
 
 		float Opacity = 1.f;
 		if (State.Transparent >= 0.f)
@@ -899,6 +1141,11 @@ void AACESkyDomeActor::UpdateSky(float DayFraction, float DeltaSeconds)
 
 		if (Slot.Mesh)
 		{
+			if (Slot.Def.DefaultGfxObjectId == RetailSecondaryMoon)
+			{
+				const int32 Order = UseImported ? -2489 : SlotDrawOrder(Slot);
+				if (Slot.Mesh->TranslucencySortPriority != Order) Slot.Mesh->SetTranslucentSortPriority(Order);
+			}
 			Slot.Mesh->SetHiddenInGame(false, true);
 			Slot.Mesh->SetVisibility(true, true);
 			ApplySlotFrame(Slot, State);
@@ -909,16 +1156,11 @@ void AACESkyDomeActor::UpdateSky(float DayFraction, float DeltaSeconds)
 			|| !FMath::IsNearlyZero(Slot.Def.TexVelocityY);
 		if (bScrolls)
 		{
-			Slot.UvOffset.X = FMath::Fmod(Slot.UvOffset.X + Slot.Def.TexVelocityX * DeltaSeconds, 1.f);
-			Slot.UvOffset.Y = FMath::Fmod(Slot.UvOffset.Y + Slot.Def.TexVelocityY * DeltaSeconds, 1.f);
-			if (Slot.UvOffset.X < 0.f)
-			{
-				Slot.UvOffset.X += 1.f;
-			}
-			if (Slot.UvOffset.Y < 0.f)
-			{
-				Slot.UvOffset.Y += 1.f;
-			}
+			// Rain falls at its authored speed; cloud movement follows the same
+			// synchronized clock as the sun, moons and day/night palette.
+			const double Seconds = Slot.bWeather ? DeltaSeconds : SkySeconds;
+			Slot.UvOffset.X = ACESkyMotion::Offset(Seconds, Slot.Def.TexVelocityX, Slot.bWeather ? Slot.UvOffset.X : 0.);
+			Slot.UvOffset.Y = ACESkyMotion::Offset(Seconds, Slot.Def.TexVelocityY, Slot.bWeather ? Slot.UvOffset.Y : 0.);
 		}
 
 		for (int32 MaterialIndex = 0; MaterialIndex < Slot.Mids.Num(); ++MaterialIndex)
@@ -929,14 +1171,11 @@ void AACESkyDomeActor::UpdateSky(float DayFraction, float DeltaSeconds)
 			{
 				continue;
 			}
-			const bool bBackground = !Slot.bWeather;
 			Mid->SetScalarParameterValue(TEXT("OpacityMul"),
-				Opacity * Slot.AuthoredOpacity * (bBackground ? Surface.Z : 1.f));
-			Mid->SetScalarParameterValue(TEXT("EmissiveStrength"), bBackground
-				? (State.Luminosity > 0.f ? State.Luminosity * .01f : Surface.X) : 1.f);
-			Mid->SetScalarParameterValue(TEXT("DiffuseStrength"), bBackground
-				? (State.MaxBright > 0.f ? State.MaxBright * .01f : Surface.Y) : 1.f);
-			if (bHaveTod && bBackground)
+				Opacity * Surface.Z);
+			Mid->SetScalarParameterValue(TEXT("EmissiveStrength"), State.Luminosity > 0.f ? State.Luminosity * .01f : Surface.X);
+			Mid->SetScalarParameterValue(TEXT("DiffuseStrength"), State.MaxBright > 0.f ? State.MaxBright * .01f : Surface.Y);
+			if (bHaveTod)
 			{
 				const auto& A = Keys[IdxA];
 				const auto& B = Keys[IdxB];
@@ -996,7 +1235,7 @@ void AACESkyDomeActor::SyncSlotPes(FSkySlot& Slot, bool bVisible)
 
 void AACESkyDomeActor::InvalidateAndRebuild()
 {
-	ClearSky();
+	ClearSky(ACERuntimeOptions::LegionsSky());
 	BuiltDayNumber = INDEX_NONE;
 	bDirShadowSettingsApplied = false;
 	AppliedShadowSettingsRev = -1;
@@ -1014,6 +1253,7 @@ void AACESkyDomeActor::SetWeatherEnabled(bool bEnabled)
 		return;
 	}
 	bWeatherEnabled = bEnabled;
+	LastImportedTime = -1.f;
 	if (!bWeatherEnabled)
 	{
 		for (FSkySlot& Slot : Slots)
@@ -1041,17 +1281,6 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 	if (!World)
 	{
 		return;
-	}
-
-	const float MinFog = FMath::Lerp(A.MinWorldFog, B.MinWorldFog, Alpha);
-	const float MaxFog = FMath::Lerp(A.MaxWorldFog, B.MaxWorldFog, Alpha);
-	const FLinearColor FogColor = FMath::Lerp(ArgbToLinear(A.WorldFogColor), ArgbToLinear(B.WorldFogColor), Alpha);
-	const float MinCm = FMath::Max(MinFog, 0.f) * WorldScale;
-	const float DatMaxCm = FMath::Max(MinCm + 1.f, MaxFog * WorldScale);
-	float MaxCm = DatMaxCm;
-	if (FogClampLandblocks > 0.f)
-	{
-		MaxCm = FMath::Min(DatMaxCm, FogClampLandblocks * 192.f * WorldScale);
 	}
 
 	bool bIndoor = false;
@@ -1082,11 +1311,65 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 			Fog->SetDirectionalInscatteringColor(FLinearColor::Black);
 		}
 	}
+	// AC1 terrain and scenery are streamed in Dereth metres. The Legions
+	// fog interval belongs to its landscape and can be shorter than the
+	// drop from an AC1 summit to the valley directly beneath the camera.
+	const bool UseImportedRange = bImportedVisible && A.MaxWorldFog <= 0.f && B.MaxWorldFog <= 0.f;
+	const float MinFog = UseImportedRange ? ImportedSky->FogMin : FMath::Lerp(A.MinWorldFog,B.MinWorldFog,Alpha);
+	const float MaxFog = UseImportedRange ? ImportedSky->FogMax : FMath::Lerp(A.MaxWorldFog,B.MaxWorldFog,Alpha);
+	// GameSky interpolates the packed display channels before rendering.
+	const FLinearColor DisplayFog = FMath::Lerp(FColor(A.WorldFogColor).ReinterpretAsLinear(),
+		FColor(B.WorldFogColor).ReinterpretAsLinear(), Alpha);
+	const FLinearColor FogColor = bImportedVisible ? ImportedSky->FogColor :
+		FLinearColor::FromSRGBColor(DisplayFog.ToFColor(false));
+	// Even in clear weather, reach the horizon color before the closest side
+	// of the streamed square. The shell extends that limit when it is visible.
+	float End = MaxFog;
+	const auto* Mode = World->GetAuthGameMode();
+	const auto* Terrain = Mode ? Mode->FindComponentByClass<UACETerrainPresenterComponent>() : nullptr;
+	const auto* Shell = World->GetSubsystem<UPersonalFarTerrainSubsystem>();
+	const int32 FarRadius = Shell ? Shell->VisibleRadius() : 0;
+	if (HorizonMesh)
+	{
+		// The optional extended retail star field fades in below eye level.
+		// Composite those stars over the rim while that option is in use.
+		int32 Order = -950;
+		if (!bImportedVisible && FarRadius > 0 && ACERuntimeOptions::Get(PersonalSkyHorizon::OptionKey) > .5f)
+		{
+			const auto* Stars = Slots.FindByPredicate([](const FSkySlot& S){ return S.Def.DefaultGfxObjectId == RetailStars; });
+			const bool HasClouds = Slots.ContainsByPredicate([](const FSkySlot& Slot)
+			{
+				return Slot.Mesh && Slot.Mesh->IsVisible() && IsCloudDeck(Slot.Def);
+			});
+			if (!HasClouds && Stars && Stars->Mesh && Stars->Mesh->IsVisible()) Order = SlotDrawOrder(*Stars) - 1;
+		}
+		if (HorizonMesh->TranslucencySortPriority != Order) HorizonMesh->SetTranslucentSortPriority(Order);
+	}
+	if (FarRadius > 0)
+	{
+		// Short storm visibility stays weather-limited. A clear forecast can
+		// reveal distant ridges, with full extinction before the shell ends.
+		const float FairVisibility = FMath::SmoothStep(1500.f,2400.f,MaxFog);
+		const float Extent = FMath::Max(FarRadius,Terrain ? Terrain->LoadRadius : 0) * 192.f;
+		End = FMath::Min(Extent,MaxFog * (1.f + 3.f * FairVisibility));
+	}
+	else if (Terrain && Terrain->LoadRadius > 0)
+		End = FMath::Min(End,Terrain->LoadRadius * 192.f);
+	if (FogClampLandblocks > 0.f) End = FMath::Min(End,FogClampLandblocks * 192.f);
+	const float MaxCm = FMath::Max(1.f,End * WorldScale);
+	const float MinCm = FMath::Clamp(MinFog * WorldScale,0.f,MaxCm - 1.f);
 	if (Dat)
 	{
 		Dat->SetWorldDistanceFog(MinCm, MaxCm, FogColor, 1.f);
 	}
-	UpdateColorFill(FogColor);
+	UpdateColorFill(bImportedVisible ? ImportedSky->SkyFogColor : FogColor);
+	if (HorizonMid)
+	{
+		HorizonMid->SetVectorParameterValue(TEXT("FillColor"),FogColor);
+		const float Height = FMath::Lerp(HorizonFadeHeight, ClearHorizonFadeHeight,
+			bImportedVisible ? ImportedSky->ClearDaylight : 0.f);
+		HorizonMid->SetScalarParameterValue(TEXT("HorizonFalloff"), 1.f / Height);
+	}
 
 	static double LastFogLog = 0.0;
 	const double Now = FPlatformTime::Seconds();
@@ -1110,7 +1393,8 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 	FACEDatSkyTimeOfDay La = A;
 	FACEDatSkyTimeOfDay Lb = B;
 	float LerpAlpha = Alpha;
-	if (bPersistentAtDay || (ClientSubsystem && (ClientSubsystem->GetCharacterOptions2() & 1u) != 0))
+	const bool FixedDay = bPersistentAtDay || (ClientSubsystem && (ClientSubsystem->GetCharacterOptions2() & 1u) != 0);
+	if (FixedDay)
 	{
 		const TArray<FACEDatSkyTimeOfDay>& Keys = ActiveGroup.TimesOfDay;
 		if (Keys.Num() > 0)
@@ -1139,7 +1423,9 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 	auto Coefficient = [](uint32 C)
     { return FLinearColor(float((C>>16)&255)/255.f,float((C>>8)&255)/255.f,float(C&255)/255.f); };
     const FLinearColor DirColor = FMath::Lerp(Coefficient(La.DirColor),Coefficient(Lb.DirColor),LerpAlpha);
-    const FLinearColor AmbColor = FMath::Lerp(Coefficient(La.AmbColor),Coefficient(Lb.AmbColor),LerpAlpha);
+    const FLinearColor RetailAmbient = FMath::Lerp(Coefficient(La.AmbColor),Coefficient(Lb.AmbColor),LerpAlpha);
+	const auto* Legions = bImportedVisible ? (FixedDay ? &ImportedSky->Noon : &ImportedSky->Current) : nullptr;
+	const FLinearColor AmbColor = Legions ? Legions->AmbientColor : RetailAmbient;
     // LScape::calc_object_light: ambient_level + length(sunlight)*0.2.
     const float ObjectAmbient = FMath::Lerp(La.AmbBright,Lb.AmbBright,LerpAlpha)+FMath::Abs(DirBright)*0.2f;
 
@@ -1151,19 +1437,27 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 	const bool bIndoor = Dat && Dat->IsIndoorEnvironment();
 	if (Dat)
 	{
-        Dat->SetInteriorAmbient(AmbColor * ObjectAmbient);
+        Dat->SetInteriorAmbient(RetailAmbient * ObjectAmbient);
+		if (Legions)
+		{
+			FLinearColor Motion = ImportedSky->CloudMotion;
+			Motion.R /= FMath::Max(1.f,WorldScale);
+			Dat->SetLandSky(bImportedClouds ? ImportedSky->CloudMask.Get() : nullptr,
+				bImportedClouds ? Motion : FLinearColor::Transparent,AmbColor);
+		}
 	}
 	// DirBright is ~0.25 night … 0.80 noon. Do not square — that crushed night to near-black.
 	const float Dayness = FMath::Clamp((DirBright - 0.20f) / 0.62f, 0.f, 1.f);
-	const float DirIntensity = FMath::Lerp(5.5f, 8.5f, Dayness);
-	const float SkyIntensityOut = FMath::Lerp(1.05f, 1.35f, Dayness);
+	const float DirIntensity = Legions ? Legions->SunIntensity() : FMath::Lerp(5.5f, 8.5f, Dayness);
+	// The Legions ambient term is already applied by the land and scenery materials.
+	const float SkyIntensityOut = Legions ? 0.f : FMath::Lerp(1.05f, 1.35f, Dayness);
 	// Skylight diffuse is global and ignores the dungeon lighting channel.
 	// Keep the exterior sky for doorways that still present the landscape.
 	const float SkyIntensity = bIndoor && !Dat->IsBuildingInteriorFill() ? 0.f : SkyIntensityOut;
-	const float LandEmis = FMath::Lerp(0.14f, 0.09f, Dayness);
+	const float LandEmis = Legions ? Legions->Ambient : FMath::Lerp(0.14f, 0.09f, Dayness);
 	// Outdoor shells/plants are DefaultLit — keep emissive low so CSM shows on walls/foliage.
 	// EnvCells use authored static vertex lights and the retail world ambient separately.
-	const float SceneryEmis = ObjectAmbient;
+	const float SceneryEmis = Legions ? Legions->Ambient : ObjectAmbient;
 
 	if (!SunLightActor || !IsValid(SunLightActor))
 	{
@@ -1205,7 +1499,8 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 		// Night DAT pitch can put the moon under the horizon so upward land faces get N·L≤0
 		// and read as fully shadowed. Keep moonlight steep enough for CSM (~25°) — 9°
 		// (Z=-0.16) peter-panned large Yaraq casters while character specks still showed.
-		if (LightDir.Z > -0.35f)
+		if (Legions && !FixedDay) LightDir = Legions->Direction;
+		else if (LightDir.Z > -0.35f)
 		{
 			LightDir.Z = -0.42f;
 			LightDir.Normalize();
@@ -1224,7 +1519,7 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 			{
 				Dir->SetMobility(EComponentMobility::Movable);
 			}
-			const FLinearColor SunColor = DirColor;
+			const FLinearColor SunColor = Legions ? Legions->DirectColor : DirColor;
 			if (!FMath::IsNearlyEqual(AppliedDirIntensity, DirIntensity, 0.04f))
 			{
 				Dir->SetIntensity(DirIntensity);
@@ -1331,7 +1626,7 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 				Sky->SetMobility(EComponentMobility::Stationary);
 			}
 			Sky->bLowerHemisphereIsBlack = false;
-			Sky->SetLowerHemisphereColor(AmbColor * 0.55f);
+			if (!Legions) Sky->SetLowerHemisphereColor(AmbColor * 0.55f);
 			if (!FMath::IsNearlyEqual(AppliedSkyIntensity, SkyIntensity, 0.03f))
 			{
 				Sky->SetIntensity(SkyIntensity);

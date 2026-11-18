@@ -92,7 +92,10 @@ bool FACEVRLocomotionTest::RunTest(const FString&)
         if(FMath::Abs(V.X)>FMath::Abs(V.Y))
         {
             TestTrue(TEXT("Fast sideways movement chooses the sideways animation"),FMath::Abs(Seen.Strafe)>FMath::Abs(Seen.Forward));
-            TestTrue(TEXT("Observer animation rate matches authored strafe displacement"),FMath::IsNearlyEqual(Seen.AnimPlayRate,FMath::Abs(SideRate),.0001f));
+            // The forward cycle and sidestep modifier have independent rates.
+            // A fast diagonal strafe cannot speed up the forward root motion.
+            const float CycleRate=FMath::IsNearlyZero(V.Y)?SideRate:ForwardRate;
+            TestTrue(TEXT("Observer retains the independent authored cycle rate"),FMath::IsNearlyEqual(Seen.AnimPlayRate,FMath::Max(.05f,FMath::Abs(CycleRate)),.0001f));
         }
     }
     TestEqual(TEXT("All standard movement updates reach a desktop without VR capabilities"),Received,4);
