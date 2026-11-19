@@ -6,7 +6,7 @@ with a few added options. The original README is in the repository root.
 ## Branches
 
 - `master` matches Thwargle's repository.
-- `gvbz` has the changes below, on top of client v160 (2026.11.18.160). Since v159 they are also part of Thwargle's client (pull request #1), with his later changes.
+- `gvbz` has the changes below, on top of client v161 (2026.11.18.161). Since v159 they are also part of Thwargle's client (pull request #1), with his later changes.
 
 ## Changes
 

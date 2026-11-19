@@ -1,4 +1,4 @@
-# Plan history (gvbz at b5abfd700, client v160, 2026.11.18.160)
+# Plan history (gvbz at bb8d321d3, client v161, 2026.11.18.161)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -564,3 +564,15 @@ Thwargle's release v159 (82391a7e, 2026.11.17.159) contains the changes above (p
 - Sky horizon: new `PersonalSkyHorizon::IsEnabled()`. Thwargle's new horizon band (fog color below eye level) is drawn under the extended stars when the option is on and no cloud layer shows.
 - Camera options: unchanged.
 - Fog, for all players: the fog end follows the drawn area. With the far terrain off, full fog at the edge of the loaded terrain; with it on, clear-weather fog (2,400 m and more in the DAT) reaches up to 4 times as far, up to the edge of the far terrain.
+
+### v161
+
+Thwargle's release v161 (670bc29d, 2026.11.18.161), merged into `gvbz` as bb8d321d3 with no conflicts. Under `Unreal/` the branch still matches Thwargle's `master`. Changes to the features and the fog:
+
+- Far scenery: objects fade out over the last 20% of the objects radius and of each object type's size limit, with a dithered (temporal) fade, in five new far scenery materials (`GetFarSceneryMaterial`, `MPC_ACEFarScenery_v1`). The radius edge follows the player's position, not the camera. Console variable `personal.FarScenery.Fade` (1; 0 turns the fade off for comparison). One extra ring of landblocks is prepared hidden past the radius and one more is kept (at radius 8: 352 landblocks instead of 280). Cull distances cover the whole object bounds.
+- Far terrain rooms and door panels: use the far scenery materials with the radius fade only.
+- Far terrain: the shell keeps full detail out to the objects radius plus one ring, then blends heights toward the next coarser level over a band of 4 landblocks (levels 1 and 2) or 8 landblocks (coarser levels), so ridges no longer jump when the shell is rebuilt. More vertices (about 62,000 to 96,000 at radius 96). New `FogCoverageDistanceCm`: the fog limit is measured from the camera to the edge of the shell actually drawn, one cell inside it.
+- Fog, for all players (`UpdateFog`): with the far terrain on, Clear and Sunny forecasts keep the 4 times longer fog through dusk and night; other weather keeps the earlier rule. With the imported AC2 sky, the fog end is at least the AC2 palette's own value (1,500 m at dusk instead of AC1's 800 m). With the far terrain off: unchanged.
+- Imported AC2 sky: the fog color is the AC2 fog color only (no longer tinted by the sky dome, and no night rain tint); cloud shadows on the land follow the opacity of the drawn cloud layer (`M_ACELandLit_v42`); the AC2 moon is turned and sized to match the AC1 moon.
+- Unchanged: the horizon band, the shell's 1 cm drop, the objects radius range (3 to 24), the options window rows, the camera.
+- New tests: `ACE.Personal.FarScenery.Fade`, `ACE.Personal.FarTerrain.LODMovement`, `ACE.Personal.FarTerrain.Coverage`.
