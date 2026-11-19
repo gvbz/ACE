@@ -1,0 +1,16 @@
+{
+  "api": 2,
+  "mode": "companion",
+  "id": "devdash",
+  "name": "Development Dashboard",
+  "short_name": "DEV",
+  "version": "1.0.0",
+  "description": "Test controls for the client's personal. console variables, in tabs, and server admin commands with saved locations. Only the saved locations are kept: every client start begins from the client's defaults.",
+  "permissions": ["ui", "dev_tools", "say", "state", "chat"],
+  "snapshot_fields": ["position", "chat_events"],
+  "chat_subscriptions": [
+    {"id": "places", "prefix": "All POIs: ", "sender_type": "server", "chat_type": 0, "case_sensitive": true}
+  ],
+  "update_interval": 1,
+  "presentation": {"controls": "none", "settings": false, "status": false}
+}

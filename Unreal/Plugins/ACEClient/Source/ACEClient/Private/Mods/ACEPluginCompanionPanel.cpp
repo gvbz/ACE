@@ -166,7 +166,7 @@ namespace ACEPluginCompanionPanelPrivate
                     Node.Horizontal->ClearChildren();
                     for(int32 I=0;I<Next.Num();++I)
                     {
-                        auto Slot=Node.Horizontal->AddSlot();Slot.Padding(3).VAlign(VAlign_Center);
+                        auto Slot=Node.Horizontal->AddSlot();Slot.Padding(3).VAlign(S(R,TEXT("valign"))==TEXT("top")?VAlign_Top:S(R,TEXT("valign"))==TEXT("bottom")?VAlign_Bottom:VAlign_Center); // personal: dev-dashboard
                         if(AutoWidths[I])Slot.AutoWidth();else Slot.FillWidth(1);
                         Slot[Next[I].ToSharedRef()];
                     }

@@ -4,6 +4,7 @@
 #include "ACEPlayerController.h"
 #include "ACESession.h"
 #include "ACEVTProfile.h"
+#include "Personal/PersonalDevService.h" // personal: dev-dashboard
 #include "Engine/GameInstance.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -305,11 +306,13 @@ bool UACEPluginSubsystem::ApplyPluginServices(FACEClientPlugin& P,const TSharedP
         auto R=V->AsObject();auto Reply=MakeShared<FJsonObject>();const FString Service=S(R,TEXT("service")),Op=S(R,TEXT("operation")),Key=S(R,TEXT("name"));
         Reply->SetStringField(TEXT("type"),TEXT("result"));Reply->SetStringField(TEXT("id"),S(R,TEXT("id")));bool Ok=false;FString Failure;
         const FString Permission=Service==TEXT("sound")?TEXT("sound"):Service==TEXT("content")?TEXT("admin_content"):Service==TEXT("profiles")||Service==TEXT("import")?TEXT("profiles"):
+            Service==TEXT("dev")?TEXT("dev_tools"): // personal: dev-dashboard
             Service==TEXT("waypoint")?TEXT("waypoint"):Service==TEXT("route")?TEXT("navigation"):
             Service==TEXT("force_buff")?TEXT("cast"):(Service==TEXT("window")||Service==TEXT("notice"))?TEXT("ui"):Service==TEXT("policy")?TEXT("commands"):Service==TEXT("chat")?TEXT("say"):FString();
         if(Limited)Failure=TEXT("Service rate limit; retry after 0.5 seconds");
         else if(!Permission.IsEmpty()&&!P.Permissions.Contains(Permission))Failure=TEXT("Missing permission: ")+Permission;
         else if(Service==TEXT("content"))Ok=ContentService(P,R,Reply,Failure);
+        else if(Service==TEXT("dev"))Ok=PersonalDevService::Handle(P,R,Reply,Failure,GetGameInstance()->GetWorld()); // personal: dev-dashboard
         else if(Service==TEXT("sound"))Ok=SoundService(P,R,Reply,Failure);
         else if(Service==TEXT("profiles"))
         {

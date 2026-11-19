@@ -1,4 +1,4 @@
-# Plan history (gvbz at bb8d321d3, client v161, 2026.11.18.161)
+# Plan history (gvbz at 44e788eb5 plus the Development Dashboard, client v161, 2026.11.18.161)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -533,6 +533,71 @@ Night, Rainy, 2026-11-15. Frame times from `personal.FarScenery.LogFrameRate`, o
 - A door type with a door in one town and none in another needs a one-building override line (supported in the file, not by Mark).
 - Far rooms stop where far scenery stops drawing buildings (the Far Terrain Objects radius).
 - Not checked in game: Sunny and Clear weather by day.
+
+## 7. Development Dashboard
+
+| | |
+|---|---|
+| Merged | 2026-11-19, client v161, in the commit that added this section (on top of 44e788eb5). Built in five stages on 2026-11-19 |
+| Setting | Bundled companion plugin `devdash` (`Development Dashboard`, short name `DEV`), off until enabled in Manage Plugins. No option in the options window |
+| Permissions | `ui`, `dev_tools` (new), `say`, `state`, `chat`; snapshot fields `position` and `chat_events`; one chat subscription |
+
+### What it does
+
+A window with tabs for testing the fork's features in game without the console:
+
+- `Far Terrain`, `Far Scenery`, `Far Rooms`: check boxes, sliders and selects for the `personal.` console variables of the far features, each with the variable's help text as its tooltip. A variable the client does not have is shown disabled. Changes apply at once. `Reset tab` puts the tab's variables back to the defaults the client reports. `Far Rooms` also has `Mark door`, `Mark open` and `Clear mark` (`personal.FarWindows.Mark`). Below the tabs: `Log frame rate` (`personal.FarScenery.LogFrameRate`). These values are not saved: they last as long as the client runs.
+- `Fog`, `Lighting`, `Shadows`, `Performance`: placeholders for later features.
+- `Admin`: server admin commands for a character that is an admin on the server (the server refuses them otherwise; the tab says so at the top). Sky: weather buttons `Clear`, `Sunny`, `Cloudy`, `Rainy`, `Storm` (`@weather passing`), time buttons `Dawn`, `Day`, `Dusk`, `Night`, `Timelapse speed` with `Start timelapse` and `Stop timelapse`, `Sky status`, `Reset sky` (these need the server mod `LocalSkyPreview`). Saved locations: `Save location` keeps the character's cell and position under a name (at most 50, per character and server, kept across logins); `Go` sends `@teleloc 0x<cell> <x> <y> <z>`; `Delete`; `Home`, `My location`. Points of interest: `Place` with `Go to place` (`@telepoi <place>`), up to six matching place names as buttons while typing, and map coordinates such as `83.0S, 93.2E` (`@tele 83.0S 93.2E`); `List places`. Character: `God mode`, `Normal mode`, `Heal`, `Buff`, check boxes `Attackable` and `Cloaked`. Targets: `Smite target`.
+
+### Files
+
+- `Unreal/Plugins/ACEClient/ClientMods/devdash/plugin.json` and `main.lua`: the plugin. Bundled plugins are already staged for packaging (`ACEClient.Build.cs`, `ClientMods/...`), so it is inside the pak.
+- `Private/Personal/PersonalDevService.h/.cpp`: the plugin service `dev`, `PersonalDevService::Handle`, called like the client's `content` service.
+- Tests `Private/Tests/Personal/PersonalDevServiceTests.cpp` (`ACE.Personal.DevService`), `PersonalDevDashboardTests.cpp` (`ACE.Personal.DevDashboard`), `PersonalDevDashboardLayoutTests.cpp` (`ACE.Personal.DevDashboardLayout`, `-RenderOffscreen`).
+- T edits, marked `// personal: dev-dashboard`:
+  - `Private/Mods/ACEPluginSubsystem.cpp` lines 457 and 462: `dev_tools` is a valid permission, also for companion plugins.
+  - `Private/Mods/ACEPluginPublicAPI.cpp` line 7 (include), 309 (service `dev` needs `dev_tools`), 315 (the call to `PersonalDevService::Handle`).
+  - `Private/Mods/ACEPluginCompanionPanel.cpp` line 169: row option `valign` (`"top"`, `"bottom"`, anything else center as before), so the bottoms of an input or select and the buttons beside it line up. Not in the plugin API documents.
+
+### Service `dev`
+
+Permission `dev_tools`. Only console objects whose names start with `personal.`. Results arrive like those of the other services (`{type="result",id,ok,error,...}`).
+
+- `list`: every `personal.` variable and command, sorted: `name`, `kind` (`variable` or `command`), `help`, and for variables `type` (`bool`, `int`, `float`, `string`), `value`, `default` (as a string), `read_only`.
+- `get`: `names` (at most 128) gives `values`.
+- `set`: `values` (name to value, at most 128) sets all of them or none, as the console does (`ECVF_SetByConsole`), and returns the new `values`.
+- `run`: `text`, one `personal.` command with its arguments (for example `personal.FarWindows.Mark door`), run on the command object itself, so no second command can follow; returns `command` and `output`.
+
+### How it works
+
+- The variable tabs read `list` at start and send all changes of one callback in one `set`. A request refused by the service rate limit is sent again.
+- Admin commands go through the `chat` service (permission `say`), one per second from a queue; the status line shows the last command sent or a refusal. They are sent with `@`: the ACE server runs a Talk line as a command only when it starts with `@`, and the chat service sends the text as given (the client's chat box turns `/` into `@` itself).
+- Saved locations are kept with `state`. `position` has no heading, so `Go` sends no rotation and the character faces north.
+- Place names come from the server's reply to `@telepoi list` (`All POIs: <name>, ...`), read through a chat subscription for that line only. The plugin asks for it once, at the first typing in `Place`. A picked name replaces the `Place` input with a new one (new ID), because the panel does not change the text of an input that has focus; `Name` is cleared the same way after a save.
+- Layout: the panel insets row children by 3 px, so every control is in a row, sections have padding 7, `Reset tab` and `Log frame rate` take a third of a row each, and the row of `Log frame rate` has padding 8. Then all controls of a tab start at the same left edge. A section inside a row would pass the limit of 12 nesting levels for plugin output.
+
+### Tests
+
+- `ACE.Personal.DevService`: refusals outside `personal.`, `set` then `get`, `run`, and no access without `dev_tools`.
+- `ACE.Personal.DevDashboard`: runs `main.lua` in the plugin VM against the service: start, disabled variables, one `set` per callback, rate-limit retry, Reset tab, the Admin commands, sends one second apart, a refused send, saved locations across a plugin restart, the weather and time buttons, place suggestions, coordinates, and the UI limits (130 controls of 256, at most 8 levels).
+- `ACE.Personal.DevDashboardLayout`: draws each tab in the real companion panel offscreen at plugin text scale 1 and 1.5 and checks that the left edges line up (15 px on every tab, 25 px inside the Admin sections), that `Reset tab` is one line high, and that the bottoms in the `Location`, `Name` and `Place` rows match; and that a row without `valign` stays centered.
+
+### Checked
+
+In game on a local ACE server with an admin character (2026-11-19): every tab and control, test colors, Mark, Reset tab, the Admin commands, saved locations outdoors and in a dungeon and after a client restart, place suggestions, coordinates, and the layout at a larger plugin text scale.
+
+### Baseline
+
+Not measured: the plugin is off until enabled, and when running it only reads and sets console variables.
+
+### Depends on (Thwargle's code)
+
+The Lua plugin host (companion plugins, `ApplyPluginServices`, the `chat` service, `state`, chat subscriptions, `snapshot_fields`), the companion panel (`ACEPluginCompanionPanel.cpp`), and the `personal.` console variables of the features above. On the server: `teleloc`, `telepoi`, `tele`, `home`, `myloc`, `god`, `ungod`, `heal`, `buff`, `attackable`, `cloak`, `smite`, and `LocalSkyPreview` for the sky.
+
+### For later features
+
+- Each later feature adds its controls to its own tab (`Fog`, `Lighting`, `Shadows`, `Performance`) in `main.lua`; the service needs no change for new `personal.` variables.
 
 ## Abandoned
 

@@ -37,6 +37,12 @@ with a few added options. The original README is in the repository root.
   objects on.
 - The far terrain options stay on inside buildings, for the view out of
   doors and windows, and turn off in dungeons.
+- Development Dashboard: a bundled Lua plugin (off until enabled in
+  Manage Plugins) with test controls for the fork's `personal.` console
+  variables (Far Terrain, Far Scenery and Far Rooms tabs; values are not
+  saved), and an Admin tab with server admin commands, saved locations,
+  place suggestions and map coordinates, for a server where the
+  character is an admin. It uses a new plugin service `dev`.
 
 How each change was built: [Plan_History_git.md](Plan_History_git.md)
 

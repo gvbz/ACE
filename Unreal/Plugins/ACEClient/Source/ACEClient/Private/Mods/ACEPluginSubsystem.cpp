@@ -454,10 +454,12 @@ void UACEPluginSubsystem::Discover()
             if (Permissions) for (const auto& V : *Permissions)
             {
                 const FString Permission = V->AsString();
+                if (Permission == TEXT("dev_tools")) P->Permissions.AddUnique(Permission); else // personal: dev-dashboard
                 if (Permission != TEXT("identify") && Permission != TEXT("sound") && Permission != TEXT("admin_content") && Permission != TEXT("terrain") && Permission != TEXT("profiles") && Permission != TEXT("data") && Permission != TEXT("chat") && Permission != TEXT("chat_filter") && Permission != TEXT("state") && Permission != TEXT("ui") && Permission != TEXT("markers") && Permission != TEXT("waypoint") && Permission != TEXT("messaging") && Permission != TEXT("commands") && Permission != TEXT("local_tools") && Permission != TEXT("local_cosmetics") && Permission != TEXT("cast") && Permission != TEXT("combat") && Permission != TEXT("navigation") && Permission != TEXT("inventory") && Permission != TEXT("loot") && Permission != TEXT("say") && Permission != TEXT("fellowship") && Permission != TEXT("confirm")) Valid = false;
                 else P->Permissions.AddUnique(Permission);
             }
             if(P->Companion)for(const auto& Permission:P->Permissions)
+                if(Permission!=TEXT("dev_tools")) // personal: dev-dashboard
                 if(!TArray<FString>{TEXT("identify"),TEXT("sound"),TEXT("admin_content"),TEXT("terrain"),TEXT("chat"),TEXT("chat_filter"),TEXT("state"),TEXT("ui"),TEXT("markers"),TEXT("waypoint"),TEXT("messaging"),TEXT("commands"),TEXT("profiles"),TEXT("data"),TEXT("say")}.Contains(Permission))Valid=false;
             if(P->LocalService)
             {
