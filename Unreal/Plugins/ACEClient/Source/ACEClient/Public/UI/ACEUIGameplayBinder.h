@@ -93,6 +93,7 @@ class ACECLIENT_API UACEUIGameplayBinder : public UObject
 	friend class FACERetailSpellComponentsTest;
 	friend class FACEPanelResizeSocialTest;
 	friend class FACEInventoryUICostTest;
+	friend class FACENPCStackExchangeTest;
 	friend class FACEGameplayRefreshTest;
 	friend class FACEUIWorkloadTest;
 	friend class FACESalvageTest;

@@ -163,6 +163,9 @@ UStaticMesh* MakeStaticMesh(UACEDatSubsystem& Dat, UObject* Outer, const FBuilt&
 	{
 		// The client's own room material for the surface; its fallback is the vertex color material.
 		UMaterialInterface* Material = Dat.GetOrCreateEnvCellMaterial(Section.SurfaceId, Section.bWrapTexture);
+		// Keep vertex/doorway shading and the room's own fog/light controls;
+		// only the shared far radius fades it with its building shell.
+		Material = Dat.GetFarSceneryMaterial(Material, /*bPreserveLighting*/ true);
 		if (!Material)
 		{
 			Material = Dat.GetVertexColorMaterial();

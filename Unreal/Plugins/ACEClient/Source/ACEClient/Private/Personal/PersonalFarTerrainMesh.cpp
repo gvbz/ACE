@@ -29,6 +29,29 @@ namespace
 		float WorldScale;
 		TArray<FGrid> Grids;
 
+		float Height(int32 K, int32 X, int32 Y) const
+		{
+			const auto& Level = Grids[K].Level;
+			const float Native = Bake.HeightAt(K, X, Y);
+			if (Level.TransitionCells == 0) return Native;
+			const int32 Edge = FMath::Min(FMath::Min(X - Level.Min.X, Level.Max.X - X),
+				FMath::Min(Y - Level.Min.Y, Level.Max.Y - Y));
+			if (Edge >= Level.TransitionCells) return Native;
+			const float Alpha = FMath::SmoothStep(0.f, float(Level.TransitionCells), float(Level.TransitionCells - Edge));
+			// Sample the actual coarse triangle, including its intermediate fine
+			// corners. At the border this is the same straight edge used outside.
+			const int32 Step = Level.Step * 2;
+			const int32 BX = GridFloor(X, Step), BY = GridFloor(Y, Step);
+			const float U = float(X - BX) / Step, V = float(Y - BY) / Step;
+			const float LL = Bake.HeightAt(K + 1, BX, BY);
+			const float LR = Bake.HeightAt(K + 1, BX + Step, BY);
+			const float TL = Bake.HeightAt(K + 1, BX, BY + Step);
+			const float TR = Bake.HeightAt(K + 1, BX + Step, BY + Step);
+			const float Coarse = U + V <= 1.f ? LL * (1.f - U - V) + LR * U + TL * V
+				: TR * (U + V - 1.f) + TL * (1.f - U) + LR * (1.f - V);
+			return FMath::Lerp(Native, Coarse, Alpha);
+		}
+
 		int32 Vertex(int32 K, int32 X, int32 Y)
 		{
 			if (K > 0)
@@ -47,33 +70,13 @@ namespace
 			{
 				return Slot;
 			}
-			float Height = Bake.HeightAt(K, X, Y);
-			const bool bOnX = X == Level.Min.X || X == Level.Max.X;
-			const bool bOnY = Y == Level.Min.Y || Y == Level.Max.Y;
-			if (!Grid.bLast && (bOnX || bOnY))
-			{
-				// The border belongs to the coarser level outside it. A vertex that
-				// level does not have sits on the straight edge between its neighbors.
-				const int32 Coarse = Step * 2;
-				if (bOnX && GridMod(Y, Coarse) != 0)
-				{
-					Height = 0.5f * (Bake.HeightAt(K + 1, X, Y - Step) + Bake.HeightAt(K + 1, X, Y + Step));
-				}
-				else if (bOnY && GridMod(X, Coarse) != 0)
-				{
-					Height = 0.5f * (Bake.HeightAt(K + 1, X - Step, Y) + Bake.HeightAt(K + 1, X + Step, Y));
-				}
-				else
-				{
-					Height = Bake.HeightAt(K + 1, X, Y);
-				}
-			}
+			const float VertexHeight = Height(K, X, Y);
 			const float Run = 2.f * Step * PersonalFarTerrainMesh::CellSizeAc;
-			const float SlopeX = (Bake.HeightAt(K, X + Step, Y) - Bake.HeightAt(K, X - Step, Y)) / Run;
-			const float SlopeY = (Bake.HeightAt(K, X, Y + Step) - Bake.HeightAt(K, X, Y - Step)) / Run;
+			const float SlopeX = (Height(K, X + Step, Y) - Height(K, X - Step, Y)) / Run;
+			const float SlopeY = (Height(K, X, Y + Step) - Height(K, X, Y - Step)) / Run;
 			Slot = Out.Vertices.Add(FACEPosition::AceVectorToUnreal(FVector(
 				(X - CenterCell.X) * PersonalFarTerrainMesh::CellSizeAc,
-				(Y - CenterCell.Y) * PersonalFarTerrainMesh::CellSizeAc, Height), WorldScale));
+				(Y - CenterCell.Y) * PersonalFarTerrainMesh::CellSizeAc, VertexHeight), WorldScale));
 			// AC normal (-SlopeX, -SlopeY, 1); AceVectorToUnreal flips X.
 			Out.Normals.Add(FVector(SlopeX, -SlopeY, 1.f).GetSafeNormal());
 			Out.UVs.Add(FVector2D((X + 0.5f) / FPersonalFarTerrainBake::ColorTextureSize, (Y + 0.5f) / FPersonalFarTerrainBake::ColorTextureSize));
@@ -89,6 +92,24 @@ namespace PersonalFarTerrainMesh
 FVector Origin(FIntPoint Center, float WorldScale)
 {
 	return FACEPosition::AceVectorToUnreal(FVector(Center.X * double(LandblockSizeAc), Center.Y * double(LandblockSizeAc), 0.), WorldScale);
+}
+
+float CoverageDistanceCm(const FIntRect& Cells, const FVector& CameraLocation, float WorldScale)
+{
+	if (Cells.Min.X >= Cells.Max.X || Cells.Min.Y >= Cells.Max.Y || CameraLocation.ContainsNaN()
+		|| !FMath::IsFinite(WorldScale) || WorldScale <= 0.f)
+	{
+		return 0.f;
+	}
+	const double CellSize = double(CellSizeAc) * WorldScale;
+	// AceVectorToUnreal reverses X. Measure the actual camera, not the player's landblock center.
+	const double MinX = -double(Cells.Max.X) * CellSize;
+	const double MaxX = -double(Cells.Min.X) * CellSize;
+	const double MinY = double(Cells.Min.Y) * CellSize;
+	const double MaxY = double(Cells.Max.Y) * CellSize;
+	const double Edge = FMath::Min(FMath::Min(CameraLocation.X - MinX, MaxX - CameraLocation.X),
+		FMath::Min(CameraLocation.Y - MinY, MaxY - CameraLocation.Y));
+	return float(FMath::Max(0., Edge - CellSize));
 }
 
 void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
@@ -110,13 +131,18 @@ void Build(const FPersonalFarTerrainBake& Bake, FIntPoint Center, int32 Radius,
 	for (int32 K = 0; K < FPersonalFarTerrainBake::LevelCount; ++K)
 	{
 		const int32 Step = 1 << K;
-		const int32 Limit = FineLimit << K;
+		// Keep loaded terrain and scenery on native heights. Put the morph band
+		// outside that protected ring, so recentering spreads height changes
+		// across several landblocks instead of swapping a filtered ridge at once.
+		const int32 TransitionCells = K < 2 ? 32 : 64;
+		const int32 Limit = (FineLimit << K) + TransitionCells / FarCells;
 		FFarTerrainShellBuilder::FGrid Grid;
 		Grid.bLast = Radius <= Limit || K == FPersonalFarTerrainBake::LevelCount - 1;
 		const int32 Half = Grid.bLast ? Radius : Limit;
 		// A level that has a coarser one outside it ends on that coarser grid.
 		const int32 Snap = Grid.bLast ? Step : Step * 2;
 		Grid.Level.Step = Step;
+		Grid.Level.TransitionCells = Grid.bLast ? 0 : TransitionCells;
 		Grid.Level.Min = FIntPoint(GridFloor((Center.X - Half) * FarCells, Snap), GridFloor((Center.Y - Half) * FarCells, Snap));
 		Grid.Level.Max = FIntPoint(GridCeil((Center.X + 1 + Half) * FarCells, Snap), GridCeil((Center.Y + 1 + Half) * FarCells, Snap));
 		Grid.CountY = (Grid.Level.Max.Y - Grid.Level.Min.Y) / Step + 1;

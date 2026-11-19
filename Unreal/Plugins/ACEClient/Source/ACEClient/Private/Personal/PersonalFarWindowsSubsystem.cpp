@@ -5,6 +5,7 @@
 #include "Personal/PersonalFarRoomsMeshes.h"
 #include "Personal/PersonalFarRoomComponent.h"
 #include "Personal/PersonalFarSceneryMeshes.h"
+#include "Personal/PersonalFarScenery.h"
 #include "Async/Async.h"
 #include "ACEClientSubsystem.h"
 #include "ACEDatSubsystem.h"
@@ -396,6 +397,9 @@ bool UPersonalFarWindowsSubsystem::BuildBlock(UACEDatSubsystem& Dat, FIntPoint B
 			UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(Actor);
 			Component->SetupAttachment(Actor->GetRootComponent());
 			Component->SetStaticMesh(Mesh);
+			// These fills follow the shared building radius, without a size fade.
+			// Initialize the shader's CPD slot before its first scene proxy upload.
+			Component->SetCustomPrimitiveDataFloat(PersonalFarScenery::SizeFadePrimitiveDataIndex, 0.f);
 			Component->ComponentTags.Add(TEXT("PersonalFarWindowsPanel"));
 			Component->SetMobility(EComponentMobility::Movable);
 			Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -749,6 +753,7 @@ void UPersonalFarWindowsSubsystem::StreamRooms(UACEDatSubsystem& Dat, FIntPoint 
 				UStaticMeshComponent* Component = NewObject<UPersonalFarRoomComponent>(Actor);
 				Component->SetupAttachment(Actor->GetRootComponent());
 				Component->SetStaticMesh(Mesh);
+				Component->SetCustomPrimitiveDataFloat(PersonalFarScenery::SizeFadePrimitiveDataIndex, 0.f);
 				Component->ComponentTags.Add(TEXT("PersonalFarRooms"));
 				Component->SetMobility(EComponentMobility::Movable);
 				Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);

@@ -31,7 +31,7 @@ public class ACEClient : ModuleRules
 			"Landscape"
 		});
 		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore", "RHI", "HTTP", "XmlParser", "AssetRegistry", "ACERetailRender", "PhysicsCore", "Chaos" });
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL", "ICU");
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL", "ICU", "Expat");
 		if (Target.Platform == UnrealTargetPlatform.Linux)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL3");

@@ -35,6 +35,9 @@ public:
 	/** Landblocks of distant ground currently drawn around the player. */
 	int32 VisibleRadius() const;
 
+	/** Safe camera-to-edge fog limit of the currently visible mesh, including delayed recentering. */
+	float FogCoverageDistanceCm(const FVector& CameraLocation) const;
+
 private:
 	friend class FACELegionsSkyTest;
 	void Update();
@@ -70,6 +73,8 @@ private:
 	/** What the current mesh was built from. */
 	FIntPoint BuiltCenter = FIntPoint(MIN_int32, MIN_int32);
 	int32 BuiltRadius = 0;
+	FIntRect BuiltCoverageCells;
+	float BuiltWorldScale = 0.f;
 	int32 RequestedSceneryRadius = 0;
 	TSet<FIntPoint> BuiltHoles;
 	/** A worker is building a mesh. */

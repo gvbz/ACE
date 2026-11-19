@@ -322,6 +322,15 @@ bool FPersonalFarSceneryRulesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("A negative fog end is read as 0"), FogRing(-50.f, Block), 1);
 	TestTrue(TEXT("Ring 3 near edge is inside a 400 m fog end"), NearEdge(FogRing(400.f, Block), Block) <= 400.f);
 	TestTrue(TEXT("The next ring's near edge is past it"), NearEdge(FogRing(400.f, Block) + 1, Block) > 400.f);
+	TestEqual(TEXT("Clear-weather radius retains an existing extra ring"), RetentionRing(8), 9);
+	TestEqual(TEXT("Fog-limited radius retains an existing extra ring"), RetentionRing(3), 4);
+	TestEqual(TEXT("Retention remains within the supported world-data radius"), RetentionRing(LastRing), LastRing);
+	const FIntPoint PreviouslyVisible = Center + FIntPoint(8, 0);
+	const FIntPoint MovedCenter = Center - FIntPoint(1, 0);
+	TestFalse(TEXT("Crossing a landblock does not request new placement in the retained ring"),
+		IsWanted(PreviouslyVisible, MovedCenter, 8));
+	TestTrue(TEXT("Crossing a landblock keeps the previous edge block for hysteresis"),
+		IsWanted(PreviouslyVisible, MovedCenter, RetentionRing(8)));
 
 	// Handoff.
 	TestTrue(TEXT("Past the client's rings the far objects are shown"), ShowFar(3, false));
@@ -561,7 +570,8 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 	constexpr float WorldScale = 100.f;
 	constexpr float BlockSize = 192.f * WorldScale;
 	constexpr float ClearDay = 1.e9f;
-	constexpr int32 FullSet = 17 * 17 - 3 * 3;
+	const int32 PreparedRadius = PersonalFarScenery::PlacementRing(8);
+	const int32 FullSet = FMath::Square(2 * PreparedRadius + 1) - 3 * 3;
 	TSet<FIntPoint> NearShown;
 	// Update until nothing is left to do, the way the timer does in game.
 	auto Run = [&](FIntPoint Center, float FogEnd) -> double
@@ -594,7 +604,7 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 	const UPersonalFarScenerySubsystem::FStats First = Far->GetStats();
 	Describe(TEXT("Sawato, everything drawn (builds the meshes)"), Seconds);
 	TestTrue(TEXT("The fill finishes"), Far->bComplete);
-	TestEqual(TEXT("Rings 2 to 8 are in the set"), First.InSet, FullSet);
+	TestEqual(TEXT("Rings 2 to 8 plus the invisible prefetch ring are in the set"), First.InSet, FullSet);
 	TestEqual(TEXT("Nothing is hidden without near scenery"), First.Hidden, 0);
 	TestTrue(TEXT("Sawato has far objects"), First.Instances > 10000 && First.Components > 300 && First.Triangles > 1000000);
 	{
@@ -644,7 +654,10 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 				if (Kind == PersonalFarSceneryPlacement::EKind::Building)
 				{
 					BuildingItems += Type.Value.Transforms.Num();
-					if (PersonalFarScenery::Ring(Pair.Key, Sawato) >= 3) BuildingBlock = Pair.Key;
+					const int32 Ring = PersonalFarScenery::Ring(Pair.Key, Sawato);
+					// Past InteriorRings several landblocks intentionally share an actor.
+					// This comparison inspects a single native landblock's transforms.
+					if (Ring >= 3 && Ring <= PersonalFarScenery::InteriorRings) BuildingBlock = Pair.Key;
 				}
 			}
 		}
@@ -746,7 +759,9 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 		{
 			if (const AActor* Actor = Pair.Value.Actor.Get())
 			{
-				const float Edge = PersonalFarScenery::NearEdge(PersonalFarScenery::Ring(FIntPoint(Pair.Key.X, Pair.Key.Y), Sawato), BlockSize);
+				float Edge = MAX_flt;
+				for (FIntPoint Member : Pair.Value.BuiltMembers)
+					Edge = FMath::Min(Edge, PersonalFarScenery::NearEdge(PersonalFarScenery::Ring(Member, Sawato), BlockSize));
 				TInlineComponentArray<UInstancedStaticMeshComponent*> Found(Actor);
 				for (const UInstancedStaticMeshComponent* Component : Found)
 				{
@@ -899,6 +914,15 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 		{
 			Run(Sawato, ClearDay);
 			const UPersonalFarScenerySubsystem::FStats Single = Far->GetStats();
+			auto VisibleComponents = [&]()
+			{
+				int32 Count = 0;
+				for (const auto& Pair : Far->Units)
+					if (Pair.Value.BuiltMembers.ContainsByPredicate([&](FIntPoint Block) { return PersonalFarScenery::Ring(Block, Sawato) <= 8; }))
+						Count += Pair.Value.Components;
+				return Count;
+			};
+			const int32 SingleVisibleComponents = VisibleComponents();
 			TArray<FVector> Before;
 			auto Collect = [&](TArray<FVector>& Out)
 			{
@@ -946,7 +970,7 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("No old unit is left after the border"), Far->Retiring.Num() + Far->Releasing.Num(), 0);
 			Group->Set(1);
 			Run(Sawato, ClearDay);
-			TestEqual(TEXT("Back to single landblocks: the same components as before"), Far->GetStats().Components, Single.Components);
+			TestEqual(TEXT("Back to single landblocks: visible components match despite retained outer blocks"), VisibleComponents(), SingleVisibleComponents);
 		}
 	}
 
@@ -981,7 +1005,10 @@ bool FPersonalFarSceneryDrawTest::RunTest(const FString& Parameters)
 	Seconds = Run(Sawato + FIntPoint(0, 1), ClearDay);
 	Describe(TEXT("One border north of Sawato"), Seconds);
 	TestTrue(TEXT("The border step finishes"), Far->bComplete);
-	TestEqual(TEXT("The set is full after a border"), Far->GetStats().InSet, FullSet);
+	int32 PreparedAfterBorder = 0;
+	for (const auto& Pair : Far->Blocks)
+		PreparedAfterBorder += PersonalFarScenery::IsWanted(Pair.Key, Sawato + FIntPoint(0, 1), PreparedRadius) ? 1 : 0;
+	TestEqual(TEXT("The prepared set is full after a border; old outer blocks may be retained"), PreparedAfterBorder, FullSet);
 	TestEqual(TEXT("Ring 2 is hidden after the border"), Far->GetStats().Hidden, 5 * 5 - 3 * 3);
 	TestEqual(TEXT("Nothing is waiting to be removed"), Far->Releasing.Num(), 0);
 	for (const auto& Pair : Far->Blocks)

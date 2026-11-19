@@ -130,6 +130,7 @@ class ACECLIENT_API UACEPluginSubsystem : public UGameInstanceSubsystem
     GENERATED_BODY()
     friend class FACEFoundryTest;
     friend class FACEPluginHostTest;
+    friend class FACEPluginWindowTest;
     friend class FACEPluginLimitTest;
     friend class FACEUIWorkloadTest;
     friend class FACEUCMIdleWorkloadTest;
@@ -244,6 +245,8 @@ public:
     FString ProfileJson(const FString& Id) const;
     FString UserDirectory() const;
     TSharedRef<SWidget> MakePanel(const FString& PluginId = FString());
+    bool OpenPluginWindow(const FString& Id);
+    void CloseDesktopPluginManager(bool Remember = true);
     void TogglePluginWindow(const FString& Id);
     bool IsPluginWindowOpen(const FString& Id) const;
     bool IsPointInsidePluginWindow(const FString& Id, FVector2D Absolute) const;
@@ -443,6 +446,10 @@ private:
     FString ContentRoot(const FACEClientPlugin& Plugin) const;
     bool ChooseContentFolder(FACEClientPlugin& Plugin,FString& Error);
     bool ContentService(FACEClientPlugin& Plugin,const TSharedPtr<FJsonObject>& Request,const TSharedPtr<FJsonObject>& Reply,FString& Error);
+    bool ChoosePluginSound(FACEClientPlugin& Plugin,const FString& ControlId,FString& Error);
+    bool ImportPluginSound(FACEClientPlugin& Plugin,const FString& SourcePath,const TSharedPtr<FJsonObject>& Reply,FString& Error);
+    bool SoundService(FACEClientPlugin& Plugin,const TSharedPtr<FJsonObject>& Request,const TSharedPtr<FJsonObject>& Reply,FString& Error);
+    bool PluginSoundPickerOpen=false;
     void UpdatePluginTerrain();
     void ClearPluginTerrain();
     double NextTerrainBuild=0, NextPlateAppraisal=0;

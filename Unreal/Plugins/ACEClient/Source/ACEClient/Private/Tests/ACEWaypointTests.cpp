@@ -4,6 +4,280 @@
 #include "Mods/ACEWaypointAtlas.h"
 #include "UI/ACERetailTextBlock.h"
 #include "Serialization/JsonSerializer.h"
+#include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEWaypointImportFormatsTest,"ACE.Plugins.Waypoint.ImportFormats",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
+bool FACEWaypointImportFormatsTest::RunTest(const FString&)
+{
+    using namespace ACEWaypointAtlas;
+    FImportResult Parsed;FString Error;
+    const FString Normalized=TEXT(R"(<locations type="CrossroadsOfDereth">
+        <loc name="Al-Arqas" type="Town" NS="-31.1" EW="13.7"/>
+        <loc name="Portal" type="WildernessPortal" NS="1" EW="2" exitNS="3" exitEW="4"/>
+        <loc name="Axis exit" type="NPC" NS="1" EW="2" exitNS="0" exitEW="5"/>
+        <loc name="Origin exit" type="Portal" NS="1" EW="2" exitNS="0" exitEW="0"/>
+        <loc name="Disabled" type="NPC" NS="1" EW="2" exitNS="3" exitEW="4" use="False"/>
+        <loc name="Disabled zero" type="Portal" NS="1" EW="2" exitNS="3" exitEW="4" use="0"/>
+        <loc name="Broken exit" type="Portal" NS="1" EW="2" exitNS="broken" exitEW="4"/>
+        <loc name="Partial exit" type="Portal" NS="1" EW="2" exitNS="3"/>
+        <loc name="Broken location" type="NPC" NS="NaN" EW="2"/>
+        <loc name="Retired" type="Town" NS="1" EW="2" retired="True"/>
+    </locations>)");
+    if(!TestTrue(TEXT("Normalized GoArrow records remain usable despite a bad row"),ParseLocations(Normalized,Parsed,Error)))return false;
+    TestEqual(TEXT("Only invalid or retired normalized locations are skipped"),Parsed.Locations.Num(),8);
+    TestEqual(TEXT("Bad location coordinates are reported"),Parsed.InvalidLocations,1);
+    TestEqual(TEXT("Malformed and incomplete exits are reported separately"),Parsed.InvalidExits,2);
+    TestEqual(TEXT("Retired normalized records are excluded"),Parsed.RetiredLocations,1);
+    auto Find=[&](const TCHAR* Name){return Parsed.Locations.FindByPredicate([&](const auto& Place){return Place.Name==Name;});};
+    auto HasExit=[&](const TCHAR* Name,FVector2D Exit){const auto* Place=Find(Name);return Place&&Place->TravelExit.IsSet()&&Place->TravelExit.GetValue()==Exit;};
+    TestTrue(TEXT("Normalized north/south coordinates retain their sign"),Find(TEXT("Al-Arqas"))&&Find(TEXT("Al-Arqas"))->Coordinates==FVector2D(13.7,-31.1));
+    TestTrue(TEXT("Normalized portal exits retain their sign and axes"),HasExit(TEXT("Portal"),{4,3}));
+    TestTrue(TEXT("Explicit normalized zero-axis exits are real destinations"),HasExit(TEXT("Axis exit"),{5,0})&&HasExit(TEXT("Origin exit"),{0,0}));
+    for(const TCHAR* Name:{TEXT("Disabled"),TEXT("Disabled zero"),TEXT("Broken exit"),TEXT("Partial exit")})
+        TestTrue(TEXT("Unusable travel links retain their searchable entrance"),Find(Name)&&!Find(Name)->TravelExit.IsSet());
+
+    FString Numeric=TEXT("<locations><loc name='Scientific' NS='-3.11e+1' EW='+1.37E1'/><loc name='Fraction' NS='-.5' EW='+.25'/><loc name='Whole' NS='1.' EW='-0'/><loc name='Dot exit' NS='1' EW='2' exitNS='.' exitEW='5'/>");
+    const TCHAR* InvalidNumbers[]={TEXT("."),TEXT("e"),TEXT("f"),TEXT("+."),TEXT("1e"),TEXT("1e+"),TEXT("-3E-"),TEXT("1f"),TEXT("1.2x"),TEXT("1 2")};
+    for(const TCHAR* Number:InvalidNumbers)Numeric+=FString::Printf(TEXT("<loc name='Bad %s' NS='%s' EW='2'/>"),Number,Number);
+    Numeric+=TEXT("</locations>");
+    if(!TestTrue(TEXT("Valid decimal coordinates survive malformed neighboring records"),ParseLocations(Numeric,Parsed,Error)))return false;
+    TestEqual(TEXT("Incomplete and nondecimal coordinate strings are skipped"),Parsed.InvalidLocations,int32(UE_ARRAY_COUNT(InvalidNumbers)));
+    TestEqual(TEXT("All valid decimal forms and the bad-exit entrance remain"),Parsed.Locations.Num(),4);
+    TestTrue(TEXT("Signed scientific notation retains its value"),Find(TEXT("Scientific"))&&Find(TEXT("Scientific"))->Coordinates.Equals({13.7,-31.1},.00001));
+    TestTrue(TEXT("Signed fractions without leading zero remain valid"),Find(TEXT("Fraction"))&&Find(TEXT("Fraction"))->Coordinates==FVector2D(.25,-.5));
+    TestTrue(TEXT("Decimal trailing points and signed zero remain valid"),Find(TEXT("Whole"))&&Find(TEXT("Whole"))->Coordinates==FVector2D(0,1));
+    TestEqual(TEXT("A bare decimal point is reported as an invalid exit"),Parsed.InvalidExits,1);
+    TestTrue(TEXT("Malformed zero-like exits cannot become false routes"),Find(TEXT("Dot exit"))&&!Find(TEXT("Dot exit"))->TravelExit.IsSet());
+
+    const FString Legacy=TEXT(R"(<atlas><headers><header>name</header></headers><num_location>999</num_location>
+        <location><name>GAVersion</name><latitude>0</latitude><longitude>0</longitude></location>
+        <location><name>Al-Arqas</name><type>Town</type><latitude>31.1</latitude><longitude>13.7</longitude><retired>N</retired></location>
+        <location><name>Portal</name><type>Town Portal</type><latitude>-42.9</latitude><longitude>34.5</longitude><arrival_latitude>33.5</arrival_latitude><arrival_longitude>72.8</arrival_longitude></location>
+        <location><name>Axis north</name><type>Landmark</type><latitude>1</latitude><longitude>2</longitude><arrival_latitude>0</arrival_latitude><arrival_longitude>5</arrival_longitude></location>
+        <location><name>Axis east</name><type>Landmark</type><latitude>1</latitude><longitude>2</longitude><arrival_latitude>5</arrival_latitude><arrival_longitude>0</arrival_longitude></location>
+        <location><name>Zero pair</name><type>Landmark</type><latitude>1</latitude><longitude>2</longitude><arrival_latitude>0</arrival_latitude><arrival_longitude>0</arrival_longitude></location>
+        <location><name>Broken exit</name><type>NPC</type><latitude>1</latitude><longitude>2</longitude><arrival_latitude>434</arrival_latitude><arrival_longitude>5</arrival_longitude></location>
+        <location><name>Broken location</name><type>NPC</type><latitude>745</latitude><longitude>85</longitude></location>
+        <location><name>Old portal</name><latitude>1</latitude><longitude>2</longitude><retired>Y</retired></location>
+        <location><name>Other old portal</name><latitude>1</latitude><longitude>2</longitude><retired>y</retired></location>
+    </atlas>)");
+    if(!TestTrue(TEXT("Raw CoD atlases are accepted without conversion"),ParseLocations(Legacy,Parsed,Error)))return false;
+    TestEqual(TEXT("Legacy metadata and retired rows are not map destinations"),Parsed.Locations.Num(),6);
+    TestEqual(TEXT("Legacy retired flags are case insensitive"),Parsed.RetiredLocations,2);
+    TestEqual(TEXT("Legacy invalid coordinates are skipped and counted"),Parsed.InvalidLocations,1);
+    TestEqual(TEXT("A bad legacy exit does not discard its entrance"),Parsed.InvalidExits,1);
+    TestTrue(TEXT("CoD latitude is converted from south-positive to north-positive"),Find(TEXT("Al-Arqas"))&&Find(TEXT("Al-Arqas"))->Coordinates==FVector2D(13.7,-31.1));
+    TestTrue(TEXT("CoD arrival latitude receives the same sign conversion"),HasExit(TEXT("Portal"),{72.8,-33.5}));
+    for(const TCHAR* Name:{TEXT("Axis north"),TEXT("Axis east"),TEXT("Zero pair"),TEXT("Broken exit")})
+        TestTrue(TEXT("Raw CoD zero components and malformed exits never create false transport links"),Find(Name)&&!Find(Name)->TravelExit.IsSet());
+    const auto Before=Parsed.Locations;const int32 BeforeInvalid=Parsed.InvalidLocations;
+    for(const TCHAR* Broken:{TEXT("<unexpected/>"),TEXT("<locations><loc"),TEXT("<locations><loc name=\"Bad\" NS=\"745\" EW=\"5\"/></locations>"),
+        TEXT("<locations><loc name=\"First\" NS=\"1\" EW=\"2\"/></locations><broken"),
+        TEXT("<locations><loc name=\"First\" NS=\"1\" EW=\"2\"/></locations><other/>"),
+        TEXT("<locations><loc name=\"First\" NS=\"1\" EW=\"2\"/></locations>trailing text"),
+        TEXT("<locations><loc name=\"First\" NS=\"1\" EW=\"2\"/></locations></extra>")})
+    {
+        TestFalse(TEXT("Malformed or wholly unusable input is rejected"),ParseLocations(Broken,Parsed,Error));
+        TestTrue(TEXT("A rejected import returns an explanation and preserves previous results"),!Error.IsEmpty()&&Parsed.Locations.Num()==Before.Num()&&Parsed.InvalidLocations==BeforeInvalid&&Parsed.Locations[0].Name==Before[0].Name);
+    }
+    FString Excess=TEXT("<locations>");
+    for(int32 I=0;I<20001;++I)Excess+=TEXT("<loc name=\"Place\" NS=\"1\" EW=\"2\"/>");
+    Excess+=TEXT("</locations>");
+    TestFalse(TEXT("Oversized record counts are rejected transactionally"),ParseLocations(Excess,Parsed,Error));
+    TestEqual(TEXT("The record limit preserves the last usable atlas"),Parsed.Locations.Num(),Before.Num());
+    TestTrue(TEXT("A declaration and comments around one complete root remain supported"),ParseLocations(
+        TEXT("<?xml version=\"1.0\"?>\n<!--before-->\n<locations><loc name=\"Complete\" NS=\"1\" EW=\"2\"/></locations>\n<!--after-->"),Parsed,Error));
+    TestEqual(TEXT("Document validation keeps the intended atlas root"),Parsed.Locations.Num(),1);
+    const FString RichLegacy=TEXT(R"(<?xml version="1.0" encoding="UTF-16"?>
+        <atlas><location><name>North &amp; South <![CDATA[>]]> &#x00E9;</name>
+        <type>Landmark</type><latitude>
+        31.1
+        </latitude><longitude>13.7</longitude>
+        <description>Aerlinthe > Watcher > Temple.
+        The description can contain "quotes", &#62; and <![CDATA[<directions>]]>.</description>
+        </location></atlas>)");
+    if(TestTrue(TEXT("Real CoD prose, CDATA, entities and decoded Unicode XML are accepted"),ParseLocations(RichLegacy,Parsed,Error)))
+    {
+        TestEqual(TEXT("SAX text chunks concatenate and XML entities decode once"),Parsed.Locations[0].Name,FString(TEXT("North & South > é")));
+        TestTrue(TEXT("Multiline coordinate fields preserve the expected sign"),Parsed.Locations[0].Coordinates==FVector2D(13.7,-31.1));
+    }
+    TestTrue(TEXT("Single-quoted normalized attributes and entities are valid XML"),ParseLocations(
+        TEXT("<locations><loc name='Rock &amp; River &#233;' NS='1' EW='2'/></locations>"),Parsed,Error));
+    TestEqual(TEXT("Normalized attribute entities decode without changing names"),Parsed.Locations[0].Name,FString(TEXT("Rock & River é")));
+    const int32 RetainedCount=Parsed.Locations.Num();const FString RetainedName=Parsed.Locations[0].Name;
+    FString EmbeddedNull=TEXT("<locations><loc name='First' NS='1' EW='2'/></locations>");
+    EmbeddedNull.AppendChar(TCHAR(0));EmbeddedNull+=TEXT("<other/>");
+    TestFalse(TEXT("Embedded NUL bytes cannot hide trailing XML"),ParseLocations(EmbeddedNull,Parsed,Error));
+    TestTrue(TEXT("Embedded NUL rejection preserves the prior atlas"),Parsed.Locations.Num()==RetainedCount&&Parsed.Locations[0].Name==RetainedName&&!Error.IsEmpty());
+    FString Nested=TEXT("<locations>");for(int32 I=0;I<65;++I)Nested+=TEXT("<nested>");for(int32 I=0;I<65;++I)Nested+=TEXT("</nested>");Nested+=TEXT("</locations>");
+    const FString LargeField=TEXT("<locations><loc name=\"")+FString::ChrN(65537,TEXT('a'))+TEXT("\" NS=\"1\" EW=\"2\"/></locations>");
+    for(const FString& Rejected:{Nested,LargeField,FString(TEXT("<!DOCTYPE locations [<!ENTITY example 'expanded'>]><locations><loc name='&example;' NS='1' EW='2'/></locations>"))})
+    {
+        TestFalse(TEXT("XML nesting, field text and document declarations are bounded"),ParseLocations(Rejected,Parsed,Error));
+        TestTrue(TEXT("XML validation limits preserve the previous atlas"),Parsed.Locations.Num()==RetainedCount&&Parsed.Locations[0].Name==RetainedName&&!Error.IsEmpty());
+    }
+
+    FString Directory;
+    if(FParse::Value(FCommandLine::Get(),TEXT("WaypointAtlasDirectory="),Directory))
+    {
+        struct FFixture{const TCHAR* File;int32 Locations,Retired,Invalid,Exits;};
+        const FFixture Fixtures[]={{TEXT("2023GAlocations.xml"),5066,191,0,869},{TEXT("locations.xml"),5066,191,0,869},
+            {TEXT("cod_locations.xml"),5202,195,3,870},{TEXT("OLD_locations.xml"),5203,0,3,870},{TEXT("locations - Copy.xml"),5203,0,3,870}};
+        for(const auto& Fixture:Fixtures)
+        {
+            FString Source;
+            if(!TestTrue(FString::Printf(TEXT("Read user-supplied fixture %s"),Fixture.File),FFileHelper::LoadFileToString(Source,*(Directory/Fixture.File))))continue;
+            if(!TestTrue(FString::Printf(TEXT("Import user-supplied fixture %s: %s"),Fixture.File,*Error),ParseLocations(Source,Parsed,Error)))continue;
+            TestEqual(TEXT("Actual atlas retains every active usable record"),Parsed.Locations.Num(),Fixture.Locations);
+            TestEqual(TEXT("Actual atlas reports all retired locations"),Parsed.RetiredLocations,Fixture.Retired);
+            TestEqual(TEXT("Actual atlas skips only known invalid locations"),Parsed.InvalidLocations,Fixture.Invalid);
+            TestEqual(TEXT("Active records in supplied atlases have valid exits"),Parsed.InvalidExits,0);
+            TArray<FACEWaypointLandmark> Links;for(const auto& Place:Parsed.Locations)if(Place.TravelExit.IsSet())Links.Add(Place);
+            TestEqual(TEXT("Actual atlas preserves all eligible transport exits"),Links.Num(),Fixture.Exits);
+            const auto* Mayoi=Find(TEXT("Mayoi"));
+            TestTrue(TEXT("Both formats place Mayoi south and east"),Mayoi&&Mayoi->Coordinates.Equals({82,-61.6},.00001));
+            const auto* From=Find(TEXT("Holtburg"));const auto* To=Find(TEXT("Ayan Baqur"));
+            if(TestTrue(TEXT("Supplied atlas includes known distant towns"),From&&To))
+            {
+                const auto Trip=FindRoute(From->Coordinates,*To,Links,MapRegions(),[]{return false;});
+                TestTrue(TEXT("Actual imported exits connect distant towns with a usable route"),Trip.Num()>1&&Trip.Last().Name==To->Name);
+            }
+            AddInfo(FString::Printf(TEXT("%s: %d destinations, %d retired, %d invalid, %d transport exits"),Fixture.File,Parsed.Locations.Num(),Parsed.RetiredLocations,Parsed.InvalidLocations,Links.Num()));
+        }
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEWaypointMarkerClusterTest,"ACE.Plugins.Waypoint.MarkerClusters",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
+bool FACEWaypointMarkerClusterTest::RunTest(const FString&)
+{
+    using namespace ACEWaypoint;
+    auto Check=[&](const TArray<FMapClusterPoint>& Points,const TArray<FMapCluster>& Clusters,double Radius)
+    {
+        TMap<int32,FVector2D> Positions;for(const auto& Point:Points)Positions.Add(Point.Index,Point.Point);
+        TSet<int32> Seen;
+        for(const auto& Cluster:Clusters)
+        {
+            TestFalse(TEXT("Every visible dot has at least one result"),Cluster.Indices.IsEmpty());
+            for(int32 Index:Cluster.Indices)
+            {
+                const auto* Position=Positions.Find(Index);
+                TestTrue(TEXT("Every cluster result refers to a source marker"),Position!=nullptr);
+                TestFalse(TEXT("Each source marker appears exactly once"),Seen.Contains(Index));Seen.Add(Index);
+                if(Position)TestTrue(TEXT("Every result stays within the dot's fixed screen radius"),(*Position-Cluster.Point).SizeSquared()<=Radius*Radius+.0001);
+            }
+        }
+        TestEqual(TEXT("Clustering preserves every selectable marker"),Seen.Num(),Points.Num());
+    };
+    const TArray<FMapClusterPoint> Chain={{0,{0,0},TEXT("A")},{1,{17,0},TEXT("B")},
+        {2,{34,0},TEXT("C")},{3,{51,0},TEXT("D")},{4,{140,90},TEXT("Single")}};
+    auto Groups=ClusterMarkers(Chain);Check(Chain,Groups,18.);
+    if(TestEqual(TEXT("Adjacent chains cannot swallow the whole town"),Groups.Num(),3))
+    {
+        TestTrue(TEXT("The first anchor retains only nearby results"),Groups[0].Point==FVector2D(0,0)&&Groups[0].Indices==TArray<int32>({0,1}));
+        TestTrue(TEXT("A separate anchor starts beyond the fixed radius"),Groups[1].Point==FVector2D(34,0)&&Groups[1].Indices==TArray<int32>({2,3}));
+        TestTrue(TEXT("An isolated marker remains a single selectable result"),Groups[2].Indices==TArray<int32>({4}));
+    }
+    const TArray<FMapClusterPoint> Boundary={{0,{-1,17},TEXT("A")},{1,{1,19},TEXT("B")},
+        {2,{100,0},TEXT("C")},{3,{118,0},TEXT("D")},{4,{118.01,0},TEXT("E")}};
+    Groups=ClusterMarkers(Boundary);Check(Boundary,Groups,18.);
+    if(TestEqual(TEXT("Grid boundaries and exact radius do not split neighbors"),Groups.Num(),3))
+    {
+        TestTrue(TEXT("Nearby negative and positive screen cells can share a dot"),Groups[0].Indices==TArray<int32>({0,1}));
+        TestTrue(TEXT("The radius boundary is inclusive"),Groups[1].Indices==TArray<int32>({2,3}));
+        TestTrue(TEXT("A point beyond the anchor radius starts another dot"),Groups[2].Indices==TArray<int32>({4}));
+    }
+    const TArray<FMapClusterPoint> Nearest={{0,{0,0},TEXT("A")},{1,{30,0},TEXT("B")},
+        {2,{17,0},TEXT("C")},{3,{15,0},TEXT("D")}};
+    Groups=ClusterMarkers(Nearest);Check(Nearest,Groups,18.);
+    if(TestEqual(TEXT("Overlapping catchment areas retain separate anchors"),Groups.Num(),2))
+    {
+        TestTrue(TEXT("An equal-distance result uses a stable anchor"),Groups[0].Indices==TArray<int32>({0,3}));
+        TestTrue(TEXT("A result chooses the closest existing dot"),Groups[1].Indices==TArray<int32>({1,2}));
+    }
+    TArray<FMapClusterPoint> Dense,Sparse;
+    for(int32 I=0;I<5219;++I)
+    {
+        const FString Key=FString::Printf(TEXT("Imported portal %05d"),I);
+        Dense.Add({I,{double((I%73)*2),double((I/73)*2)},Key});
+        Sparse.Add({I,{double((I%73)*40),double((I/73)*40)},Key});
+    }
+    const double Started=FPlatformTime::Seconds();
+    const auto DenseGroups=ClusterMarkers(Dense),SparseGroups=ClusterMarkers(Sparse);
+    AddInfo(FString::Printf(TEXT("Clustered two 5,219-marker atlases in %.2f ms; dense dots=%d, sparse dots=%d"),
+        (FPlatformTime::Seconds()-Started)*1000,DenseGroups.Num(),SparseGroups.Num()));
+    Check(Dense,DenseGroups,18.);Check(Sparse,SparseGroups,18.);
+    TestTrue(TEXT("A town-sized dense atlas becomes a bounded set of dots"),DenseGroups.Num()>1&&DenseGroups.Num()<100);
+    TestEqual(TEXT("An atlas spread across the screen retains every singleton"),SparseGroups.Num(),Sparse.Num());
+    auto Reordered=Dense;for(int32 I=0;I<Reordered.Num()/2;++I)Reordered.Swap(I,Reordered.Num()-1-I);
+    const auto Again=ClusterMarkers(Reordered);
+    if(TestEqual(TEXT("Import ordering cannot change the number of dots"),Again.Num(),DenseGroups.Num()))
+        for(int32 I=0;I<Again.Num();++I)
+            TestTrue(TEXT("Import ordering preserves anchors and ordered result lists"),Again[I].Point==DenseGroups[I].Point&&Again[I].Indices==DenseGroups[I].Indices);
+    TArray<FMapClusterPoint> Zoomed={{0,{0,0},TEXT("A")},{1,{8,0},TEXT("B")},{2,{0,8},TEXT("C")}};
+    TestEqual(TEXT("Nearby destinations initially share a dot"),ClusterMarkers(Zoomed).Num(),1);
+    for(auto& Point:Zoomed)Point.Point*=3;
+    TestEqual(TEXT("Zooming in separates nearby destinations"),ClusterMarkers(Zoomed).Num(),3);
+    TestEqual(TEXT("A zero radius disables grouping"),ClusterMarkers(Chain,0).Num(),Chain.Num());
+    TestEqual(TEXT("An empty map has no dots"),ClusterMarkers({}).Num(),0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEWaypointLabelLayoutTest,"ACE.Plugins.Waypoint.LabelLayout",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
+bool FACEWaypointLabelLayoutTest::RunTest(const FString&)
+{
+    using namespace ACEWaypoint;
+    auto Check=[&](const TArray<FMapLabel>& Labels,FVector2D View,const TArray<FBox2D>& Reserved)
+    {
+        TSet<int32> Indices;
+        for(int32 I=0;I<Labels.Num();++I)
+        {
+            const auto& Label=Labels[I];const FBox2D Box(Label.Origin,Label.Origin+Label.Size);
+            TestFalse(TEXT("Each marker gets at most one label"),Indices.Contains(Label.Index));Indices.Add(Label.Index);
+            TestTrue(TEXT("Accepted text is fully inside the map"),Box.Min.X>=0&&Box.Min.Y>=0&&Box.Max.X<=View.X&&Box.Max.Y<=View.Y);
+            auto Overlaps=[&](const FBox2D& Other){return Box.Min.X<Other.Max.X&&Box.Max.X>Other.Min.X&&Box.Min.Y<Other.Max.Y&&Box.Max.Y>Other.Min.Y;};
+            for(const auto& Exclusion:Reserved)TestFalse(TEXT("Labels leave compass and player areas clear"),Overlaps(Exclusion));
+            for(int32 J=0;J<I;++J)TestFalse(TEXT("Dense atlas text never overlaps other accepted text"),Overlaps(FBox2D(Labels[J].Origin,Labels[J].Origin+Labels[J].Size)));
+        }
+    };
+    const FVector2D Small(320,360);
+    const TArray<FBox2D> Reserved={FBox2D({248,0},{320,72}),FBox2D({152,152},{168,168})};
+    TArray<FMapLabelCandidate> Dense;
+    // Match the reported atlas size, concentrated around a town-sized cluster.
+    // Text width varies as it does in the imported portal/dungeon data.
+    for(int32 I=0;I<5219;++I)Dense.Add({I,{130.+(I%17)*2,180.+((I/17)%19)*2},{70.+I%50,18.},FString::Printf(TEXT("Portal %05d"),I),0});
+    auto Labels=LayoutLabels(Dense,Small,Reserved);Check(Labels,Small,Reserved);
+    TestTrue(TEXT("A crowded imported atlas retains a useful subset"),Labels.Num()>0&&Labels.Num()<Dense.Num());
+    auto Reordered=Dense;for(int32 I=0;I<Reordered.Num()/2;++I)Reordered.Swap(I,Reordered.Num()-1-I);
+    auto Repeat=LayoutLabels(Reordered,Small,Reserved);
+    TestEqual(TEXT("Reordering the atlas preserves the label count"),Repeat.Num(),Labels.Num());
+    for(const auto& Label:Labels)
+    {
+        const auto* Same=Repeat.FindByPredicate([&](const auto& Other){return Other.Index==Label.Index;});
+        TestTrue(TEXT("Reordering preserves accepted markers and positions"),Same&&Same->Origin.Equals(Label.Origin,.001)&&Same->Size==Label.Size);
+    }
+    Dense.Add({6000,{160,210},{90,18},TEXT("Hovered portal"),100});
+    Labels=LayoutLabels(Dense,Small,Reserved);Check(Labels,Small,Reserved);
+    TestTrue(TEXT("Hover priority reveals a name in a dense town"),Labels.ContainsByPredicate([](const auto& Label){return Label.Index==6000;}));
+    TestTrue(TEXT("An oversized name is not emitted outside the map"),LayoutLabels({{0,{160,180},{1000,18},TEXT("Oversized"),0}},Small,{}).IsEmpty());
+    TestTrue(TEXT("A collapsed map has no text placements"),LayoutLabels(Dense,FVector2D::ZeroVector,{}).IsEmpty());
+    TArray<FMapLabelCandidate> SmallTown,LargeTown;
+    for(int32 I=0;I<100;++I)
+    {
+        FMapLabelCandidate Candidate{I,{20.+(I%10)*28,20.+(I/10)*28},{80,18},FString::Printf(TEXT("Town place %03d"),I),0};
+        SmallTown.Add(Candidate);Candidate.Point*=3;LargeTown.Add(Candidate);
+    }
+    const auto SmallLabels=LayoutLabels(SmallTown,{320,320},{}),LargeLabels=LayoutLabels(LargeTown,{960,960},{});
+    Check(SmallLabels,{320,320},{});Check(LargeLabels,{960,960},{});
+    TestTrue(TEXT("Enlarging the same map reveals more names"),LargeLabels.Num()>SmallLabels.Num());
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEWaypointAtlasRouteTest,"ACE.Plugins.Waypoint.AtlasRoutes",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)

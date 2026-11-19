@@ -9,11 +9,6 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonSerializer.h"
-#include "Audio.h"
-#include "Sound/SoundWaveProcedural.h"
-#include "Kismet/GameplayStatics.h"
-#include "Components/AudioComponent.h"
-#include "TimerManager.h"
 
 namespace
 {
@@ -181,7 +176,7 @@ bool UACEPluginSubsystem::ValidatePluginUI(const TArray<TSharedPtr<FJsonValue>>&
             {Error=TEXT("UI controls need unique IDs and bounded text");return false;}Ids.Add(Id);
             if(!TArray<FString>{TEXT("text"),TEXT("button"),TEXT("checkbox"),TEXT("slider"),TEXT("number"),TEXT("input"),TEXT("select"),TEXT("color"),TEXT("progress"),TEXT("icon"),TEXT("item_icon"),TEXT("image"),TEXT("row"),TEXT("column"),TEXT("section"),TEXT("tabs"),TEXT("overlay"),TEXT("frame")}.Contains(Type))
             {Error=TEXT("Unknown UI control: ")+Type;return false;}
-            for(const TCHAR* Field:{TEXT("compact"),TEXT("auto_width"),TEXT("wrap"),TEXT("clickable"),TEXT("hide_when_pinned")})
+            for(const TCHAR* Field:{TEXT("compact"),TEXT("auto_width"),TEXT("wrap"),TEXT("ellipsis"),TEXT("clickable"),TEXT("hide_when_pinned")})
                 if(R->HasField(Field)&&!R->HasTypedField<EJson::Boolean>(Field))
                 {Error=FString(Field)+TEXT(" must be a boolean");return false;}
             for(const TCHAR* Field:{TEXT("width"),TEXT("height"),TEXT("opacity"),TEXT("min_opacity"),TEXT("period"),TEXT("rotation"),TEXT("outline"),TEXT("glow"),TEXT("scale"),TEXT("offset_x"),TEXT("offset_y")})
@@ -196,7 +191,7 @@ bool UACEPluginSubsystem::ValidatePluginUI(const TArray<TSharedPtr<FJsonValue>>&
             if(!TArray<FString>{TEXT(""),TEXT("blink"),TEXT("pulse"),TEXT("rotate")}.Contains(S(R,TEXT("effect")))){Error=TEXT("Unknown visual effect");return false;}
             if(!TArray<FString>{TEXT(""),TEXT("left"),TEXT("center"),TEXT("right")}.Contains(S(R,TEXT("align")))){Error=TEXT("Unknown text alignment");return false;}
             const FString Action=S(R,TEXT("action"));
-            if(!Action.IsEmpty()&&!TArray<FString>{TEXT("event"),TEXT("select"),TEXT("select_item"),TEXT("waypoint"),TEXT("command"),TEXT("content_folder")}.Contains(Action))
+            if(!Action.IsEmpty()&&!TArray<FString>{TEXT("event"),TEXT("select"),TEXT("select_item"),TEXT("waypoint"),TEXT("command"),TEXT("content_folder"),TEXT("sound_file")}.Contains(Action))
             {Error=TEXT("Unknown UI button action");return false;}
             if(Type==TEXT("color"))
             {
@@ -249,6 +244,9 @@ bool UACEPluginSubsystem::ClickPluginRow(const FString& Plugin,const FString& Id
     if(Type!=TEXT("button")&&!B(R,TEXT("clickable"),false)&&!R->HasField(TEXT("action")))return false;
     if(B(R,TEXT("hide_when_pinned"),false)&&IsPluginWindowChromeHidden(Plugin))return false;
     FString Error;bool Ok=true;const FString Action=S(R,TEXT("action"),TEXT("event"));
+    // The picker reports its own completion. In particular, an asynchronous
+    // Linux dialog must not produce a successful click before a file is chosen.
+    if(Action==TEXT("sound_file"))return ChoosePluginSound(*P,Id,Error);
     if(Action==TEXT("content_folder"))Ok=ChooseContentFolder(*P,Error);
     else if(Action!=TEXT("event"))
     {
@@ -312,30 +310,7 @@ bool UACEPluginSubsystem::ApplyPluginServices(FACEClientPlugin& P,const TSharedP
         if(Limited)Failure=TEXT("Service rate limit; retry after 0.5 seconds");
         else if(!Permission.IsEmpty()&&!P.Permissions.Contains(Permission))Failure=TEXT("Missing permission: ")+Permission;
         else if(Service==TEXT("content"))Ok=ContentService(P,R,Reply,Failure);
-        else if(Service==TEXT("sound")&&Op==TEXT("play"))
-        {
-            const FString Asset=S(R,TEXT("asset"));const FString Path=P.Directory/TEXT("sounds")/Asset;
-            const int64 Bytes=IFileManager::Get().FileSize(*Path);TArray<uint8> Data;FWaveModInfo Wave;
-            if(Asset.IsEmpty()||Asset.Len()>128||Asset!=FPaths::GetCleanFilename(Asset)||Asset.Contains(TEXT(":"))||!Asset.EndsWith(TEXT(".wav"))
-                ||Bytes<=0||Bytes>1024*1024||!FFileHelper::LoadFileToArray(Data,*Path)||!Wave.ReadWaveInfo(Data.GetData(),Data.Num())
-                ||!Wave.pFormatTag||*Wave.pFormatTag!=1||!Wave.pChannels||*Wave.pChannels<1||*Wave.pChannels>2
-                ||!Wave.pBitsPerSample||*Wave.pBitsPerSample!=16||!Wave.pSamplesPerSec||*Wave.pSamplesPerSec<8000||*Wave.pSamplesPerSec>48000
-                ||!Wave.SampleDataSize||Wave.SampleDataSize%(*Wave.pChannels*2u)!=0
-                ||Wave.SampleDataSize>10u*(*Wave.pSamplesPerSec)*(*Wave.pChannels)*2u)
-                Failure=TEXT("Sound must be a bundled PCM16 mono/stereo WAV, 8-48 kHz, at most 10 seconds and 1 MiB");
-            else
-            {
-                auto* Sound=NewObject<USoundWaveProcedural>(this);Sound->SetSampleRate(*Wave.pSamplesPerSec);Sound->NumChannels=*Wave.pChannels;
-                Sound->Duration=float(Wave.SampleDataSize)/(*Wave.pSamplesPerSec*Sound->NumChannels*2);Sound->bLooping=false;
-                Sound->QueueAudio(Wave.SampleDataStart,Wave.SampleDataSize);
-                if(auto* Audio=UGameplayStatics::SpawnSound2D(GetWorld(),Sound,FMath::Clamp(N(R,TEXT("volume"),1),0.,1.)))
-                {
-                    // Procedural sources otherwise remain alive generating silence.
-                    FTimerHandle Stop;GetWorld()->GetTimerManager().SetTimer(Stop,FTimerDelegate::CreateWeakLambda(Audio,[Audio](){Audio->Stop();}),Sound->Duration+.1f,false);
-                }
-                Ok=true;
-            }
-        }
+        else if(Service==TEXT("sound"))Ok=SoundService(P,R,Reply,Failure);
         else if(Service==TEXT("profiles"))
         {
             const FString Group=S(R,TEXT("group"),TEXT("Default"));

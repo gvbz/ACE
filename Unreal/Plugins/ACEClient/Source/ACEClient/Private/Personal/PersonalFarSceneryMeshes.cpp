@@ -434,7 +434,8 @@ UStaticMesh* MakePanelMesh(UACEDatSubsystem& Dat, UObject* Outer, uint32 ModelId
 		// One material per kind for every panel: the client's outdoor material (it takes the world's distance fog
 		// from the shared parameter collection), each with its own 1 x 1 texture. All start as the same flat dark grey.
 		UMaterialInstanceDynamic* Wall = WallSurface != 0 ? Cast<UMaterialInstanceDynamic>(Dat.GetOrCreateOutdoorLitMaterial(WallSurface, bWallWrap)) : nullptr;
-		UMaterialInterface* Base = Wall ? Wall->Parent.Get() : nullptr;
+		UMaterialInterface* FadingWall = Wall ? Dat.GetFarSceneryMaterial(Wall, /*bPreserveLighting*/ true) : nullptr;
+		UMaterialInterface* Base = FadingWall ? FadingWall->GetMaterial() : nullptr;
 		if (!Base)
 		{
 			return nullptr;

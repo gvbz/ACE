@@ -512,6 +512,10 @@ public:
 	/** Shared world fog; per-material FogAmount still opts interiors/previews out. */
 	UMaterialParameterCollection* GetRuntimeFogCollection() const;
 	UMaterialParameterCollection* GetRuntimePortalCollection() const;
+	UMaterialParameterCollection* GetRuntimeFarSceneryCollection() const;
+	/** Dedicated far-object coverage; near scenery retains its original opaque/cutout material. */
+	UMaterialInterface* GetFarSceneryMaterial(UMaterialInterface* Source, bool bPreserveLighting = false);
+	void SetFarSceneryFadeRadius(UWorld* World, float RadiusCm, bool bEnabled, const FVector& Anchor = FVector::ZeroVector);
 	UMaterialInterface* GetVRComfortMaterial();
 	/** PhysicsBSP sections must not use VertexColor/WorldGrid (lit → black with GI off). */
 	UMaterialInterface* EnsureInvisibleCollisionMaterial();
@@ -1049,6 +1053,10 @@ private:
 	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInterface>> InteriorObjectMaterials;
 	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInterface>> DungeonObjectMaterials;
 	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInstanceDynamic>> WorldObjectMaterials;
+	UPROPERTY(Transient) TMap<uint8, TObjectPtr<UMaterialInterface>> FarSceneryMaterialBases;
+	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInstanceDynamic>> FarSceneryMaterials;
+	TMap<TWeakObjectPtr<UMaterialInterface>, TWeakObjectPtr<UMaterialInstanceDynamic>> FarSceneryFixedMaterials;
+	UMaterialInterface* EnsureFarSceneryMaterialBase(uint8 Kind);
 	enum class EObjectLightEnvironment : uint8 { Outdoors, Interior, Dungeon };
 	TMap<TWeakObjectPtr<UMaterialInstanceDynamic>, EObjectLightEnvironment> WorldLightingInstances;
 

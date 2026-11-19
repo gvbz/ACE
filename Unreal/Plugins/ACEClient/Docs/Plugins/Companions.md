@@ -56,7 +56,8 @@ one character-specific saved object; `ui` allows rows and selection; `markers`
 allows world/map annotations; `waypoint` controls the enabled Waypoint arrow;
 `messaging` exchanges local events; `commands` invokes the documented native
 command bridges. `identify` permits targeted background appraisal, and `sound`
-permits bounded bundled WAV notifications; see [API 2](PublicAPI.md#permissions-and-snapshots).
+permits bounded WAV notifications from bundled assets or user-selected imported
+sounds; see [API 2](PublicAPI.md#permissions-and-snapshots).
 Companion manifests cannot request automation or native-tool
 permissions. Native settings also support bool, number and choice controls.
 

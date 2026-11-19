@@ -64,6 +64,7 @@ bool UACEPrepareRuntimeMaterialsCommandlet::PrepareMaterials()
 	// shader parents so a clean checkout/cook has the same shared fog dependency.
 	if (!Dat->GetRuntimeFogCollection() || !Save(Dat->GetRuntimeFogCollection())) return false;
 	if (!Dat->GetRuntimePortalCollection() || !Save(Dat->GetRuntimePortalCollection())) return false;
+	if (!Dat->GetRuntimeFarSceneryCollection() || !Save(Dat->GetRuntimeFarSceneryCollection())) return false;
 	// The portal list is replaced with a live float texture at runtime. Its shader
 	// default must still be a real, cookable linear texture rather than a transient.
 	UPackage* TexturePackage = CreatePackage(TEXT("/Game/ACE/RuntimeMaterials/T_ACEPortalViewsDefault"));

@@ -12,6 +12,7 @@
 #include "UI/ACEUIResourceResolver.h"
 #include "VR/ACEVRWidgetComponent.h"
 #include "VR/ACEVRPointerVisuals.h"
+#include "Personal/PersonalFarScenery.h"
 
 UACEUIResourceResolver* UACEDatSubsystem::GetUiResources()
 {
@@ -206,6 +207,31 @@ namespace
 			}
 			auto& Camera = Collection->VectorParameters.AddDefaulted_GetRef();
 			Camera.ParameterName = TEXT("LookOutCam"); Camera.DefaultValue = FLinearColor::Black;
+			Collection->PostEditChange();
+		}
+#else
+		Collection = LoadObject<UMaterialParameterCollection>(nullptr, Path);
+#endif
+		Cached = Collection;
+		return Collection;
+	}
+
+	UMaterialParameterCollection* RuntimeFarSceneryCollection()
+	{
+		static TWeakObjectPtr<UMaterialParameterCollection> Cached;
+		if (Cached.IsValid()) return Cached.Get();
+		constexpr const TCHAR* Package = TEXT("/Game/ACE/RuntimeMaterials/MPC_ACEFarScenery_v1");
+		constexpr const TCHAR* Path = TEXT("/Game/ACE/RuntimeMaterials/MPC_ACEFarScenery_v1.MPC_ACEFarScenery_v1");
+		UMaterialParameterCollection* Collection = nullptr;
+#if WITH_EDITORONLY_DATA
+		if (FPackageName::DoesPackageExist(Package)) Collection = LoadObject<UMaterialParameterCollection>(nullptr, Path);
+		if (!Collection)
+		{
+			Collection = NewObject<UMaterialParameterCollection>(CreatePackage(Package), TEXT("MPC_ACEFarScenery_v1"), RF_Public | RF_Standalone);
+			auto& Limits = Collection->VectorParameters.AddDefaulted_GetRef();
+			Limits.ParameterName = TEXT("FarSceneryLimits");
+			// X = radius in cm, Y = enabled, ZW = player XY. No radius until streaming starts.
+			Limits.DefaultValue = FLinearColor(0.f, 1.f, 0.f, 0.f);
 			Collection->PostEditChange();
 		}
 #else
@@ -1164,6 +1190,19 @@ UMaterialParameterCollection* UACEDatSubsystem::GetRuntimePortalCollection() con
 	return RuntimePortalCollection();
 }
 
+UMaterialParameterCollection* UACEDatSubsystem::GetRuntimeFarSceneryCollection() const
+{
+	return RuntimeFarSceneryCollection();
+}
+
+void UACEDatSubsystem::SetFarSceneryFadeRadius(UWorld* World, float RadiusCm, bool bEnabled, const FVector& Anchor)
+{
+	if (World)
+		if (auto* Collection = RuntimeFarSceneryCollection())
+			if (auto* Instance = World->GetParameterCollectionInstance(Collection))
+				Instance->SetVectorParameterValue(TEXT("FarSceneryLimits"), FLinearColor(FMath::Max(RadiusCm, 0.f), bEnabled ? 1.f : 0.f, Anchor.X, Anchor.Y));
+}
+
 TArray<UMaterialInterface*> UACEDatSubsystem::GetRuntimeMaterialParents()
 {
 	TArray<UMaterialInterface*> Parents = {
@@ -1171,6 +1210,8 @@ TArray<UMaterialInterface*> UACEDatSubsystem::GetRuntimeMaterialParents()
 		GetPortalStencilWriterMaterial(), GetPortalDepthApertureMaterial(),
 		EnsureAceBuildingShellMaterialBase(), EnsureAceUnlitMaskedMaterialBase(), EnsureAceOutdoorLitMaterialBase(),
 		EnsureAceOutdoorLitMaskedMaterialBase(), EnsureAceUnlitTranslucentMaterialBase(), EnsureAceUnlitAdditiveMaterialBase(),
+		EnsureFarSceneryMaterialBase(0), EnsureFarSceneryMaterialBase(1), EnsureFarSceneryMaterialBase(2),
+		EnsureFarSceneryMaterialBase(3), EnsureFarSceneryMaterialBase(4),
 		EnsureAceParticleTranslucentMaterialBase(), EnsureAceParticleAdditiveMaterialBase(),
 		EnsureAceBatchedParticleMaterialBase(false), EnsureAceBatchedParticleMaterialBase(true),
 		EnsureAceSkyTranslucentMaterialBase(), EnsureAceSkyTranslucentWrapMaterialBase(), EnsureAceSkyOpaqueMaterialBase(),
@@ -1444,6 +1485,8 @@ void UACEDatSubsystem::ClearLoadedState()
 	InteriorObjectMaterials.Reset();
 	DungeonObjectMaterials.Reset();
 	WorldObjectMaterials.Reset();
+	FarSceneryMaterials.Reset();
+	FarSceneryFixedMaterials.Reset();
 	WorldLightingInstances.Reset();
 	InteriorObjectMaterialBases.Reset();
 	StaticMeshMaterialCache.Reset();
@@ -2161,7 +2204,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceUnlitTexturedMaterialBase()
 UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 {
 	// PDO / material graph bumps without a full landmesh wipe.
-	static constexpr int32 LandMatGraphVersion = 39;
+	static constexpr int32 LandMatGraphVersion = 42;
 	static int32 AppliedLandMatGraphVersion = 0;
 	if (AppliedLandMatGraphVersion != LandMatGraphVersion)
 	{
@@ -2177,7 +2220,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 #if WITH_EDITORONLY_DATA
 	// The aperture mask must run in the depth pass too. Clipping only BaseColor
 	// on an opaque material leaves invisible terrain depth occluding interiors.
-	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(), TEXT("M_ACELandLit_v41"), RF_Public | RF_Transient);
+	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(), TEXT("M_ACELandLit_v42"), RF_Public | RF_Transient);
 	if (!Mat)
 	{
 		return nullptr;
@@ -2271,15 +2314,18 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 	CloudOffset->ParameterId = CloudOffset->Collection->GetParameterId(CloudOffset->ParameterName);
 	auto* Shaded = NewObject<UMaterialExpressionCustom>(Mat);
 	Shaded->OutputType = CMOT_Float3;
-	auto Input = [Shaded](FName Name, UMaterialExpression* Expression)
+	auto Input = [Shaded](FName Name, UMaterialExpression* Expression, int32 Output = 0)
 	{
 		auto& Pin = Shaded->Inputs.AddDefaulted_GetRef();
 		Pin.InputName = Name;
-		Pin.Input.Connect(0,Expression);
+		Pin.Input.Connect(Output,Expression);
 	};
-	Input(TEXT("Land"),Sample); Input(TEXT("Position"),LandWorldPos); Input(TEXT("Motion"),Motion);
+	Input(TEXT("Land"),Sample); Input(TEXT("Position"),LandWorldPos); Input(TEXT("Motion"),Motion,5);
 	Input(TEXT("Offset"),CloudOffset); Input(TEXT("Mask"),Mask);
-	Shaded->Code = TEXT("[branch] if (Motion.x <= 0) return Land; float2 uv=Position.xy*Motion.x+Offset.xy; return Land*Texture2DSample(Mask,MaskSampler,uv).rgb;");
+	// Motion.a follows the cloud sheet's rendered opacity, including its native
+	// visibility window. Clear skies bypass the mask, and thinning clouds fade
+	// the same shadow uniformly across near and far terrain.
+	Shaded->Code = TEXT("[branch] if (Motion.x <= 0 || Motion.a <= 0) return Land; float2 uv=Position.xy*Motion.x+Offset.xy; return Land*lerp(1.0,Texture2DSample(Mask,MaskSampler,uv).rgb,saturate(Motion.a));");
 	auto* SkyTint = NewObject<UMaterialExpressionVectorParameter>(Mat);
 	SkyTint->ParameterName = TEXT("LandSkyTint");
 	SkyTint->DefaultValue = FLinearColor::White;
@@ -2495,10 +2541,10 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 	Mat->ForceRecompileForRendering();
 #endif
 	LandMaterialBase = Mat;
-	UE_LOG(LogTemp, Log, TEXT("ACEDat: created Lit land material v35 (PortalList + indoor footprint clip)"));
+	UE_LOG(LogTemp, Log, TEXT("ACEDat: created Lit land material v42 (cloud opacity + PortalList + indoor footprint clip)"));
 	return LandMaterialBase;
 #else
-	LandMaterialBase = LoadCookedAceMaterial(TEXT("M_ACELandLit_v41"));
+	LandMaterialBase = LoadCookedAceMaterial(TEXT("M_ACELandLit_v42"));
 	return LandMaterialBase;
 #endif
 }
@@ -2537,21 +2583,24 @@ void UACEDatSubsystem::RegisterLandSky(UMaterialInstanceDynamic* Material)
 
 void UACEDatSubsystem::SetLandSky(UTexture2D* Mask,const FLinearColor& Motion,const FLinearColor& Tint)
 {
-	const bool MaskChanged = LandCloudMask != Mask || LandCloudMotion != Motion;
-	if (!MaskChanged && LandSkyTint.Equals(Tint,.008f)) return;
-	LandCloudMask = Mask;
-	LandCloudMotion = Motion;
-	LandSkyTint = Tint;
+	const bool MaskChanged = LandCloudMask != Mask;
+	// Cloud opacity drifts with the sky palette. Coalesce sub-byte changes,
+	// but always clear/restart shadows immediately and retain the last applied
+	// value so accumulated drift and newly registered terrain stay consistent.
+	const bool MotionChanged = MaskChanged || LandCloudMotion.R != Motion.R || LandCloudMotion.G != Motion.G || LandCloudMotion.B != Motion.B ||
+		(LandCloudMotion.A <= 0.f) != (Motion.A <= 0.f) || FMath::Abs(LandCloudMotion.A - Motion.A) >= 1.f / 255.f;
+	const bool TintChanged = !LandSkyTint.Equals(Tint,.008f);
+	if (!MaskChanged && !MotionChanged && !TintChanged) return;
+	if (MaskChanged) LandCloudMask = Mask;
+	if (MotionChanged) LandCloudMotion = Motion;
+	if (TintChanged) LandSkyTint = Tint;
 	for (auto It=LandSkyInstances.CreateIterator(); It; ++It)
 	{
 		auto* Mid=It->Get();
 		if (!Mid) { It.RemoveCurrent(); continue; }
-		if (MaskChanged)
-		{
-			Mid->SetTextureParameterValue(TEXT("CloudMask"),Mask);
-			Mid->SetVectorParameterValue(TEXT("CloudMotion"),Motion);
-		}
-		Mid->SetVectorParameterValue(TEXT("LandSkyTint"),Tint);
+		if (MaskChanged) Mid->SetTextureParameterValue(TEXT("CloudMask"),Mask);
+		if (MotionChanged) Mid->SetVectorParameterValue(TEXT("CloudMotion"),Motion);
+		if (TintChanged) Mid->SetVectorParameterValue(TEXT("LandSkyTint"),Tint);
 	}
 }
 
@@ -4193,6 +4242,136 @@ void UACEDatSubsystem::UpdateWorldObjectLighting(UMaterialInstanceDynamic* Mater
 	Material->SetVectorParameterValue(TEXT("WorldAmbientTint"), bInterior ? FLinearColor::White : WorldAmbientTint);
 	WorldLightingInstances.Add(Material, !bInterior ? EObjectLightEnvironment::Outdoors :
 		bEnclosed ? EObjectLightEnvironment::Dungeon : EObjectLightEnvironment::Interior);
+}
+
+UMaterialInterface* UACEDatSubsystem::EnsureFarSceneryMaterialBase(uint8 Kind)
+{
+	auto& Base = FarSceneryMaterialBases.FindOrAdd(Kind);
+	if (Base) return Base;
+	const FString Name = FString::Printf(TEXT("M_ACEFarScenery_v1_%u"), Kind);
+#if WITH_EDITORONLY_DATA
+	if (auto* Existing = FindObject<UMaterial>(GetTransientPackage(), *Name))
+	{
+		Base = Existing;
+		return Base;
+	}
+	UMaterialInterface* Source = Kind == 2 ? EnsureAceBuildingShellMaterialBase()
+		: Kind == 1 ? EnsureAceOutdoorLitMaskedMaterialBase() : EnsureAceOutdoorLitMaterialBase();
+	if (Kind >= 3)
+		Source = CreateAceOverlayMaterial(Kind == 4 ? TEXT("M_ACEEnvCellMasked_v3") : TEXT("M_ACEEnvCell_v3"),
+			Kind == 4 ? EACEAceMaterialKind::Masked : EACEAceMaterialKind::Opaque,
+			false, false, false, false, false, true, false, false, true);
+	if (!Source) return nullptr;
+	// Duplicate the proven graph: keep its lighting, world fog, UVs, doorway holes,
+	// leaf alpha threshold and depth writing. Only far components use this parent.
+	auto* Mat = DuplicateObject<UMaterial>(Source->GetMaterial(), GetTransientPackage(), *Name);
+	if (!Mat) return nullptr;
+	auto* EditorOnly = Mat->GetEditorOnlyData();
+	FExpressionInput OriginalMask = EditorOnly->OpacityMask;
+	if (!OriginalMask.Expression)
+	{
+		auto* Solid = NewObject<UMaterialExpressionConstant>(Mat);
+		Solid->R = 1.f;
+		EditorOnly->ExpressionCollection.AddExpression(Solid);
+		OriginalMask.Expression = Solid;
+	}
+	auto* Cutoff = NewObject<UMaterialExpressionConstant>(Mat);
+	Cutoff->R = Source->GetMaterial()->OpacityMaskClipValue;
+	auto* FadeStart = NewObject<UMaterialExpressionConstant>(Mat);
+	FadeStart->R = PersonalFarScenery::FadeStartFraction;
+	auto* Position = NewObject<UMaterialExpressionWorldPosition>(Mat);
+	Position->WorldPositionShaderOffset = WPT_ExcludeAllShaderOffsets;
+	auto* Camera = NewObject<UMaterialExpressionCameraPositionWS>(Mat);
+	auto* Limits = NewObject<UMaterialExpressionCollectionParameter>(Mat);
+	Limits->Collection = RuntimeFarSceneryCollection();
+	Limits->ParameterName = TEXT("FarSceneryLimits");
+	Limits->ParameterId = Limits->Collection->GetParameterId(Limits->ParameterName);
+	auto* SizeEnd = NewObject<UMaterialExpressionScalarParameter>(Mat);
+	SizeEnd->ParameterName = TEXT("FarScenerySizeEnd");
+	SizeEnd->DefaultValue = 0.f;
+	SizeEnd->bUseCustomPrimitiveData = true;
+	SizeEnd->PrimitiveDataIndex = PersonalFarScenery::SizeFadePrimitiveDataIndex;
+	auto* Fade = NewObject<UMaterialExpressionCustom>(Mat);
+	Fade->Description = TEXT("FarSceneryCoverage");
+	Fade->OutputType = CMOT_Float1;
+	Fade->Code = TEXT(
+		// Clip the original leaf/door mask FIRST. Coverage must never resurrect a
+		// filtered alpha fringe, the cause of earlier mobile foliage speckles.
+		"clip(A - Cutoff);\n"
+		"if (Limits.y < 0.5) return 1.0;\n"
+		"float3 delta = W - C;\n"
+		"float radiusFade = Limits.x > 0.0 ? 1.0 - smoothstep(Start * Limits.x, Limits.x, length(W.xy - Limits.zw)) : 1.0;\n"
+		"float sizeFade = S > 0.0 ? 1.0 - smoothstep(Start * S, S, length(delta)) : 1.0;\n"
+		"float coverage = min(radiusFade, sizeFade);\n"
+		"if (coverage <= 0.001) return 0.0;\n"
+		"if (coverage >= 0.999) return 1.0;\n"
+		// Mobile's full/masked prepass clips depth without sample coverage and
+		// bypasses the base-pass alpha-to-coverage blend state. Use the same
+		// binary coverage in both passes there; positive fractional masks alone
+		// would write every depth sample and remain opaque until the endpoint.
+		"#if (FORWARD_SHADING && SUPPORTS_PIXEL_COVERAGE) || (SHADING_PATH_MOBILE && !EARLY_Z_PASS_ONLY_MATERIAL_MASKING)\n"
+		"if (ResolvedView.NumSceneColorMSAASamples > 1) return coverage;\n"
+		"#endif\n"
+		// Non-MSAA uses UE's temporal blue noise, only within the narrow fade band.
+		// MSAA instead resolves sample coverage without screen-space stippling.
+		"return coverage > ViewScalarBlueNoise(uint2(Parameters.SvPosition.xy), View.StateFrameIndex) ? 1.0 : 0.0;\n");
+	auto AddInput = [Fade](const TCHAR* Name, UMaterialExpression* Expression)
+	{
+		auto& Input = Fade->Inputs.AddDefaulted_GetRef();
+		Input.InputName = Name;
+		Input.Input.Expression = Expression;
+	};
+	Fade->Inputs.Reset();
+	AddInput(TEXT("A"), OriginalMask.Expression);
+	Fade->Inputs.Last().Input = OriginalMask;
+	AddInput(TEXT("Cutoff"), Cutoff);
+	AddInput(TEXT("Start"), FadeStart);
+	AddInput(TEXT("W"), Position);
+	AddInput(TEXT("C"), Camera);
+	AddInput(TEXT("Limits"), Limits);
+	AddInput(TEXT("S"), SizeEnd);
+	UMaterialExpression* AddedExpressions[] = { Cutoff, FadeStart, Position, Camera, Limits, SizeEnd, Fade };
+	for (UMaterialExpression* Expression : AddedExpressions)
+		EditorOnly->ExpressionCollection.AddExpression(Expression);
+	EditorOnly->OpacityMask.Expression = Fade;
+	EditorOnly->OpacityMask.OutputIndex = 0;
+	Mat->BlendMode = BLEND_Masked;
+	Mat->OpacityMaskClipValue = 0.001f;
+	Mat->bUseAlphaToCoverage = true;
+	Mat->DitherOpacityMask = false;
+	Mat->PostEditChange();
+	Base = Mat;
+#else
+	Base = LoadCookedAceMaterial(*Name);
+#endif
+	return Base;
+}
+
+UMaterialInterface* UACEDatSubsystem::GetFarSceneryMaterial(UMaterialInterface* Source, bool bPreserveLighting)
+{
+	if (!Source) return nullptr;
+	auto& Cache = bPreserveLighting ? FarSceneryFixedMaterials : FarSceneryMaterials;
+	if (const auto* Cached = Cache.Find(Source))
+		if (auto* Existing = Cached->Get()) return Existing;
+	UMaterial* Original = Source->GetMaterial();
+	uint8 Kind;
+	if (Original == EnsureAceBuildingShellMaterialBase()->GetMaterial()) Kind = 2;
+	else if (Original == EnsureAceOutdoorLitMaskedMaterialBase()->GetMaterial()) Kind = 1;
+	else if (Original == EnsureAceOutdoorLitMaterialBase()->GetMaterial()) Kind = 0;
+	else if (Original->GetName() == TEXT("M_ACEEnvCell_v3")) Kind = 3;
+	else if (Original->GetName() == TEXT("M_ACEEnvCellMasked_v3")) Kind = 4;
+	else return Source; // Authored translucent/additive/portal surfaces retain their own blend.
+	UMaterialInterface* Base = EnsureFarSceneryMaterialBase(Kind);
+	if (!Base) return Source;
+	auto* Material = UMaterialInstanceDynamic::Create(Base, this);
+	Material->CopyMaterialUniformParameters(Source);
+	Cache.Add(Source, Material);
+	if (Kind < 3 && !bPreserveLighting)
+	{
+		ApplyDistanceFogToMid(Material);
+		WorldLightingInstances.Add(Material, EObjectLightEnvironment::Outdoors);
+	}
+	return Material;
 }
 
 UMaterialInterface* UACEDatSubsystem::GetWorldObjectMaterial(UMaterialInterface* Source)

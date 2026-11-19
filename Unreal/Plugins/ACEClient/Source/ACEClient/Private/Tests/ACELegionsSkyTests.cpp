@@ -216,16 +216,131 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 	};
 	Owner->ImportedRevision = ACELegionsSky::Revision();
 	TMap<uint32,FVector> OrbCenters;
+	TMap<uint32,FVector> OrbBodyCenters;
 	for (const auto& Layer : Data.Layers)
 		if (Layer.Setup == 0x04000023 || Layer.Setup == 0x040000b6)
+		{
 			OrbCenters.Add(Layer.Setup,Layer.Center);
+			FBox BodyBounds(ForceInit);
+			for (const auto& Section : Layer.Sections)
+				if (!Section.Additive)
+					for (const int32 Index : Section.Indices) BodyBounds+=Layer.Vertices[Index];
+			OrbBodyCenters.Add(Layer.Setup,BodyBounds.IsValid ? BodyBounds.GetCenter() : Layer.Center);
+		}
 	const auto* Belt=Data.Layers.FindByPredicate([](const auto& L){return L.Setup==0x04000729;});
 	if (!TestTrue(TEXT("Legions asteroid belt texture"),Belt && Belt->Sections[0].Texture==0x40000b81)) return false;
 	const FVector BeltCenter=Belt->Center;
+	const auto AuthoredFogKeys = Data.Keys;
 	auto Imported = MakeShared<ACELegionsSky::FBackdrop>(MoveTemp(Data));
 	Owner->PendingSky = MakeFulfilledPromise<TSharedPtr<ACELegionsSky::FBackdrop>>(Imported).GetFuture();
 	if (!TestTrue(TEXT("Build AC2 sky and haze outdoors"), Owner->UpdateImportedSky(0, true)))
 		return false;
+	auto RenderedCloudOpacity = [](AActor* Actor)
+	{
+		float Opacity = 0.f;
+		TInlineComponentArray<UProceduralMeshComponent*> Parts(Actor);
+		for (const auto* Part : Parts)
+			if (Part->IsVisible())
+			{
+				bool CloudSheet=false;
+				for (int32 Section=0; Section<Part->GetNumMaterials(); ++Section)
+					if (auto* Mid = Cast<UMaterialInstanceDynamic>(Part->GetMaterial(Section)))
+					{
+						FLinearColor Stages;
+						CloudSheet|=Mid->GetVectorParameterValue(FMaterialParameterInfo(TEXT("StageOps")),Stages)&&Stages.A>.5f;
+					}
+				if (!CloudSheet) continue;
+				for (int32 Section=0; Section<Part->GetNumMaterials(); ++Section)
+					if (auto* Mid = Cast<UMaterialInstanceDynamic>(Part->GetMaterial(Section)))
+				{
+					FLinearColor Stages;
+					if (Mid->GetVectorParameterValue(FMaterialParameterInfo(TEXT("StageOps")),Stages))
+					{
+						const float MaterialAlpha=Mid->K2_GetVectorParameterValue(TEXT("MaterialFactor")).A;
+						Opacity = FMath::Max(Opacity,FMath::Clamp(Mid->K2_GetVectorParameterValue(TEXT("SkyTint")).A,0.f,1.f)*FMath::Clamp(MaterialAlpha*(Stages.A>.5f?2.f:1.f),0.f,1.f));
+					}
+				}
+			}
+		return Opacity;
+	};
+	{
+		// Keep the imported art but control the sheet lifetime and authored alpha.
+		// AC1 may still schedule clouds while the selected AC2 sheet is hidden.
+		ACELegionsSky::FBackdrop Fixture;
+		if (!ACELegionsSky::Load(Cache,Fixture,Error)) return false;
+		auto* Cloud = Fixture.Layers.FindByPredicate([](const auto& L){ return L.Setup == 0x04000089; });
+		if (!TestNotNull(TEXT("Imported cloud sheet exists for visibility regression"),Cloud)) return false;
+		const uint32 CloudName = Cloud->Name;
+		Cloud->Begin = .2f; Cloud->End = .8f;
+		for (auto& Section : Cloud->Sections) Section.Tint.A = 1.f;
+		const auto BaseKey = Fixture.Keys[0];
+		Fixture.Keys.Reset();
+		for (const auto TimeAlpha : {FVector2D(0,0),FVector2D(.25,0),FVector2D(.5,1),FVector2D(.75,1),FVector2D(1,1)})
+		{
+			auto Key = BaseKey; Key.Time = TimeAlpha.X;
+			Key.Objects.FindOrAdd(CloudName) = {0,0,FLinearColor(1,1,1,TimeAlpha.Y)};
+			Fixture.Keys.Add(MoveTemp(Key));
+		}
+		auto TransparentMaterialFixture = Fixture;
+		for (auto& Layer : TransparentMaterialFixture.Layers)
+			if (Layer.Setup == 0x04000089)
+				for (auto& Section : Layer.Sections) Section.Tint.A = 0.f;
+		auto* ProbeActor = World->SpawnActor<AActor>(); ProbeActor->SetActorHiddenInGame(true);
+		FACELegionsSkyRenderer Probe;
+		ON_SCOPE_EXIT { Probe.Clear(); ProbeActor->Destroy(); };
+		if (!TestTrue(TEXT("Build cloud visibility fixture from native artwork"),Probe.Build(*ProbeActor,MoveTemp(Fixture)))) return false;
+		FACELegionsSkyFrame Frame; Frame.CloudOpacity = 1.f;
+		Probe.Update(.5f,Frame);
+		TestEqual(TEXT("Opaque visible cloud sheet supplies full shadow opacity"),Probe.CloudShadowOpacity,1.f);
+		TestEqual(TEXT("Shadow opacity matches the material alpha actually drawn"),Probe.CloudShadowOpacity,RenderedCloudOpacity(ProbeActor));
+		Probe.Update(.9f,Frame);
+		TestEqual(TEXT("Clouds outside their native lifetime leave no ground shadow despite AC1 cloud cover"),Probe.CloudShadowOpacity,0.f);
+		TestEqual(TEXT("The out-of-lifetime cloud sheet really is hidden"),RenderedCloudOpacity(ProbeActor),0.f);
+		Probe.Update(.25f,Frame);
+		TestEqual(TEXT("Authored transparent cloud keys leave no ground shadow despite AC1 cloud cover"),Probe.CloudShadowOpacity,0.f);
+		Probe.Update(.5f,Frame);
+		Frame.CloudOpacity = .25f; Probe.Update(.5f,Frame);
+		TestEqual(TEXT("Fading cloud artwork proportionally fades its ground shadow"),Probe.CloudShadowOpacity,.25f);
+		TestEqual(TEXT("Fading shadow opacity matches the drawn cloud material"),Probe.CloudShadowOpacity,RenderedCloudOpacity(ProbeActor));
+		Frame.CloudOpacity = 0.f; Probe.Update(.5f,Frame);
+		TestEqual(TEXT("Clearing weather removes the previous cloud shadow"),Probe.CloudShadowOpacity,0.f);
+		if (!TestTrue(TEXT("Build cloud sheet with transparent native materials"),Probe.Build(*ProbeActor,MoveTemp(TransparentMaterialFixture)))) return false;
+		Frame.CloudOpacity = 1.f; Probe.Update(.5f,Frame);
+		TestEqual(TEXT("Transparent material sections cannot cast ground shadows even with opaque cloud keys"),Probe.CloudShadowOpacity,0.f);
+		TestEqual(TEXT("Transparent native cloud materials contribute no drawn alpha"),RenderedCloudOpacity(ProbeActor),0.f);
+	}
+	// CDayDesc::GetWorldFog returns the fog record, independently of the
+	// dome/ramp/cloud object tints. In particular the transparent grey noon
+	// overlay must not borrow a pink cloud or blue dome hue for world geometry.
+	FACELegionsSkyFrame FogFrame;
+	FogFrame.bClearForecast = true;
+	FogFrame.CloudOpacity = 1.f;
+	for (const auto& Key : AuthoredFogKeys)
+	{
+		const auto Haze = Owner->ImportedSky->Update(Key.Time,FogFrame);
+		auto Expected = FLinearColor::FromSRGBColor(Key.Haze.ToFColor(false));
+		Expected.A = 1.f;
+		TestTrue(TEXT("World fog retains the authored AC2 RGB at every clear-day key"),
+			Owner->ImportedSky->FogColor.Equals(Expected,.001f));
+		TestEqual(TEXT("Sky overlay retains its independently authored opacity"),Haze.A,Key.Haze.A);
+	}
+	FogFrame.Overcast = FogFrame.Rain = 1.f;
+	for (const float Phase : {0.f,.1f,.5f,.9f})
+	{
+		FogFrame.WeatherFogColor = FLinearColor::Red;
+		const auto Haze = Owner->ImportedSky->Update(Phase,FogFrame);
+		const auto Authored = Owner->ImportedSky->FogColor;
+		const auto AuthoredSky = Owner->ImportedSky->SkyFogColor;
+		FogFrame.WeatherFogColor = FLinearColor::Green;
+		Owner->ImportedSky->Update(Phase,FogFrame);
+		TestTrue(TEXT("AC1 weather tint cannot recolor imported world fog or its sky overlay"),
+			Owner->ImportedSky->FogColor.Equals(Authored,.001f) &&
+			Owner->ImportedSky->SkyFogColor.Equals(AuthoredSky,.001f));
+		auto ExpectedStorm = FLinearColor::FromSRGBColor(Haze.ToFColor(false));
+		ExpectedStorm.A = 1.f;
+		TestTrue(TEXT("Storm clouds have their own light; fog remains the authored storm result"),
+			Authored.Equals(ExpectedStorm,.001f));
+	}
 	Owner->UpdateSky(0,0,true);
 	auto* Camera = NewObject<USceneCaptureComponent2D>(Owner);
 	auto* Target = NewObject<UTextureRenderTarget2D>(Owner);
@@ -430,8 +545,10 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 		if (!TestNotNull(TEXT("Celestial artwork has its own drawn mesh"),Orb)) return false;
 		const auto* Native=StockSlot(Retail,bSun ? 0x01001348u : 0x01001F6Au);
 		if (!Native || !TestNotNull(TEXT("Native AC1 celestial card"),Native->Mesh)) return false;
-		const FVector StockBearing=(Native->Mesh->Bounds.Origin-Retail->GetActorLocation()).GetSafeNormal();
-		TestTrue(TEXT("Artwork has AC1 azimuth and elevation"),StockBearing.Equals(Orb->GetComponentQuat().RotateVector(Center).GetSafeNormal(),.001));
+		const FVector StockBearing=Native->Mesh->GetComponentQuat().RotateVector(Native->LocalBodyDirection).GetSafeNormal();
+		const FVector BodyCenter=OrbBodyCenters.FindChecked(bSun ? 0x04000023u : 0x040000b6u);
+		TestTrue(TEXT("Artwork has AC1 azimuth and elevation"),StockBearing.Equals(
+			(Orb->GetComponentTransform().TransformPosition(BodyCenter)-Owner->GetActorLocation()).GetSafeNormal(),.001));
 		const FRotator Direction=StockBearing.Rotation();
 		AddInfo(FString::Printf(TEXT("Dereth %.3f %s pitch %.1f yaw %.1f visible %d"),Time,
 			bSun ? TEXT("sun") : TEXT("moon"),Direction.Pitch,Direction.Yaw,Orb->IsVisible()));
@@ -470,6 +587,211 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 		if (!bSun)
 			TestTrue(TEXT("The AC1 moon rises against the dark blue Legions night"),
 				Owner->ImportedSky->FogColor.B > Owner->ImportedSky->FogColor.R && Owner->ImportedSky->FogColor.GetLuminance()<.02f);
+	}
+	// Bearing alone cannot detect a flipped moon or a correctly centered but
+	// oversized disc. Measure the body separately from its larger glow section,
+	// then capture the actual artwork and both atmospheric occluders.
+	{
+		auto AngularBounds = [&](UProceduralMeshComponent* Mesh,int32 Section,const TCHAR* Label)
+		{
+			FBox2D Bounds(ForceInit);
+			const auto* Geometry=Mesh ? Mesh->GetProcMeshSection(Section) : nullptr;
+			if (!Geometry) return Bounds;
+			const auto& Transform=Mesh->GetComponentTransform();
+			const FVector Origin=Mesh->GetOwner()->GetActorLocation();
+			// Imported sections share one vertex buffer; only referenced indices
+			// belong to this section. The glow must not inflate the body's size.
+			FBox SectionBounds(ForceInit);
+			for (const uint32 Index : Geometry->ProcIndexBuffer) SectionBounds+=Geometry->ProcVertexBuffer[Index].Position;
+			const FVector Center=Transform.TransformPosition(SectionBounds.GetCenter())-Origin;
+			const FQuat View=Center.Rotation().Quaternion();
+			for (const uint32 Index : Geometry->ProcIndexBuffer)
+			{
+				const auto& Vertex=Geometry->ProcVertexBuffer[Index];
+				const FVector P=View.UnrotateVector(Transform.TransformPosition(Vertex.Position)-Origin);
+				Bounds+=FVector2D(FMath::RadiansToDegrees(FMath::Atan2(P.Y,P.X)),FMath::RadiansToDegrees(FMath::Atan2(P.Z,P.X)));
+			}
+			FVector U=FVector::ZeroVector,V=FVector::ZeroVector;
+			for (int32 Index=0; Index+2<Geometry->ProcIndexBuffer.Num(); Index+=3)
+			{
+				const auto& A=Geometry->ProcVertexBuffer[Geometry->ProcIndexBuffer[Index]];
+				const auto& B=Geometry->ProcVertexBuffer[Geometry->ProcIndexBuffer[Index+1]];
+				const auto& C=Geometry->ProcVertexBuffer[Geometry->ProcIndexBuffer[Index+2]];
+				const FVector2D AB=B.UV0-A.UV0,AC=C.UV0-A.UV0;
+				const double Det=AB.X*AC.Y-AB.Y*AC.X;
+				if (FMath::Abs(Det)<1.e-8) continue;
+				U=View.UnrotateVector(Transform.TransformVector(((B.Position-A.Position)*AC.Y-(C.Position-A.Position)*AB.Y)/Det)).GetSafeNormal();
+				V=View.UnrotateVector(Transform.TransformVector(((C.Position-A.Position)*AB.X-(B.Position-A.Position)*AC.X)/Det)).GetSafeNormal();
+				break;
+			}
+			// The retail card rolls in its orbit. A world-up screen box grows as
+			// a square rotates, although the disc itself has not changed size.
+			// Compare the body spans along its projected texture axes instead;
+			// this also avoids equating a square corner with the moon's radius.
+			const FVector Right=FVector(0.,U.Y,U.Z).GetSafeNormal();
+			const FVector Up=FVector::CrossProduct(FVector::ForwardVector,Right);
+			FBox2D TextureBounds(ForceInit);
+			if (!Right.IsNearlyZero())
+				for (const uint32 Index : Geometry->ProcIndexBuffer)
+				{
+					const FVector P=View.UnrotateVector(Transform.TransformPosition(Geometry->ProcVertexBuffer[Index].Position)-Origin);
+					TextureBounds+=FVector2D(FMath::RadiansToDegrees(FMath::Atan2(FVector::DotProduct(P,Right),P.X)),
+						FMath::RadiansToDegrees(FMath::Atan2(FVector::DotProduct(P,Up),P.X)));
+				}
+			AddInfo(FString::Printf(TEXT("Moon geometry %s section %d: center %s screen width %.4f height %.4f texture width %.4f height %.4f view-U %s view-V %s priority %d"),
+				Label,Section,*Center.ToString(),Bounds.GetSize().X,Bounds.GetSize().Y,TextureBounds.GetSize().X,TextureBounds.GetSize().Y,
+				*U.ToString(),*V.ToString(),Mesh->TranslucencySortPriority));
+			return TextureBounds;
+		};
+		Owner->UpdateSky(.04f,0,true);
+		Retail->UpdateSky(.04f,0,false);
+		TInlineComponentArray<UProceduralMeshComponent*> Parts(Owner);
+		auto* MoonPtr=Parts.FindByPredicate([&](auto* Part)
+		{
+			const auto* Section=Part->GetProcMeshSection(0);
+			return Section && Section->SectionLocalBox.GetCenter().Equals(OrbCenters.FindChecked(0x040000b6u),2.);
+		});
+		if (!TestNotNull(TEXT("Imported primary moon for orientation and occlusion checks"),MoonPtr)) return false;
+		auto* Moon=*MoonPtr;
+		const auto* Primary=StockSlot(Retail,0x01001F6Au);
+		const auto* Secondary=StockSlot(Owner,0x01001F67u);
+		if (!Primary || !Secondary || !TestNotNull(TEXT("Retail primary moon for angular size reference"),Primary->Mesh) ||
+			!TestNotNull(TEXT("Retained second moon for atmospheric occlusion"),Secondary->Mesh)) return false;
+		const FBox2D ImportedSize=AngularBounds(Moon,0,TEXT("imported primary body"));
+		AngularBounds(Moon,1,TEXT("imported primary glow"));
+		const FBox2D RetailSize=AngularBounds(Primary->Mesh,0,TEXT("retail primary"));
+		AngularBounds(Secondary->Mesh,0,TEXT("retail secondary"));
+		TestTrue(TEXT("Imported primary moon body matches the corresponding retail angular diameter"),
+			ImportedSize.bIsValid && RetailSize.bIsValid &&
+			FMath::IsNearlyEqual(ImportedSize.GetSize().GetMax(),RetailSize.GetSize().GetMax(),.25));
+
+		const auto PreviousMode=Camera->PrimitiveRenderMode;
+		const auto PreviousRotation=Camera->GetComponentRotation();
+		Camera->PrimitiveRenderMode=ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
+		ON_SCOPE_EXIT
+		{
+			Camera->ShowOnlyComponents.Reset();
+			Camera->HiddenComponents.Reset();
+			Camera->PrimitiveRenderMode=PreviousMode;
+			Camera->SetWorldRotation(PreviousRotation);
+			Owner->UpdateSky(.04f,0,true);
+		};
+		Camera->ShowOnlyComponent(Moon);
+		Camera->SetWorldRotation((Moon->GetComponentTransform().TransformPosition(OrbBodyCenters.FindChecked(0x040000b6u))-Viewer).Rotation());
+		const bool GlowVisible=Moon->GetProcMeshSection(1) && Moon->GetProcMeshSection(1)->bSectionVisible;
+		Moon->SetMeshSectionVisible(1,false);
+		TArray<FColor> Disc,Empty;
+		if (!ReadView(Disc)) return false;
+		Moon->SetVisibility(false);
+		if (!ReadView(Empty)) return false;
+		Moon->SetVisibility(true);
+		Moon->SetMeshSectionVisible(1,GlowVisible);
+		double Light=0.,HorizontalMoment=0.;
+		int32 LitPixels=0;
+		for (int32 I=0; I<Disc.Num(); ++I)
+		{
+			const int32 Weight=FMath::Max(0,int32(Disc[I].R)+Disc[I].G+Disc[I].B-Empty[I].R-Empty[I].G-Empty[I].B);
+			Light+=Weight;
+			HorizontalMoment+=(I%Target->SizeX-(Target->SizeX-1)*.5)*Weight;
+			LitPixels+=Weight>12;
+		}
+		const double CrescentOffset=Light>0. ? HorizontalMoment/Light : 0.;
+		AddInfo(FString::Printf(TEXT("Isolated primary moon: %d lit pixels, bright-side centroid %.3f pixels right of center"),LitPixels,CrescentOffset));
+		TestTrue(TEXT("Primary moon body is visible without its glow"),LitPixels>100);
+		TestTrue(TEXT("Imported moon keeps its native bright crescent on the right"),CrescentOffset>.5);
+		SaveView(Disc,TEXT("moon-primary-isolated.png"));
+
+		auto* CloudPtr=Parts.FindByPredicate([](auto* Part)
+		{
+			for (int32 Section=0; Section<Part->GetNumMaterials(); ++Section)
+				if (auto* Mid=Cast<UMaterialInstanceDynamic>(Part->GetMaterial(Section)))
+				{
+					FLinearColor Stages;
+					if (Mid->GetVectorParameterValue(FMaterialParameterInfo(TEXT("StageOps")),Stages) && Stages.A>.5f) return true;
+				}
+			return false;
+		});
+		if (!TestNotNull(TEXT("Imported cloud sheet for moon occlusion"),CloudPtr) ||
+			!TestNotNull(TEXT("Imported sky fog overlay for moon occlusion"),Owner->ColorFillMesh.Get()) ||
+			!TestNotNull(TEXT("Imported sky fog material for moon occlusion"),Owner->ColorFillMid.Get())) return false;
+		auto* Cloud=*CloudPtr;
+		struct FCloudMaterialSnapshot
+		{
+			UMaterialInstanceDynamic* Material;
+			FLinearColor Factor,Tint,Stages;
+		};
+		TArray<FCloudMaterialSnapshot> CloudMaterials;
+		for (int32 Section=0; Section<Cloud->GetNumMaterials(); ++Section)
+			if (auto* Mid=Cast<UMaterialInstanceDynamic>(Cloud->GetMaterial(Section)))
+				CloudMaterials.Add({Mid,Mid->K2_GetVectorParameterValue(TEXT("MaterialFactor")),
+					Mid->K2_GetVectorParameterValue(TEXT("SkyTint")),Mid->K2_GetVectorParameterValue(TEXT("StageOps"))});
+		const float FogOpacity=Owner->ColorFillMid->K2_GetScalarParameterValue(TEXT("OpacityMul"));
+		const bool FogVisible=Owner->ColorFillMesh->IsVisible(),CloudVisible=Cloud->IsVisible();
+		ON_SCOPE_EXIT
+		{
+			for (const auto& Saved : CloudMaterials)
+			{
+				Saved.Material->SetVectorParameterValue(TEXT("MaterialFactor"),Saved.Factor);
+				Saved.Material->SetVectorParameterValue(TEXT("SkyTint"),Saved.Tint);
+				Saved.Material->SetVectorParameterValue(TEXT("StageOps"),Saved.Stages);
+			}
+			Owner->ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"),FogOpacity);
+			Owner->ColorFillMesh->SetVisibility(FogVisible);
+			Cloud->SetVisibility(CloudVisible);
+		};
+		for (int32 BodyIndex=0; BodyIndex<2; ++BodyIndex)
+		{
+			auto* Body=BodyIndex==0 ? Moon : Secondary->Mesh;
+			bool FoundVisible=false;
+			for (const float Phase : {.04f,.1f,.17f,.215f,.93f,.999f})
+			{
+				Owner->UpdateSky(Phase,0,true);
+				if (Body->IsVisible() && (Body->Bounds.Origin-Viewer).GetSafeNormal().Z>.1)
+				{
+					FoundVisible=true;
+					break;
+				}
+			}
+			if (!TestTrue(TEXT("Each moon has a visible above-horizon phase for occlusion"),FoundVisible)) return false;
+			Camera->SetWorldRotation((Body->Bounds.Origin-Viewer).Rotation());
+			Camera->ShowOnlyComponents.Reset();
+			Camera->ShowOnlyComponent(Body);
+			TArray<FColor> Alone;
+			if (!ReadView(Alone)) return false;
+			int32 BodyPixels=0;
+			for (const FColor& Pixel : Alone) BodyPixels+=FMath::Max3(Pixel.R,Pixel.G,Pixel.B)>8;
+			TestTrue(TEXT("Moon is visible before adding its atmospheric occluder"),BodyPixels>100);
+			for (int32 Layer=0; Layer<2; ++Layer)
+			{
+				auto* Occluder=Layer==0 ? Owner->ColorFillMesh.Get() : Cloud;
+				Occluder->SetVisibility(true);
+				Owner->ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"),1.f);
+				for (const auto& Saved : CloudMaterials)
+				{
+					auto Factor=Saved.Factor, Tint=Saved.Tint,Stages=Saved.Stages;
+					Factor.A=Tint.A=1.f;
+					Stages.G=Stages.A=0.f; // opaque coverage, keeping the real cloud geometry/material
+					Saved.Material->SetVectorParameterValue(TEXT("MaterialFactor"),Factor);
+					Saved.Material->SetVectorParameterValue(TEXT("SkyTint"),Tint);
+					Saved.Material->SetVectorParameterValue(TEXT("StageOps"),Stages);
+				}
+				Camera->ShowOnlyComponents.Reset();
+				Camera->ShowOnlyComponent(Body);
+				Camera->ShowOnlyComponent(Occluder);
+				TArray<FColor> With,Without;
+				if (!ReadView(With)) return false;
+				Body->SetVisibility(false);
+				if (!ReadView(Without)) return false;
+				Body->SetVisibility(true);
+				int32 Changed=0;
+				for (int32 I=0; I<With.Num(); ++I)
+					Changed+=FMath::Max3(FMath::Abs(int32(With[I].R)-Without[I].R),FMath::Abs(int32(With[I].G)-Without[I].G),
+						FMath::Abs(int32(With[I].B)-Without[I].B))>1;
+				AddInfo(FString::Printf(TEXT("Moon %d behind opaque %s: %d changed pixels"),BodyIndex+1,Layer==0 ? TEXT("sky fog") : TEXT("clouds"),Changed));
+				TestEqual(Layer==0 ? TEXT("Both moons disappear behind opaque sky fog") : TEXT("Both moons disappear behind opaque clouds"),Changed,0);
+				SaveView(With,*FString::Printf(TEXT("moon-%d-opaque-%s.png"),BodyIndex+1,Layer==0 ? TEXT("fog") : TEXT("cloud")));
+			}
+		}
 	}
 	// Same coast, camera and server phase. Switch the forecast without advancing
 	// the GPU clock, then capture both renderers during the same rain event.
@@ -614,8 +936,12 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 		constexpr int32 ClearPreviewDay = 40557;
 		struct FSummitView { const TCHAR* Name; int32 Day; float Time; bool Imported; };
 		for (const FSummitView& State : {FSummitView{TEXT("clear"),ClearPreviewDay,.5f,true},
+			{TEXT("clear-dawn"),ClearPreviewDay,.22f,true}, {TEXT("clear-dusk"),ClearPreviewDay,.90f,true},
+			{TEXT("clear-night"),ClearPreviewDay,.04f,true},
 			{TEXT("rain-day"),Storm,.5f,true}, {TEXT("rain-night"),Storm,.1f,true},
-			{TEXT("ac1-dawn"),39755,.18f,false}})
+			{TEXT("ac1-rain-day"),Storm,.5f,false}, {TEXT("ac1-rain-night"),Storm,.1f,false},
+			{TEXT("ac1-dawn"),39755,.18f,false}, {TEXT("ac1-noon"),ClearPreviewDay,.5f,false},
+			{TEXT("ac1-dusk"),ClearPreviewDay,.90f,false}, {TEXT("ac1-night"),ClearPreviewDay,.04f,false}})
 		{
 			SetClock(State.Day,State.Time);
 			Owner->ClearSky(true);
@@ -627,9 +953,21 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 				Owner->UpdateSky(State.Time,0,State.Imported);
 				TestTrue(TEXT("Summit fog reaches full opacity before the terrain ends"),
 					Owner->DatSubsystem->GetWorldFogEndCm() <= Owner->FogClampLandblocks * 19200.f);
+				if (Extended)
+				{
+					TestTrue(TEXT("Fog is limited by actual built coverage from the summit camera"),
+						Owner->DatSubsystem->GetWorldFogEndCm() <= Far->FogCoverageDistanceCm(Eye));
+					if (State.Imported)
+						TestTrue(TEXT("Imported palette retains at least its own authored visibility inside available coverage"),
+							Owner->DatSubsystem->GetWorldFogEndCm() + 1.f >= FMath::Min(
+								Owner->ImportedSky->FogMax * 100.f,Far->FogCoverageDistanceCm(Eye)));
+				}
 				if (State.Day == Storm && Extended && State.Time == .5f)
 					TestEqual(TEXT("Legions rain keeps the AC1 rainy-day terrain range"),
 						Owner->DatSubsystem->GetWorldFogEndCm(),150000.f);
+				if (State.Imported && State.Day == ClearPreviewDay && Extended && State.Time == .9f)
+					TestEqual(TEXT("Clear dusk retains extended visibility instead of an orange short-range wall"),
+						Owner->DatSubsystem->GetWorldFogEndCm(),600000.f);
 				TArray<FColor> View;
 				if (!ReadView(View)) return false;
 				SaveView(View,*FString::Printf(TEXT("summit-%s-%s.png"),State.Name,Extended ? TEXT("far") : TEXT("near")));
@@ -647,7 +985,7 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 					AddInfo(FString::Printf(TEXT("Summit %s edge: %d lower-view pixels differ by six levels"),State.Name,EdgePixels));
 					TestTrue(TEXT("The exhausted terrain range blends into the horizon"),EdgePixels < View.Num()/100);
 				}
-				else if (State.Imported && State.Day == ClearPreviewDay)
+				else if (State.Imported && State.Day == ClearPreviewDay && State.Time == .5f)
 				{
 					TestEqual(TEXT("Summit preview selected the reported weather"), Owner->ActiveGroup.DayName, FString(TEXT("Clear")));
 					// Sample the unobstructed upper sky, above the fogged horizon.
@@ -665,6 +1003,9 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 						Far->DetailMaterial->K2_GetVectorParameterValue(TEXT("LandSkyTint")) == Far->ShellMaterial->K2_GetVectorParameterValue(TEXT("LandSkyTint")) &&
 						Far->DetailMaterial->K2_GetScalarParameterValue(TEXT("EmissiveStrength")) == Far->ShellMaterial->K2_GetScalarParameterValue(TEXT("EmissiveStrength")));
 					const FLinearColor Motion = Far->ShellMaterial->K2_GetVectorParameterValue(TEXT("CloudMotion"));
+					TestTrue(TEXT("Far terrain shadow strength matches the cloud artwork"),FMath::IsNearlyEqual(Motion.A,RenderedCloudOpacity(Owner),1.f/255.f));
+					TestEqual(TEXT("Newly streamed far detail inherits the current shadow strength"),
+						Far->DetailMaterial->K2_GetVectorParameterValue(TEXT("CloudMotion")).A,Motion.A);
 					Far->ShellMaterial->SetVectorParameterValue(TEXT("CloudMotion"),FLinearColor::Transparent);
 					TArray<FColor> Unshadowed;
 					if (!ReadView(Unshadowed)) return false;
@@ -673,10 +1014,47 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 					for (int32 I=View.Num()/2; I<View.Num(); ++I)
 						Shaded += int32(Unshadowed[I].G)-View[I].G >= 3;
 					AddInfo(FString::Printf(TEXT("Clouds darken %d distant terrain pixels at the summit"),Shaded));
-					TestTrue(TEXT("Cloud shadows are visible beyond the local terrain"),Shaded > 100);
+					if (Motion.A > .1f) TestTrue(TEXT("Visible clouds cast shadows beyond the local terrain"),Shaded > 100);
+					else if (Motion.A == 0.f) TestEqual(TEXT("Clear sky leaves distant terrain unshadowed"),Shaded,0);
+					// Hold the camera, clock, holes and material fixed while the far
+					// shell catches up to an adjacent player landblock. This isolates
+					// geometry LOD movement from a sky turn or changed weather.
+					const TSet<FIntPoint> StableHoles = Far->BuiltHoles;
+					auto Recentered = MakeShared<FPersonalFarTerrainMesh,ESPMode::ThreadSafe>();
+					PersonalFarTerrainMesh::Build(*Far->Bake,Center + FIntPoint(1,0),FarRadius,
+						StableHoles,LocalRadius,100,*Recentered,nullptr,SceneryRings);
+					Far->ApplyMesh(Recentered,FarRadius,TSet<FIntPoint>(StableHoles),100,{});
+					Far->SetShown(true);
+					TArray<FColor> ShiftedView;
+					if (!ReadView(ShiftedView)) return false;
+					SaveView(ShiftedView,TEXT("summit-clear-recenter.png"));
+					int32 RecenterPixels = 0;
+					for (int32 I=0; I<View.Num(); ++I)
+						RecenterPixels += FMath::Max3(FMath::Abs(View[I].R-ShiftedView[I].R),
+							FMath::Abs(View[I].G-ShiftedView[I].G),FMath::Abs(View[I].B-ShiftedView[I].B)) >= 6;
+					AddInfo(FString::Printf(TEXT("Fixed-camera terrain recenter: %d / %d pixels change by six levels"),RecenterPixels,View.Num()));
+					Far->ApplyMesh(Landscape,FarRadius,TSet<FIntPoint>(StableHoles),100,{});
+					Far->SetShown(true);
 				}
 			}
 		}
+		// Force an extinction interval beyond the shell, then move the camera
+		// while retaining the old mesh as an asynchronous rebuild would. The
+		// shell's old center must never be mistaken for the new viewer center.
+		Far->SetShown(true);
+		Owner->FogClampLandblocks = 0.f;
+		FACEDatSkyTimeOfDay LongRange;
+		LongRange.MaxWorldFog = 100000.f;
+		LongRange.WorldFogColor = 0xFF8090A0;
+		for (const FVector Offset : {FVector::ZeroVector,FVector(30000,0,0),FVector(-30000,25000,0)})
+		{
+			Owner->SetActorLocation(Eye + Offset);
+			Owner->UpdateFog(LongRange,LongRange,0.f);
+			TestTrue(TEXT("Delayed recenter and camera boom cannot expose the shell cutoff"),
+				FMath::IsNearlyEqual(Owner->DatSubsystem->GetWorldFogEndCm(),
+					Far->FogCoverageDistanceCm(Eye + Offset),1.f));
+		}
+		Owner->SetActorLocation(Eye);
 		// Reproduce the user's 96-block summit view with actual streamed
 		// scenery. Hold the sky, shell geometry, projection and clock fixed
 		// while measuring the extra silhouettes beyond the old radius.
@@ -688,6 +1066,7 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 			ON_SCOPE_EXIT { Radius->SetWithCurrentPriority(SavedRadius); Scenery->ClearAll(); };
 			auto ScenerySky = MakeShared<ACELegionsSky::FBackdrop>();
 			if (!ACELegionsSky::Load(Cache,*ScenerySky,Error)) return false;
+			Owner->ResetImportedSky();
 			Owner->ImportedRevision=ACELegionsSky::Revision();
 			Owner->PendingSky=MakeFulfilledPromise<TSharedPtr<ACELegionsSky::FBackdrop>>(ScenerySky).GetFuture();
 			SetClock(ClearPreviewDay,.5);
@@ -825,30 +1204,57 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 		FlushRenderingCommands();
 		return Target->GameThread_GetRenderTargetResource()->ReadPixels(Pixels);
 	};
-	TArray<FColor> Clouded,Drifted,Clear;
+	TArray<FColor> Clouded,Drifted,Faded,ZeroStrength,Clear;
+	FLinearColor ShadowMotion = Owner->ImportedSky->CloudMotion;
+	ShadowMotion.R /= FMath::Max(1.f,Owner->WorldScale);
+	ShadowMotion.A = 1.f;
+	// Use an explicit opaque cloud mask for this material probe; the native
+	// cloud sheet may legitimately be asleep at the last orbit-test phase.
+	Owner->DatSubsystem->SetLandSky(Owner->ImportedSky->CloudMask.Get(),ShadowMotion,Owner->ImportedSky->Current.AmbientColor);
 	Owner->DatSubsystem->SetSkyAnimationTime(Session->GetPortalYearTicks());
 	if (!TestTrue(TEXT("Capture terrain under imported clouds"),CaptureLand(Clouded))) return false;
 	// Advance the sky clock while engine time is unchanged. Real time alone
 	// must no longer move the terrain mask independently of the sky.
 	Owner->DatSubsystem->SetSkyAnimationTime(Session->GetPortalYearTicks()+15.);
 	if (!TestTrue(TEXT("Capture terrain after cloud drift"),CaptureLand(Drifted))) return false;
+	Owner->DatSubsystem->SetSkyAnimationTime(Session->GetPortalYearTicks());
+	ShadowMotion.A = .25f;
+	Owner->DatSubsystem->SetLandSky(Owner->ImportedSky->CloudMask.Get(),ShadowMotion,Owner->ImportedSky->Current.AmbientColor);
+	if (!TestTrue(TEXT("Capture terrain under fading clouds"),CaptureLand(Faded))) return false;
+	ShadowMotion.A = 0.f;
+	Owner->DatSubsystem->SetLandSky(Owner->ImportedSky->CloudMask.Get(),ShadowMotion,Owner->ImportedSky->Current.AmbientColor);
+	if (!TestTrue(TEXT("Capture terrain after cloud opacity reaches zero"),CaptureLand(ZeroStrength))) return false;
+	auto* NewLand = Owner->DatSubsystem->GetOrCreateLandMaterial(101,{FColor(160,160,160)},1,1);
+	if (!TestNotNull(TEXT("New terrain material created after clouds clear"),NewLand)) return false;
+	TestEqual(TEXT("Newly streamed terrain inherits zero cloud opacity"),CastChecked<UMaterialInstanceDynamic>(NewLand)->K2_GetVectorParameterValue(TEXT("CloudMotion")).A,0.f);
 	Owner->DatSubsystem->SetLandSky(nullptr,FLinearColor::Transparent,Owner->ImportedSky->Current.AmbientColor);
 	if (!TestTrue(TEXT("Capture identical terrain without clouds"),CaptureLand(Clear))) return false;
-	int32 Darkened=0, Moved=0, MinDelta=255, MaxDelta=0;
+	int32 Darkened=0, Moved=0, MinDelta=255, MaxDelta=0, ZeroChanged=0, Intermediate=0;
+	int64 FullDarkening=0, FadedDarkening=0;
 	for (int32 I=0; I<Clear.Num(); ++I)
 	{
 		const int32 Delta=int32(Clear[I].R)-Clouded[I].R;
 		MinDelta=FMath::Min(MinDelta,Delta); MaxDelta=FMath::Max(MaxDelta,Delta);
 		Darkened+=Delta>2;
 		Moved+=FMath::Abs(int32(Clouded[I].R)-Drifted[I].R)>1;
+		ZeroChanged+=FMath::Max3(FMath::Abs(int32(Clear[I].R)-ZeroStrength[I].R),
+			FMath::Abs(int32(Clear[I].G)-ZeroStrength[I].G),FMath::Abs(int32(Clear[I].B)-ZeroStrength[I].B))>1;
+		const int32 FadedDelta=int32(Clear[I].R)-Faded[I].R;
+		FullDarkening+=FMath::Max(0,Delta); FadedDarkening+=FMath::Max(0,FadedDelta);
+		Intermediate+=Delta>8 && FadedDelta>0 && FadedDelta<Delta-2;
 	}
 	SaveView(Clouded,TEXT("terrain-clouded.png"));
 	SaveView(Clear,TEXT("terrain-clear.png"));
+	SaveView(Faded,TEXT("terrain-cloud-fade.png"));
+	SaveView(ZeroStrength,TEXT("terrain-cloud-zero.png"));
 	AddInfo(FString::Printf(TEXT("Cloud shadow capture: %d darkened, %d moved, delta %d to %d"),
 		Darkened,Moved,MinDelta,MaxDelta));
 	TestTrue(TEXT("The native mask casts spatially varying shadows on the ground"),
 		Darkened>Clear.Num()/10 && MaxDelta-MinDelta>8);
 	TestTrue(TEXT("Cloud shadows drift over stationary terrain"),Moved>Clear.Num()/20);
+	TestEqual(TEXT("A retained mask with zero cloud opacity renders exactly like a clear sky"),ZeroChanged,0);
+	TestTrue(TEXT("Partially transparent clouds render weaker ground shadows than opaque clouds"),
+		Intermediate>Clear.Num()/10 && FadedDarkening>FullDarkening/20 && FadedDarkening<FullDarkening/2);
 	// Under the strongly colored sunset key, the bounded fog should change
 	// distant terrain while leaving surface contrast visible.
 	Owner->UpdateImportedSky(.90f,true);
@@ -930,10 +1336,21 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 	const FVector WindDirection = Wind->Mesh->GetComponentQuat().RotateVector(Wind->LocalCloudTravel).GetSafeNormal2D();
 	TInlineComponentArray<UProceduralMeshComponent*> MovingParts(Owner);
 	UProceduralMeshComponent* CloudPart = nullptr;
+	int32 MovingCloudParts = 0;
 	for (auto* Part : MovingParts)
 		if (Part->IsVisible())
 			if (auto* Mid = Cast<UMaterialInstanceDynamic>(Part->GetMaterial(0)))
-				if (Mid->K2_GetVectorParameterValue(TEXT("StageOps")).A > .5f) CloudPart = Part;
+			{
+				FLinearColor Stages;
+				// K2's missing-parameter fallback has alpha 1, so it also matched
+				// stationary classic/fill materials after rebuilding the sky.
+				if (Mid->GetVectorParameterValue(FMaterialParameterInfo(TEXT("StageOps")),Stages) && Stages.A > .5f)
+				{
+					CloudPart = Part;
+					++MovingCloudParts;
+				}
+			}
+	TestEqual(TEXT("Exactly one active imported two-stage cloud sheet"),MovingCloudParts,1);
 	if (!TestNotNull(TEXT("Imported two-stage cloud sheet is visible"),CloudPart)) return false;
 	auto* CloudMid = CastChecked<UMaterialInstanceDynamic>(CloudPart->GetMaterial(0));
 	ACESkyMotion::FUVBasis Basis;
@@ -950,6 +1367,8 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 		FVector2D(Delta(StartOffset.B,EndOffset.B),Delta(StartOffset.A,EndOffset.A))})
 	{
 		const FVector Travel = CloudPart->GetComponentQuat().RotateVector(Basis.Travel(Motion)).GetSafeNormal2D();
+		AddInfo(FString::Printf(TEXT("Imported cloud motion: delta=(%.9f,%.9f) travel=%s wind=%s dot=%.6f"),
+			Motion.X,Motion.Y,*Travel.ToString(),*WindDirection.ToString(),FVector::DotProduct(Travel,WindDirection)));
 		TestTrue(TEXT("Imported cloud stages move with AC1's clouds"),FVector::DotProduct(Travel,WindDirection)>.999);
 	}
 	const auto MaskMotion=Owner->ImportedSky->CloudMotion;
@@ -1026,8 +1445,10 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 						TestEqual(TEXT("Server time controls orb rise/set"),(*Part)->IsVisible(),Slot.Mesh->IsVisible());
 						if (Slot.Mesh->IsVisible())
 						{
-							const FVector Direction=(Slot.Mesh->Bounds.Origin-Retail->GetActorLocation()).GetSafeNormal();
-							TestTrue(TEXT("Stock and imported orbits stay aligned"),Direction.Equals((*Part)->GetComponentQuat().RotateVector(Center).GetSafeNormal(),.001));
+							const FVector Direction=Slot.Mesh->GetComponentQuat().RotateVector(Slot.LocalBodyDirection).GetSafeNormal();
+							const FVector BodyCenter=OrbBodyCenters.FindChecked(Gfx==0x01001348 ? 0x04000023u : 0x040000b6u);
+							TestTrue(TEXT("Stock and imported orbits stay aligned"),Direction.Equals(
+								((*Part)->GetComponentTransform().TransformPosition(BodyCenter)-Owner->GetActorLocation()).GetSafeNormal(),.001));
 						}
 					}
 					else if (Gfx==0x01001F67 || Slot.bWeather || Slot.bAfterPass)
@@ -1037,7 +1458,11 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 							Actual.Mesh && Actual.Mesh->IsVisible(),Slot.Mesh->IsVisible());
 					}
 				}
-				TestEqual(TEXT("Legions cloud shadows follow the server cloud cover"),Owner->bImportedClouds,CloudCover);
+				const float DrawnCloudOpacity=RenderedCloudOpacity(Owner);
+				TestEqual(TEXT("Ground shadow presence follows the imported clouds actually drawn"),Owner->bImportedClouds,DrawnCloudOpacity>KINDA_SMALL_NUMBER);
+				TestEqual(TEXT("Renderer shadow strength follows the visible cloud material alpha"),Owner->ImportedSky->CloudShadowOpacity,DrawnCloudOpacity);
+				TestTrue(TEXT("Weather without cloud cover cannot retain imported ground shadows"),CloudCover||!Owner->bImportedClouds);
+				TestTrue(TEXT("Weather and time transitions update existing terrain shadow strength"),FMath::IsNearlyEqual(CastChecked<UMaterialInstanceDynamic>(Land)->K2_GetVectorParameterValue(TEXT("CloudMotion")).A,DrawnCloudOpacity,1.f/255.f));
 			}
 		}
 	}

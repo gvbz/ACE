@@ -6,32 +6,6 @@
 
 namespace
 {
-constexpr uint32 SkyDomeName = 0x80000001;
-constexpr uint32 HorizonRampName = 0x80000004;
-
-// The imported horizon matte is a one-column opacity ramp wrapped around
-// an azimuthally symmetric mesh. Interpolate its UV at zero elevation.
-float HorizonCoverage(const ACELegionsSky::FBackdrop& Sky)
-{
-	const auto* Ramp = Sky.Layers.FindByPredicate([](const auto& L){ return L.Name == HorizonRampName; });
-	if (!Ramp || Ramp->Sections.IsEmpty()) return 0.f;
-	const auto& Section = Ramp->Sections[0];
-	const auto* Image = Sky.Images.Find(Section.Texture);
-	if (!Image || Image->Width != 1 || Image->Mips.IsEmpty()) return 0.f;
-	const auto* Rows = reinterpret_cast<const FColor*>(Image->Mips[0].GetData());
-	for (int32 I=0; I<Section.Indices.Num(); ++I)
-	{
-		const int32 A = Section.Indices[I], B = Section.Indices[I%3==2 ? I-2 : I+1];
-		const double Low = Ramp->Vertices[A].Z, High = Ramp->Vertices[B].Z;
-		if (Low <= 0. && High > 0.)
-		{
-			const double V = FMath::Lerp(Ramp->UVs[A].Y,Ramp->UVs[B].Y,-Low/(High-Low));
-			const int32 Row = FMath::Clamp(FMath::FloorToInt(V*Image->Height),0,Image->Height-1);
-			return Rows[Row].A / 255.f * Section.Tint.A;
-		}
-	}
-	return 0.f;
-}
 constexpr uint32 SunSetup = 0x04000023;
 constexpr uint32 MoonSetup = 0x040000b6;
 constexpr uint32 AsteroidBeltSetup = 0x04000729;
@@ -49,6 +23,8 @@ void FACELegionsSkyRenderer::Clear()
 	Meshes.Reset();
 	CloudBases.Reset();
 	CloudMask.Reset();
+	CloudShadowOpacity = 0.f;
+	MoonShape = {};
 	Sky = {};
 }
 
@@ -88,13 +64,19 @@ bool FACELegionsSkyRenderer::Build(AActor& Owner, ACELegionsSky::FBackdrop&& Imp
 		Tex->UpdateResource();
 		Textures.Add(Pair.Key, Tex);
 	}
-	RampCoverage = HorizonCoverage(Imported);
 	Imported.Images.Empty();
 	CloudMask.Reset(Textures.FindRef(Imported.CloudMask));
 	CloudMotion = Imported.CloudMotion;
 	Sky = MoveTemp(Imported);
 	for (auto& L : Sky.Layers)
 	{
+		if (L.Setup == MoonSetup)
+			for (const auto& Section : L.Sections)
+				if (!Section.Additive)
+				{
+					MoonShape = ACESkyMotion::FBodyShape::Measure(L.Vertices,Section.Indices);
+					break;
+				}
 		auto& Basis = CloudBases.AddDefaulted_GetRef();
 		if (L.Setup == CloudSheetSetup)
 			for (const auto& S : L.Sections) Basis.Consider(L.Vertices,L.UVs,S.Indices);
@@ -143,6 +125,7 @@ void FACELegionsSkyRenderer::SetVisible(bool Visible)
 
 FLinearColor FACELegionsSkyRenderer::Update(float Time, const FACELegionsSkyFrame& Frame)
 {
+	CloudShadowOpacity = 0.f;
 	CloudMotion = Sky.CloudMotion;
 	if (!Frame.CloudDirection.IsNearlyZero())
 	{
@@ -237,41 +220,15 @@ FLinearColor FACELegionsSkyRenderer::Update(float Time, const FACELegionsSkyFram
 		Current.Direct = FMath::Lerp(FMath::Lerp(DryA.Direct,DryB.Direct,DryT), Current.Direct, Cover);
 		Current.Ambient = FMath::Lerp(FMath::Lerp(DryA.Ambient,DryB.Ambient,DryT), Current.Ambient, Cover);
 	}
-	// Night rain still has skylight scattered by the cloud deck. Use the
-	// local AC1 weather colour for that floor, with the native haze alpha.
+	// CDayDesc::GetWorldFog supplies the authored fog RGB independently of
+	// each sky object's tint. LScapeSky::Draw uses fog_sky only as the alpha
+	// of its sky quad; neither the dome/ramp hue nor cloud fill recolors
+	// distance fog. Preserve that separation when adapting AC1 weather.
+	SkyFogColor = DisplayColor(Haze);
+	FogColor = SkyFogColor;
+	FogColor.A = 1.f;
+	// Keep the readability adjustment on the storm cloud artwork only.
 	const float NightScatter = Cover * (1.f - FMath::SmoothStep(.06f,.35f,Haze.GetLuminance()));
-	FogColor = DisplayColor(Haze);
-	if (RainDay)
-	{
-		const FLinearColor Scattered = Frame.WeatherFogColor;
-		FogColor.R = FMath::Lerp(FogColor.R,FMath::Max(FogColor.R,Scattered.R),NightScatter);
-		FogColor.G = FMath::Lerp(FogColor.G,FMath::Max(FogColor.G,Scattered.G),NightScatter);
-		FogColor.B = FMath::Lerp(FogColor.B,FMath::Max(FogColor.B,Scattered.B),NightScatter);
-	}
-	SkyFogColor = FogColor;
-	// A clear noon key stores neutral grey *with zero sky-fog opacity*.
-	// At the terrain limit, use the hue of the visible sky dome for that
-	// neutral component. Keep the authored extinction luminance and the
-	// coloured sunset/opaque storm keys.
-	const auto* DomeA = A.Objects.Find(SkyDomeName);
-	const auto* DomeB = B.Objects.Find(SkyDomeName);
-	if (DomeA && DomeB)
-	{
-		FLinearColor Equator = DisplayColor(FLinearColor::LerpUsingHSV(DomeA->Tint,DomeB->Tint,T));
-		const auto* RimA = A.Objects.Find(HorizonRampName);
-		const auto* RimB = B.Objects.Find(HorizonRampName);
-		if (RimA && RimB)
-		{
-			const auto Rim = FLinearColor::LerpUsingHSV(RimA->Tint,RimB->Tint,T);
-			Equator = FMath::Lerp(Equator,DisplayColor(Rim),Rim.A * RampCoverage);
-		}
-		const float Chroma = FMath::Max3(Haze.R,Haze.G,Haze.B) - FMath::Min3(Haze.R,Haze.G,Haze.B);
-		const float VisibleDome = (1.f-Haze.A) * (1.f-Cover) *
-			(1.f-FMath::SmoothStep(.02f,.24f,Chroma)) * FMath::SmoothStep(.08f,.4f,Haze.GetLuminance());
-		const float EquatorLum = Equator.GetLuminance();
-		if (EquatorLum > .001f)
-			FogColor = FMath::Lerp(FogColor,Equator * (FogColor.GetLuminance()/EquatorLum),VisibleDome);
-	}
 	if (!HasRainDays())
 	{
 		// Older caches have just the clear day. Keep their AC1 storm layer
@@ -329,8 +286,22 @@ FLinearColor FACELegionsSkyRenderer::Update(float Time, const FACELegionsSkyFram
 		Mesh->SetVisibility(Visible);
 		if (!Visible)
 			continue;
+		if (L.Setup == CloudSheetSetup)
+		{
+			// The two-stage cloud material can double its texture alpha before
+			// saturation. Its constant material alpha still bounds coverage; a
+			// completely transparent material must never leave a ground shadow.
+			float MaterialOpacity = 0.f;
+			for (const auto& Section : L.Sections)
+				MaterialOpacity = FMath::Max(MaterialOpacity,FMath::Clamp(Section.Tint.A * (Section.StageOps.A > .5f ? 2.f : 1.f),0.f,1.f));
+			CloudShadowOpacity = FMath::Max(CloudShadowOpacity,FMath::Clamp(Color.A,0.f,1.f)*MaterialOpacity);
+		}
 		const float Span = L.End - L.Begin + (L.End < L.Begin ? 1.f : 0.f);
-		const float Phase = Span > 0 ? (Time - L.Begin + (Time < L.Begin ? 1.f : 0.f)) / Span : 0;
+		// Celestial lifetime comes from AC1 too. Using palette time here would
+		// extrapolate the native moon's roll outside its shorter visibility window
+		// and make it snap as that unrelated window wraps around midnight.
+		const float Phase = Body ? Body->OrbitPhase
+			: Span > 0 ? (Time - L.Begin + (Time < L.Begin ? 1.f : 0.f)) / Span : 0;
 		auto Sweep = [&](float From, float To) {
 			if (!L.West && To < From)
 				From -= 360;
@@ -342,11 +313,25 @@ FLinearColor FACELegionsSkyRenderer::Update(float Time, const FACELegionsSkyFram
 		const float Heading = Before.Heading + Sweep(L.BeginHeading, L.EndHeading);
 		const FQuat Rotation = FQuat(FVector::YAxisVector, -FMath::DegreesToRadians(Pitch)) *
 		                       FQuat(FVector::UpVector, -FMath::DegreesToRadians(Heading));
-		// Both formats store off-center geometry. Aim the center of the AC2
-		// artwork at the AC1 card, keeping the texture upright at the horizon.
-		Mesh->SetRelativeRotation(Body
-			? Body->Direction.Rotation().Quaternion() * L.Center.Rotation().Quaternion().Inverse()
-			: Rotation);
+		if (L.Setup == MoonSetup && !MoonShape.Center.IsNearlyZero())
+		{
+			// Keep the native orbital roll: a zero-roll look-at turns this artwork
+			// upside down early in the night. Transport its authored frame to AC1's
+			// bearing, aiming the solid disc rather than the offset glow bounds.
+			const FVector NativeDirection = Rotation.RotateVector(MoonShape.Center).GetSafeNormal();
+			const FQuat Aim = FQuat::FindBetweenNormals(NativeDirection,Body->Direction) * Rotation;
+			const double Scale = Body->TanHalfAngle > 0. && MoonShape.TanHalfAngle > 0.
+				? Body->TanHalfAngle / MoonShape.TanHalfAngle : 1.;
+			Mesh->SetRelativeRotation(Aim);
+			Mesh->SetRelativeScale3D(FVector(Scale));
+			// Scaling about the disc keeps its bearing and sky depth fixed, and
+			// scales the native halo in proportion instead of leaving a huge glow.
+			Mesh->SetRelativeLocation(Aim.RotateVector(MoonShape.Center*(1.-Scale)));
+		}
+		else
+			Mesh->SetRelativeRotation(Body
+				? Body->Direction.Rotation().Quaternion() * L.Center.Rotation().Quaternion().Inverse()
+				: Rotation);
 		auto Tint = DisplayColor(Color);
 		// The source sun is an additive LDR flare. Give its emissive pixels
 		// the directional light's intensity so it reads through the daytime clouds.

@@ -293,6 +293,7 @@ void AACESkyDomeActor::DestroySlotMesh(FSkySlot& Slot)
 	Slot.SurfaceLighting.Reset();
 	Slot.ActiveGfxId = 0;
 	Slot.LocalBodyDirection = FVector::ZeroVector;
+	Slot.BodyTanHalfAngle = 0.;
 }
 
 void AACESkyDomeActor::DestroyColorFillMesh()
@@ -692,7 +693,20 @@ void AACESkyDomeActor::RebuildSlotMesh(FSkySlot& Slot, uint32 GfxId)
 	Slot.ActiveGfxId = GfxId;
 	Slot.LocalCloudTravel = CloudBasis.Travel(FVector2D(Slot.Def.TexVelocityX, Slot.Def.TexVelocityY));
 	if (Slot.Def.DefaultGfxObjectId == RetailSun || Slot.Def.DefaultGfxObjectId == RetailPrimaryMoon)
+	{
 		Slot.LocalBodyDirection = Mesh->CalcBounds(FTransform::Identity).Origin.GetSafeNormal();
+		if (Slot.Def.DefaultGfxObjectId == RetailPrimaryMoon)
+			if (const auto* Disc = Mesh->GetProcMeshSection(0))
+			{
+				TArray<FVector> Positions;
+				TArray<int32> Indices;
+				for (const auto& V : Disc->ProcVertexBuffer) Positions.Add(V.Position);
+				for (uint32 Index : Disc->ProcIndexBuffer) Indices.Add(Index);
+				const auto Shape = ACESkyMotion::FBodyShape::Measure(Positions,Indices);
+				Slot.LocalBodyDirection = Shape.Center.GetSafeNormal();
+				Slot.BodyTanHalfAngle = Shape.TanHalfAngle;
+			}
+	}
 	SlotMeshes.Add(Mesh);
 }
 
@@ -906,6 +920,7 @@ void AACESkyDomeActor::ResetImportedSky()
 	PendingSky={};
 	ImportedRevision=INDEX_NONE;
 	bImportedVisible=false;
+	bImportedClouds=false;
 	LastImportedTime=-1.f;
 	if (ColorFillMesh) { ColorFillMesh->SetTranslucentSortPriority(-3000); ColorFillMesh->SetVisibility(true); }
 	if (ColorFillMid) ColorFillMid->SetScalarParameterValue(TEXT("OpacityMul"),1.f);
@@ -1036,14 +1051,17 @@ bool AACESkyDomeActor::UpdateImportedSky(float DayFraction, bool bEnabled)
 				auto& Body=Gfx == RetailSun ? Frame.Sun : Frame.Moon;
 				Body.Direction=CalcFrameQuat(State.HeadingDeg,State.RotationDeg).RotateVector(Slot.LocalBodyDirection);
 				Body.Opacity=Opacity;
+				Body.TanHalfAngle=Slot.BodyTanHalfAngle;
+				Body.OrbitPhase=Slot.Def.EndTime > Slot.Def.BeginTime
+					? FMath::Clamp((DayFraction-Slot.Def.BeginTime)/(Slot.Def.EndTime-Slot.Def.BeginTime),0.f,1.f) : 0.f;
 			}
 		}
 		if (ImportedSky->HasRainDays())
 			Frame.CloudOpacity=FMath::Max3(Frame.CloudOpacity,Frame.Overcast,Frame.Rain);
 		else
 			Frame.CloudOpacity*=1.f-Frame.Overcast;
-		bImportedClouds=Frame.CloudOpacity > KINDA_SMALL_NUMBER;
 		const auto Haze=ImportedSky->Update(ImportedPaletteTime(DayFraction),Frame);
+		bImportedClouds=ImportedSky->CloudShadowOpacity > KINDA_SMALL_NUMBER;
 		if (ColorFillMesh) ColorFillMesh->SetVisibility(Haze.A > KINDA_SMALL_NUMBER);
 		if (Haze.A > KINDA_SMALL_NUMBER)
 		{
@@ -1311,12 +1329,15 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 			Fog->SetDirectionalInscatteringColor(FLinearColor::Black);
 		}
 	}
-	// AC1 terrain and scenery are streamed in Dereth metres. The Legions
-	// fog interval belongs to its landscape and can be shorter than the
-	// drop from an AC1 summit to the valley directly beneath the camera.
+	// Keep the AC1 visibility interval as the gameplay baseline. With imported
+	// artwork, do not extinguish the world sooner than the AC2 palette's own
+	// authored range: its warm dusk fog is intended for 1500m, not AC1's 800m.
+	// Taking the longer endpoint also avoids shortening Dereth storms to the
+	// 250m Legions rain range (less than the drop below an AC1 summit).
 	const bool UseImportedRange = bImportedVisible && A.MaxWorldFog <= 0.f && B.MaxWorldFog <= 0.f;
 	const float MinFog = UseImportedRange ? ImportedSky->FogMin : FMath::Lerp(A.MinWorldFog,B.MinWorldFog,Alpha);
-	const float MaxFog = UseImportedRange ? ImportedSky->FogMax : FMath::Lerp(A.MaxWorldFog,B.MaxWorldFog,Alpha);
+	const float RetailMaxFog = FMath::Lerp(A.MaxWorldFog,B.MaxWorldFog,Alpha);
+	const float MaxFog = bImportedVisible ? FMath::Max(RetailMaxFog,ImportedSky->FogMax) : RetailMaxFog;
 	// GameSky interpolates the packed display channels before rendering.
 	const FLinearColor DisplayFog = FMath::Lerp(FColor(A.WorldFogColor).ReinterpretAsLinear(),
 		FColor(B.WorldFogColor).ReinterpretAsLinear(), Alpha);
@@ -1349,8 +1370,15 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 	{
 		// Short storm visibility stays weather-limited. A clear forecast can
 		// reveal distant ridges, with full extinction before the shell ends.
-		const float FairVisibility = FMath::SmoothStep(1500.f,2400.f,MaxFog);
-		const float Extent = FMath::Max(FarRadius,Terrain ? Terrain->LoadRadius : 0) * 192.f;
+		// A clear forecast remains clear at dusk/night; its shorter native fog
+		// key is not a new storm. Retain the far-view extension through that
+		// palette transition, while other forecasts keep their weather envelope.
+		const bool ClearForecast = ActiveGroup.DayName == TEXT("Clear") || ActiveGroup.DayName == TEXT("Sunny");
+		const float FairVisibility = ClearForecast ? 1.f : FMath::SmoothStep(1500.f,2400.f,MaxFog);
+		// The shell can still be centered on the previous landblock while a
+		// replacement is built. Use the actual mesh coverage from this camera,
+		// including its boom offset, rather than the requested player radius.
+		const float Extent = Shell->FogCoverageDistanceCm(GetActorLocation()) / FMath::Max(WorldScale,1.f);
 		End = FMath::Min(Extent,MaxFog * (1.f + 3.f * FairVisibility));
 	}
 	else if (Terrain && Terrain->LoadRadius > 0)
@@ -1442,6 +1470,7 @@ void AACESkyDomeActor::UpdateWorldLighting(const FACEDatSkyTimeOfDay& A, const F
 		{
 			FLinearColor Motion = ImportedSky->CloudMotion;
 			Motion.R /= FMath::Max(1.f,WorldScale);
+			Motion.A = ImportedSky->CloudShadowOpacity;
 			Dat->SetLandSky(bImportedClouds ? ImportedSky->CloudMask.Get() : nullptr,
 				bImportedClouds ? Motion : FLinearColor::Transparent,AmbColor);
 		}

@@ -15,8 +15,10 @@ bool FACEPackagingMaterialsTest::RunTest(const FString& Parameters)
 	TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>());
 	TStrongObjectPtr<UACEDatSubsystem> Dat(NewObject<UACEDatSubsystem>(Instance.Get()));
 	const auto Parents = Dat->GetRuntimeMaterialParents();
-	TestEqual(TEXT("Complete world/UI/filtered VR widget/pointer/particle/sky/comfort shader set"), Parents.Num(), 41);
-	for (const TCHAR* Name : {TEXT("M_ACELegionsSkyAdd_v2"),TEXT("M_ACELegionsSkyAlpha_v1"),TEXT("M_ACESkyColorFill_v8")})
+	TestEqual(TEXT("Complete world/UI/filtered VR widget/pointer/particle/sky/comfort shader set"), Parents.Num(), 46);
+	for (const TCHAR* Name : {TEXT("M_ACELandLit_v42"),TEXT("M_ACELegionsSkyAdd_v2"),TEXT("M_ACELegionsSkyAlpha_v1"),TEXT("M_ACESkyColorFill_v8"),
+		TEXT("M_ACEFarScenery_v1_0"),TEXT("M_ACEFarScenery_v1_1"),TEXT("M_ACEFarScenery_v1_2"),
+		TEXT("M_ACEFarScenery_v1_3"),TEXT("M_ACEFarScenery_v1_4")})
 		TestTrue(Name,Parents.ContainsByPredicate([Name](const UMaterialInterface* Parent)
 		{
 			return Parent && Parent->GetName()==Name;

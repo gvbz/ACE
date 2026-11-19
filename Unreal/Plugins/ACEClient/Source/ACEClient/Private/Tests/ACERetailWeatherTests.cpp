@@ -490,8 +490,13 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
                     TestTrue(TEXT("Horizon sky stays behind geometry in every direction"),Pixels[270*640+320].Equals(ForegroundOnly[270*640+320],.0001f));
                     if (GroupIndex==16 && Fraction==.1f)
                     {
-                        for (float DistanceScale:{200.f,1000.f})
+                        // Keep the same projected foreground while crossing the
+                        // extended terrain's 96-landblock (18.432 km) boundary.
+                        // This fixture covers classic AC1 cards and scripted cloud
+                        // particles, not the imported Legions layer composition.
+                        for (float DistanceCm:{100000.f,500000.f,1000000.f,1843200.f,2000000.f})
                         {
+                            const float DistanceScale=DistanceCm/500.f;
                             Foreground->SetWorldScale3D(FVector(DistanceScale));
                             const auto Distant=Read();
                             if (!Distant[270*640+320].Equals(ForegroundOnly[270*640+320],.0001f))
@@ -503,7 +508,7 @@ bool FACERetailWeatherTest::RunTest(const FString& Parameters)
                                 AddInfo(FString::Printf(TEXT("Distant sky Yaw=%d Scale=%.0f near=%s distantOnly=%s withSky=%s"),
                                     Yaw,DistanceScale,*ForegroundOnly[270*640+320].ToString(),*DistantOnly[270*640+320].ToString(),*Distant[270*640+320].ToString()));
                             }
-                            TestTrue(TEXT("Scripted sky effects stay behind terrain at 1km and 5km"),
+                            TestTrue(FString::Printf(TEXT("Classic sky and scripted effects stay behind terrain at %.3f km, yaw %d"),DistanceCm/100000.f,Yaw),
                                 Distant[270*640+320].Equals(ForegroundOnly[270*640+320],.0001f));
                         }
                         Foreground->SetWorldScale3D(FVector::OneVector);

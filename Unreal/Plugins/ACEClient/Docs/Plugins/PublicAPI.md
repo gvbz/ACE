@@ -859,6 +859,9 @@ all its children to their content, or `auto_width=true` on individual children
 to reserve just their natural width while siblings fill the remainder. Row
 children align vertically at the center. Labels accept `wrap=false` to remain
 on one line and clip within their control; use a tooltip for full long names.
+Add `ellipsis=true` to shorten an unwrapped label with `...` when it exceeds
+the available width. This opt-in behavior follows the native font and UI scale;
+keep the full text in `tooltip` when the complete name matters.
 Tabs use the shared navigation style: dark inactive backgrounds, with a brighter
 background and gold underline on the selected page. Selection follows the page
 ID through live updates and reordering. Use `tabs` for page navigation so custom
@@ -1013,13 +1016,30 @@ keys. Plugin chat/messages and this inbox are separate bounded streams.
   category settings. Optional `color` uses the display-filter colors above. Both
   are retained in local history across HUD rebuilds. Global filters still apply.
 - **sound**: play with `asset="alert.wav"`, optional `volume` (0–1). Requires sound.
-  Files must be directly inside your plugin's `sounds` directory: PCM16 WAV,
-  mono/stereo, 8–48 kHz, at most ten seconds and 1 MiB. Paths and URLs are rejected.
-  Uses the service rate limit; no looping or persistent audio source is created.
+  `source="bundled"` (the default) reads directly inside your plugin's `sounds`
+  directory. `source="custom"` plays an opaque asset token returned by a
+  user-initiated `action="sound_file"` button. The host validates and copies that
+  selected file into persistent plugin storage; Lua never receives filesystem
+  access. Files must be PCM16 WAV, mono/stereo, 8–48 kHz, at most ten seconds and
+  1 MiB. Paths and URLs are rejected. Playback respects Master, Effects, and
+  inactive-window audio settings and uses the normal service rate limit.
+  No looping or persistent audio source is created. A successful result includes
+  `duration` in seconds, including when audio is muted or no device is present.
 - **log**: append text and optional level, or clear. snapshot.log contains the last
   200 entries. API 2 also logs native activity errors/status milestones there.
   This is a session ring, not an unbounded disk log. Use bounded state for any
   selected history that should survive logout.
+
+`action="sound_file"` requires `ui` and `sound` permissions. On Windows and Linux,
+clicking the button opens a native WAV picker. It emits a completion event
+`{type="sound_file", id=<button id>, ok, cancelled, error}` instead of a generic
+click event. A successful selection adds `source="custom"`, `asset` (opaque
+token), and `name` (display filename). Save those values in character state and
+pass the token to the sound service. Cancellation or invalid input preserves
+previously imported files. On platforms without a picker, the event explains
+that custom selection requires the desktop client; bundled playback still works.
+Switching back to a bundled sound should change the plugin preference, without
+deleting a custom asset another character may still use.
 
 `profile_patch={...}` merges top-level fields into your own active configuration
 and requires profiles. Unchanged patches do nothing. Changed native configuration

@@ -133,12 +133,14 @@ namespace ACEPluginCompanionPanelPrivate
         TMap<FString,bool> Expanded;TMap<FString,FString> Tabs;
         TSharedRef<STextBlock> Label(const TSharedPtr<FJsonObject>& R,const TCHAR* ColorKey=TEXT("color"))
         {
-            return SNew(SACEPluginText).Text_Lambda([R](){return FText::FromString(S(R,TEXT("text")));})
+            auto Text=SNew(SACEPluginText).Text_Lambda([R](){return FText::FromString(S(R,TEXT("text")));})
                 .Font_Lambda([R](){auto Font=FCoreStyle::GetDefaultFontStyle(B(R,TEXT("bold"),false)?"Bold":"Regular",FMath::Clamp(int32(N(R,TEXT("size"),15)),10,36));
                     Font.OutlineSettings.OutlineSize=int32(N(R,TEXT("outline"),N(R,TEXT("glow"))));Font.OutlineSettings.OutlineColor=Color(S(R,TEXT("outline_color"),S(R,TEXT("glow_color"),TEXT("#000000"))));return Font;})
                 .Justification_Lambda([R](){const auto Align=S(R,TEXT("align"));return Align==TEXT("right")?ETextJustify::Right:Align==TEXT("center")?ETextJustify::Center:ETextJustify::Left;})
                 .ColorAndOpacity_Lambda([R,ColorField=FString(ColorKey)](){return FSlateColor(Color(S(R,*ColorField)));})
                 .AutoWrapText_Lambda([R](){return B(R,TEXT("wrap"));});
+            Text->SetSingleLineEllipsis(TAttribute<bool>::CreateLambda([R](){return B(R,TEXT("ellipsis"),false);}));
+            return Text;
         }
         UTexture2D* Image(const FString& Asset)
         {

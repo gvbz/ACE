@@ -124,6 +124,7 @@ protected:
 		bool bForceWeatherZ = false;
 		/** Local bearing of the AC1 sun or moon card. */
 		FVector LocalBodyDirection = FVector::ZeroVector;
+		double BodyTanHalfAngle = 0.;
 		FVector LocalCloudTravel = FVector::ZeroVector;
 	};
 

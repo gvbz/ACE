@@ -80,6 +80,8 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarFarSceneryDetail(TEXT("personal.FarScenery.Detail"), 1,
 		TEXT("1 draws far objects with the simpler models of the DAT further out and past the fog end, 0 with the full model everywhere."));
+	TAutoConsoleVariable<int32> CVarFarSceneryFade(TEXT("personal.FarScenery.Fade"), 1,
+		TEXT("1 fades only far scenery at size/radius limits; 0 disables coverage fading for visual comparison."));
 	TAutoConsoleVariable<int32> CVarFarSceneryMiddleRing(TEXT("personal.FarScenery.MiddleRing"), 4,
 		TEXT("First ring of landblocks drawn with the middle detail level."));
 	TAutoConsoleVariable<int32> CVarFarScenerySimplestRing(TEXT("personal.FarScenery.SimplestRing"), 5,
@@ -408,6 +410,13 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 	// Size rule: each object is drawn out to the distance where its type is still worth seeing.
 	// Types that reach past the last ring are never culled.
 	const float Reach = (PersonalFarScenery::LastRing + 2) * BlockLength * WorldScale;
+	auto BindFarCoverage = [&Dat, Distance, Reach](UStaticMeshComponent* Component)
+	{
+		for (int32 Slot = 0; Slot < Component->GetNumMaterials(); ++Slot)
+			if (auto* Material = Dat.GetFarSceneryMaterial(Component->GetMaterial(Slot)))
+				Component->SetMaterial(Slot, Material);
+		Component->SetCustomPrimitiveDataFloat(PersonalFarScenery::SizeFadePrimitiveDataIndex, Distance < Reach ? Distance : 0.f);
+	};
 	if (bBuilding)
 	{
 		// A building is a plain component with the client's shell material, as in the client
@@ -419,6 +428,7 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 			Shell->SetupAttachment(Actor->GetRootComponent());
 			Shell->SetStaticMesh(Mesh);
 			Dat.BindSetupStaticMeshMaterials(Shell, DatId, WorldScale, bCollisionKey, PlacementId, /*bParticleGfx*/ false, /*bStencilHoleClip*/ true);
+			BindFarCoverage(Shell);
 			Shell->SetMobility(EComponentMobility::Movable);
 			Shell->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 			Shell->SetGenerateOverlapEvents(false);
@@ -431,7 +441,8 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 			Shell->bNeverDistanceCull = Distance >= Reach;
 			if (Distance < Reach)
 			{
-				Shell->SetCullDistance(Distance);
+				const float BoundsExtent = Mesh->GetBounds().Origin.Size() + Mesh->GetBounds().SphereRadius;
+				Shell->SetCullDistance(PersonalFarScenery::CullDistance(Distance, BoundsExtent * Transform.GetScale3D().GetAbsMax()));
 			}
 			Shell->RegisterComponent();
 			++Unit.Components;
@@ -456,6 +467,7 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 		Dat.BindSetupStaticMeshMaterials(Instances, DatId, WorldScale, bCollisionKey, PlacementId,
 			/*bParticleGfx*/ false, /*bStencilHoleClip*/ false, /*bOutdoorLit*/ true);
 	}
+	BindFarCoverage(Instances);
 	// The mesh carries the collision of the near scenery. Off here, so no bodies are made.
 	Instances->bDisableCollision = true;
 	Instances->bUseDefaultCollision = false;
@@ -469,7 +481,15 @@ void UPersonalFarScenerySubsystem::AddComponent(UACEDatSubsystem& Dat, FUnit& Un
 	Instances->bNeverDistanceCull = Distance >= Reach;
 	if (Distance < Reach)
 	{
-		Instances->SetCullDistances(FMath::RoundToInt32(Distance * 0.9f), FMath::RoundToInt32(Distance));
+		float MaxScale = 0.f;
+		for (const FTransform& Transform : Transforms) MaxScale = FMath::Max(MaxScale, float(Transform.GetScale3D().GetAbsMax()));
+		// GPU scene uses bounds-center distance; legacy instance culling uses
+		// the transform pivot. Include any mesh-origin offset to cover both.
+		const float BoundsExtent = Mesh->GetBounds().Origin.Size() + Mesh->GetBounds().SphereRadius;
+		const float CullEnd = PersonalFarScenery::CullDistance(Distance, BoundsExtent * MaxScale);
+		// The material is already fully invisible at Distance. Hardware culling
+		// waits for the whole bounds to pass it, including grouped instances.
+		Instances->SetCullDistances(FMath::RoundToInt32(Distance), FMath::CeilToInt32(CullEnd));
 	}
 	Instances->AddInstances(Transforms, /*bShouldReturnIndices*/ false, /*bWorldSpace*/ false, /*bUpdateNavigation*/ false);
 	Instances->RegisterComponent();
@@ -1074,8 +1094,21 @@ void UPersonalFarScenerySubsystem::Stream(UACEDatSubsystem& Dat, const PersonalF
 	// so objects do not come and go while the fog end moves.
 	const int32 FogRing = PersonalFarScenery::FogRing(FogEnd, BlockLength * WorldScale);
 	const int32 VisibleRadius = FMath::Min(PersonalFarScenery::Radius(), PersonalFarTerrain::Radius());
-	const int32 BuildRing = PersonalFarScenery::HideWithFog() ? FMath::Min(FogRing, VisibleRadius) : VisibleRadius;
-	const int32 KeepRing = FMath::Min(BuildRing + 1, VisibleRadius);
+	// Streaming is centered on the player, including the supported 450m free
+	// camera zoom. Orbiting that camera must not move the object-radius boundary.
+	FVector FadeAnchor = LandblockOrigin(Center, WorldScale) + FACEPosition::AceVectorToUnreal(FVector(96., 96., 0.), WorldScale);
+	if (const auto* Game = GetWorld() ? GetWorld()->GetGameInstance() : nullptr)
+		if (const auto* Client = Game->GetSubsystem<UACEClientSubsystem>())
+		{
+			const FACEPosition& Position = Client->GetPlayerPosition();
+			if (uint32(Position.CellId) >> 16 == (uint32(Center.X) << 8 | uint32(Center.Y)))
+				FadeAnchor = Position.ToUnrealLocation(WorldScale);
+		}
+	Dat.SetFarSceneryFadeRadius(GetWorld(), PersonalFarScenery::FadeRadius(VisibleRadius, BlockLength * WorldScale),
+		CVarFarSceneryFade.GetValueOnGameThread() != 0, FadeAnchor);
+	const int32 PreparedRadius = PersonalFarScenery::PlacementRing(VisibleRadius);
+	const int32 BuildRing = PersonalFarScenery::HideWithFog() ? FMath::Min(FogRing, PreparedRadius) : PreparedRadius;
+	const int32 KeepRing = PersonalFarScenery::RetentionRing(BuildRing);
 	const bool bScaleChanged = WorldScale != BuiltWorldScale;
 	BuiltWorldScale = WorldScale;
 	if (bScaleChanged)

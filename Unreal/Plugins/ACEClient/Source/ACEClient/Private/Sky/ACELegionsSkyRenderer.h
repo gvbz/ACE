@@ -15,6 +15,8 @@ struct FACELegionsSkyFrame
 	{
 		FVector Direction = FVector::ZeroVector;
 		float Opacity = 0.f;
+		double TanHalfAngle = 0.;
+		float OrbitPhase = 0.f;
 	};
 	FBody Sun, Moon;
 	double Seconds = 0.;
@@ -46,15 +48,20 @@ struct FACELegionsSkyRenderer
 	FLighting Current, Noon;
 	float FogMin = 0, FogMax = 0;
 	float ClearDaylight = 0.f;
+	// RGB comes from the day fog key; sky overlay opacity is a separate field.
 	FLinearColor SkyFogColor = FLinearColor::Black;
+	// World extinction uses FogMin/FogMax, never the sky overlay's alpha.
 	FLinearColor FogColor = FLinearColor::Black;
 	TStrongObjectPtr<UTexture2D> CloudMask;
 	FLinearColor CloudMotion = FLinearColor::Transparent;
+	// Ground attenuation follows the sheet actually drawn, including its native
+	// visibility interval, authored alpha and weather/clear-day fade.
+	float CloudShadowOpacity = 0.f;
 
   private:
 	ACELegionsSky::FBackdrop Sky;
 	TArray<TWeakObjectPtr<UProceduralMeshComponent>> Meshes;
 	FLinearColor Haze = FLinearColor::Transparent;
-	float RampCoverage = 0.f;
 	TArray<ACESkyMotion::FUVBasis> CloudBases;
+	ACESkyMotion::FBodyShape MoonShape;
 };

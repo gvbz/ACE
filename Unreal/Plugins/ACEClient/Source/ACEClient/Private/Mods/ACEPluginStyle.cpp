@@ -390,6 +390,12 @@ void SACEPluginText::SetJustification(TAttribute<ETextJustify::Type> InJustifica
     STextBlock::SetJustification(InJustification);
     Invalidate(EInvalidateWidgetReason::Paint);
 }
+void SACEPluginText::SetSingleLineEllipsis(TAttribute<bool> InEllipsis)
+{
+    SingleLineEllipsis=MoveTemp(InEllipsis);
+    CachedWidth=-1;
+    Invalidate(EInvalidateWidgetReason::Layout);
+}
 float SACEPluginText::BitmapScale() const
 {
     // Match Slate's point-to-pixel conversion, including sizes between DAT fonts.
@@ -397,19 +403,27 @@ float SACEPluginText::BitmapScale() const
 }
 void SACEPluginText::Layout(float Available) const
 {
-    const float Limit=WrapAt.Get(0)>0?WrapAt.Get():Wrap.Get(false)?Available:0;
+    const float Limit=WrapAt.Get(0)>0?WrapAt.Get():(Wrap.Get(false)||CachedEllipsis)?Available:0;
     const int32 W=Limit>0?FMath::Max(1,FMath::FloorToInt(Limit/BitmapScale())):MAX_int32;
     const FString Text=GetText().ToString();
     if(Text!=CachedText||W!=CachedWidth)
     {
         CachedText=Text;CachedWidth=W;
+        DisplayText=CachedEllipsis?ACEDatText::Ellipsize(Face->Font,Text,W):Text;
         // Plugin labels wrap at word boundaries. Oversized words retain their
         // natural width and clip to the widget until the user widens the window.
-        Lines=ACEDatText::Layout(Face->Font,Text,W,false,/*bBreakLongWords=*/false);
+        Lines=ACEDatText::Layout(Face->Font,DisplayText,W,CachedEllipsis,/*bBreakLongWords=*/false);
     }
 }
 bool SACEPluginText::CanDrawNative() const
 {
+    const bool Ellipsis=SingleLineEllipsis.Get(false)&&!Wrap.Get(false)&&WrapAt.Get(0)<=0;
+    if(CachedEllipsis!=Ellipsis)
+    {
+        CachedEllipsis=Ellipsis;CachedWidth=-1;
+        const_cast<SACEPluginText*>(this)->SetOverflowPolicy(Ellipsis
+            ?TOptional<ETextOverflowPolicy>(ETextOverflowPolicy::Ellipsis):TOptional<ETextOverflowPolicy>());
+    }
     // Bound font attributes are evaluated after Construct, and can change while
     // a Lua control keeps its Slate identity. Refresh both glyphs and wrapping.
     const int32 Size=GetFont().Size;
@@ -442,7 +456,7 @@ int32 SACEPluginText::OnPaint(const FPaintArgs& A,const FGeometry& G,const FSlat
     if(!CanDrawNative())return STextBlock::OnPaint(A,G,Clip,E,Layer,Style,Enabled);
     // STextBlock is non-ticking. Use the allotted width to reserve wrapped line height
     // on the next prepass without enabling per-frame work on every label.
-    if(Wrap.Get(false)&&!FMath::IsNearlyEqual(Width,float(G.GetLocalSize().X)))
+    if((Wrap.Get(false)||CachedEllipsis)&&!FMath::IsNearlyEqual(Width,float(G.GetLocalSize().X)))
     {Width=G.GetLocalSize().X;const_cast<SACEPluginText*>(this)->Invalidate(EInvalidateWidgetReason::Layout);}
     const auto M=GetMargin();const float Available=G.GetLocalSize().X-M.Left-M.Right;Layout(Available);
     const float Scale=BitmapScale();auto* Atlas=Face->Atlas.Get();const auto& DatFont=Face->Font;
@@ -463,7 +477,7 @@ int32 SACEPluginText::OnPaint(const FPaintArgs& A,const FGeometry& G,const FSlat
         const auto& L=Lines[N];float X=M.Left;const float Spare=FMath::Max(0.f,Available-L.Width*Scale);
         if(Justification.Get()==ETextJustify::Center)X+=Spare*.5f;else if(Justification.Get()==ETextJustify::Right)X+=Spare;
         const float Y=M.Top+N*DatFont.MaxCharHeight*Scale;
-        for(int32 I=L.Begin;I<L.End;++I)if(const auto* C=ACEDatText::FindChar(DatFont,CachedText[I]))
+        for(int32 I=L.Begin;I<L.End;++I)if(const auto* C=ACEDatText::FindChar(DatFont,DisplayText[I]))
         {
             X+=int8(C->HorizontalOffsetBefore)*Scale;
             if(C->Width&&C->Height)

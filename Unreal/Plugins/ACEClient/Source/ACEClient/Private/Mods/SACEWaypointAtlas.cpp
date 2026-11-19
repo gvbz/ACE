@@ -91,8 +91,10 @@ private:
             return A->Coordinates.X<B->Coordinates.X;
         });
         Revision=Host->WaypointLocationsRevision;
-        if(!Host->bWaypointAtlasHasRoutingData && !Locations.IsEmpty())
-            Status=TEXT("Reimport GoArrow's locations.xml to include portal exits in routes.");
+        if(Locations.IsEmpty())
+            Status=TEXT("No locations imported. Select Back, use Browse locations to choose a GoArrow or CoD XML file, then choose Import locations.");
+        else if(!Host->bWaypointAtlasHasRoutingData)
+            Status=TEXT("Reimport your GoArrow or CoD XML file to include portal exits in routes.");
         FilterRows();ShowDirections();
     }
     void FilterRows()
@@ -133,7 +135,7 @@ private:
         const FACEPosition Player=Host->WaypointPlayerPosition();
         if(!Player.IsValid() || (uint32(Player.CellId)&0xffff)>=0x100)
         {Status=TEXT("Go outdoors to find a route from your current position.");return;}
-        if(!Host->bWaypointAtlasHasRoutingData){Status=TEXT("Reimport locations.xml to enable atlas routes.");return;}
+        if(!Host->bWaypointAtlasHasRoutingData){Status=TEXT("Reimport your GoArrow or CoD XML file to enable atlas routes.");return;}
         const auto& Regions=ACEWaypointAtlas::MapRegions();
         if(Regions.IsEmpty()){Status=TEXT("The Waypoint map regions could not be loaded.");return;}
         TArray<FACEWaypointLandmark> Transports;

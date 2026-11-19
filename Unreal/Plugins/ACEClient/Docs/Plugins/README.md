@@ -146,7 +146,15 @@ client, within the same area and at most 240 metres; it cannot discover distant
 server spawns. The panel reports when that awareness list is truncated.
 
 Green local chat alerts announce new matches and combine large bursts. A short
-absence does not repeat the same alert. Optional world and Waypoint-map markers
+absence does not repeat the same alert. On **Audio**, optionally enable a chime
+for new matches; sound alerts are off by default and work independently of chat.
+The included chime is ready to use. **Choose WAV** selects a preferred PCM16
+mono/stereo WAV (8–48 kHz, up to 10 seconds and 1 MiB); the client keeps a copy,
+so moving the original file does not break alerts. **Use default** restores the
+included chime, **Test** previews the selected sound even with alerts off, and
+the volume slider adjusts alert loudness. A burst of matches plays one chime.
+Sound preferences also save per character and server.
+Optional world and Waypoint-map markers
 show up to 32 nearest matches. **Watch for matches** pauses detection, alerts and
 markers while retaining the editable list. The list, range, alert and marker
 preferences save per character and server. Third Eye runs alongside UCM, starts
@@ -163,6 +171,9 @@ preferences are saved per character and server.
 Plugin windows remember whether they were open or closed at logout, including
 custom Lua windows and the UCM log. Their positions and sizes are restored too;
 opening a window does not start its automation. Disabled plugins stay hidden.
+Plugin Manager's **Open** restores and brings forward the existing window rather
+than creating another interface. Its current page, edits, size and pin state are
+retained. The plugin bar's show/hide buttons continue to toggle that same window.
 **Options > Config > Keep UI windows on screen** applies to both game and plugin
 windows. It is enabled by default. Disable it to allow offscreen placement;
 enable it again to bring windows back inside the game interface.

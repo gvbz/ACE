@@ -4,6 +4,8 @@ local config, draft, exact, feedback = nil, "", false, ""
 local cache, seen = {}, {}
 local rule_page, detected_page, filter = 1, 1, ""
 local alerts, alert_inflight, next_alert = {}, false, 0
+local sound_pending, preview_pending, sound_inflight = false, false, nil
+local next_sound, sound_sequence, sound_feedback = 0, 0, ""
 local rule_size, detected_size, MAX_RULES = 6, 8, 128
 
 local function trim(text)
@@ -40,7 +42,15 @@ return function(s)
         local saved = s.state or {}
         config = {rules={}, next_id=1, watching=saved.watching ~= false,
             chat_alerts=saved.chat_alerts ~= false, world_markers=saved.world_markers == true,
-            map_markers=saved.map_markers ~= false, range=math.max(5, math.min(240, tonumber(saved.range) or 240))}
+            map_markers=saved.map_markers ~= false, range=math.max(5, math.min(240, tonumber(saved.range) or 240)),
+            sound_alerts=saved.sound_alerts == true,
+            sound_source=saved.sound_source == "custom" and "custom" or "bundled",
+            sound_asset=type(saved.sound_asset)=="string" and saved.sound_asset or "alert.wav",
+            sound_label=type(saved.sound_label)=="string" and saved.sound_label or "Default chime",
+            sound_volume=math.max(0, math.min(1, tonumber(saved.sound_volume) or .7))}
+        if config.sound_source=="bundled" or config.sound_asset=="" then
+            config.sound_source, config.sound_asset, config.sound_label = "bundled", "alert.wav", "Default chime"
+        end
         migrated = saved.opacity ~= nil or saved.background_opacity ~= nil or saved.vr_opacity ~= nil or saved.vr_background_opacity ~= nil
         for _, r in ipairs(type(saved.rules)=="table" and saved.rules or {}) do
             if #config.rules == MAX_RULES then break end
@@ -75,13 +85,36 @@ return function(s)
             alert_inflight=false
             if e.ok or not string.contains(e.error or "","rate limit") then table.remove(alerts,1) end
             if not e.ok then feedback=e.error or "Could not display alert." end
+        elseif e.type=="result" and sound_inflight and e.id==sound_inflight.id then
+            local was_preview, cancelled, started=sound_inflight.preview, sound_inflight.cancelled, sound_inflight.started
+            sound_inflight=nil
+            if not e.ok and string.contains(e.error or "","rate limit") then
+                if was_preview then preview_pending=true
+                elseif not cancelled and config.watching and config.sound_alerts then sound_pending=true end
+            elseif e.ok then
+                next_sound=math.max(next_sound,started+math.max(0,math.min(10,tonumber(e.duration) or 0)))
+                if was_preview then sound_feedback="Preview played." end
+            else sound_feedback=e.error or "Could not play the alert sound." end
+        elseif e.type=="sound_file" then
+            if e.ok and type(e.asset)=="string" and e.asset~="" then
+                config.sound_source, config.sound_asset = "custom", e.asset
+                config.sound_label=type(e.name)=="string" and e.name or "Custom sound"
+                sound_feedback="Custom sound selected. Use Test to preview it."
+                changed=true
+            elseif not e.cancelled then sound_feedback=e.error or "Could not select that sound." end
         elseif e.type=="change" then
             if e.id=="draft" then draft=tostring(e.value)
             elseif e.id=="exact" then exact=e.value==true
             elseif e.id=="filter" then filter=tostring(e.value); detected_page=1
             elseif e.id=="range" then config.range=math.max(5,math.min(240,tonumber(e.value) or 240)); changed=true
-            elseif e.id=="watching" or e.id=="chat_alerts" or e.id=="world_markers" or e.id=="map_markers" then
+            elseif e.id=="sound_volume" then
+                config.sound_volume=math.max(0,math.min(1,(tonumber(e.value) or 70)/100)); changed=true
+            elseif e.id=="watching" or e.id=="chat_alerts" or e.id=="world_markers" or e.id=="map_markers" or e.id=="sound_alerts" then
                 config[e.id]=e.value==true; changed=true
+                if (e.id=="watching" or e.id=="sound_alerts") and not e.value then
+                    sound_pending=false
+                    if sound_inflight and not sound_inflight.preview then sound_inflight.cancelled=true end
+                end
             elseif string.sub(e.id or "",1,8)=="enabled_" then
                 local id=tonumber(string.sub(e.id,9))
                 for _, r in ipairs(config.rules) do if r.id==id then r.enabled=e.value==true; changed=true; rules_changed=true end end
@@ -93,6 +126,10 @@ return function(s)
             elseif e.id=="rules_next" then rule_page=rule_page+1
             elseif e.id=="detected_prev" then detected_page=detected_page-1
             elseif e.id=="detected_next" then detected_page=detected_page+1
+            elseif e.id=="test_sound" then preview_pending=true; sound_feedback="Preview requested..."
+            elseif e.id=="default_sound" then
+                config.sound_source, config.sound_asset, config.sound_label = "bundled", "alert.wav", "Default chime"
+                sound_feedback="Default chime selected."; changed=true
             elseif string.sub(e.id or "",1,7)=="remove_" then
                 local id=tonumber(string.sub(e.id,8))
                 for i, r in ipairs(config.rules) do
@@ -158,6 +195,19 @@ return function(s)
         requests[1]={id="detected_alert",service="notice",operation="show",text=alerts[1]}
         alert_inflight=true; next_alert=now+1
     end
+    -- A single chime represents a detection burst. Keep it independent of chat,
+    -- and retry only a host rate limit, not an invalid or unavailable sound.
+    if not config.watching or not config.sound_alerts then sound_pending=false
+    elseif new_count>0 then sound_pending=true end
+    if not sound_inflight and now>=next_sound and (preview_pending or sound_pending) then
+        local preview=preview_pending
+        preview_pending, sound_pending = false, false
+        sound_sequence=sound_sequence+1
+        local id=(preview and "preview_sound_" or "detected_sound_")..sound_sequence
+        requests[#requests+1]={id=id,service="sound",operation="play",source=config.sound_source,
+            asset=config.sound_asset,volume=config.sound_volume}
+        sound_inflight={id=id,preview=preview,started=now}; next_sound=now+1
+    end
     local visible={}
     for _, o in ipairs(matches) do
         if filter=="" or string.contains(string.lower(o.name),string.lower(string.sub(filter,1,256))) then visible[#visible+1]=o end
@@ -197,6 +247,20 @@ return function(s)
         {id="match_help",text="Names ignore letter case. Matches are literal. Saved automatically for this character and server.",size=12},
         {id="limits",text="Uses nearby objects known to the client. Up to 32 world/map markers. Target plates are provided by separate addons.",size=12}
     }
+    local choose_sound=button("choose_sound","Choose WAV")
+    choose_sound.action="sound_file"; choose_sound.tooltip="Choose a notification WAV: PCM16 mono/stereo, 8-48 kHz, up to 10 seconds and 1 MiB"
+    local default_sound=button("default_sound","Use default",config.sound_source~="bundled")
+    default_sound.tooltip="Use the included chime"
+    local test_sound=button("test_sound","Test",sound_inflight==nil and not preview_pending and now>=next_sound)
+    test_sound.tooltip="Preview this sound, even when automatic alerts are off"
+    local audio={
+        {id="sound_alerts",type="checkbox",text="Play a sound for new matches",value=config.sound_alerts},
+        {id="sound_name",text="Sound: "..config.sound_label,wrap=false,ellipsis=true,tooltip=config.sound_label},
+        {id="sound_buttons",type="row",children={choose_sound,default_sound,test_sound}},
+        {id="sound_volume",type="slider",text="Alert volume (%)",min=0,max=100,step=5,value=math.floor(config.sound_volume*100+.5)},
+        {id="sound_feedback",text=sound_feedback,wrap=false,ellipsis=true,tooltip=sound_feedback},
+        {id="sound_help",text="Choose a short 16-bit WAV (up to 10 seconds). Alerts play once per detection burst.",size=12}
+    }
     for i=(rule_page-1)*rule_size+1,math.min(#config.rules,rule_page*rule_size) do
         local r=config.rules[i]
         setup[#setup+1]={id="rule_"..r.id,type="row",children={
@@ -207,7 +271,8 @@ return function(s)
     local ui={{id="watching",type="checkbox",text="Watch for matches",value=config.watching},
         {id="tabs",type="tabs",children={{id="detected_tab",type="column",text="Detected",children=detected},
             {id="setup_tab",type="column",text="Setup",children=setup},
-            {id="options_tab",type="column",text="Options",children=options}}}}
+            {id="options_tab",type="column",text="Options",children=options},
+            {id="audio_tab",type="column",text="Audio",children=audio}}}}
     if s.error and s.error~="" then ui[#ui+1]={id="error",text=s.error,color="red"} end
     -- Clear any retained plates from older Third Eye versions; other addons own
     -- their plate lists and opacity preferences independently.

@@ -5,9 +5,11 @@ enabled by default and can be disabled in Plugins. It does not move the player.
 
 ## Navigation
 
-Use **NAV** on the desktop Mods bar for settings and the **globe icon** for the independent
-map window. In VR, select Waypoint in plugin management; Open map switches that
-panel to its map view and Waypoint settings returns to the settings view.
+Use **NAV** on the desktop Mods bar to start with settings or the **globe icon**
+to start with the map. Both launchers share one window and retain its current
+view when reopened. **Open map** and **Waypoint settings** switch views inside
+that window. In VR, select Waypoint in plugin management and use the same view
+buttons. Plugin Manager's **Open** brings the existing Waypoint window forward.
 
 Coordinates such as `42.0N, 33.6E` become blue, underlined links in desktop and VR
 chat. Each coordinate pair is independent. Desktop drag-to-select/copy still
@@ -46,8 +48,17 @@ The desktop overlay hides with Alt+Z and is removed on logout.
   Both views share the saved position, size and visibility; existing dungeon pins
   carry over. Each view saves its own zoom across closing the map and relogging. Clear Pin
   to hide both views; reopen the globe window to change these options.
-- Use the pinned map's **+ / −** buttons to zoom in or out around the player,
-  including while the UI is locked. They work in both overworld and interior views.
+- Drag the pinned map to look around without moving the character. This pauses
+  player-follow until you click the target icon, whose tooltip is **center player**.
+  Recentering keeps your zoom. Panning works while the UI is locked and in both
+  overworld and interior views; entering a different dungeon resumes player-follow.
+- Use the pinned map's **+ / −** buttons to zoom in or out, including while the UI
+  is locked. They zoom around the player while following, or the view center after
+  panning.
+- Scroll the mouse wheel over the minimap to zoom in or out in either lock state.
+  While following, the player stays centered; after panning, wheel zoom keeps the
+  location under the cursor in place. Scrolling a location-results list scrolls
+  that list instead of changing the map zoom.
 - Use the separate **Map − / Map +** button to minimize or restore it without
   hiding the direction arrow. Its expanded size and position are retained.
   **Map background opacity** in the globe window adjusts the black backdrop and
@@ -56,22 +67,32 @@ The desktop overlay hides with Alt+Z and is removed on logout.
   override. Older pinned-map opacity preferences are retained; this preference
   and minimized state are saved.
 - **Player facing up** rotates both maps with the character; off keeps north up.
-- Use the game UI's **lock/unlock icon** to lock the pinned map (click-through,
-  except for its zoom and minimize/restore buttons)
-  or unlock it to drag, resize from its bottom-right corner, or zoom with the
-  wheel. Position, size, pinned mode and orientation survive logout and restart.
+- Use the game UI's **lock/unlock icon** to unlock the pinned map's position and
+  size. Drag its top-left move grip to move the window, or resize from its bottom-right
+  corner. The map itself handles panning, wheel zoom and destination
+  clicks in either lock state. Position, size, pinned mode and orientation survive logout and restart.
   Saved arrow and map positions are retained across temporary viewport changes.
-- Left drag pans. Mouse wheel zooms around the cursor; + and - zoom at the center.
-- Center on me centers without discarding the zoom. Reset view restores the overview.
+- In the full map, left drag pans. Mouse wheel zooms around the cursor; + and - zoom at the center.
+- **Center on me** centers the full map without discarding the zoom. **Reset view** restores the overview.
 - The full map also saves separate indoor and outdoor zoom levels, independently
   of the pinned map. Reset view saves the default zoom for the current view only.
-- Click a marker or map location to set a destination.
+  Overworld zoom now reaches 384×, eight times the previous maximum, so nearby
+  destinations can separate even on a small pinned map. Interior zoom remains 48×.
+- Click an individual marker to set a destination, or click an empty location
+  in the full map. Nearby markers combine into numbered dots. Click a dot to open
+  **(x results returned)** and choose a named location from the scrollable list.
+  Each result shows its own coordinates and sets that exact destination; it does
+  not navigate to the dot's shared position. The list stays stable when live
+  markers refresh, and dungeon results retain their original dungeon binding.
 - Towns, Portals and POIs control marker categories. The name filter restricts markers.
-- Portal names stay visible at every zoom level in both map views, even when
-  labels overlap. Town and other POI labels appear when zoomed in or hovered;
-  detailed non-portal atlas markers appear at 3× zoom or while searching.
-  Close markers remain selectable. Labels omit a leading "Portal to", while
-  hovering shows the full name and search still matches the original name.
+- Crowded names are grouped in both map views so they do not cover one another.
+  Enlarging or zooming the map separates nearby dots. Every grouped destination
+  remains available in its result list. Hover a dot to see its result count;
+  hover an individual marker to prioritize its label and read its full name.
+  Town and other POI labels appear when
+  zoomed in or hovered; detailed non-portal atlas markers appear at 3× zoom or
+  while searching. Labels omit a leading "Portal to" and shorten to fit small
+  maps; search still matches the original name.
 - Dungeon toggles the current landblock's interior layout, including buildings.
   Floor outlines around the player's elevation are highlighted; other floors are dim.
   A destination clicked in a dungeon is tied to that landblock, so the arrow does
@@ -99,11 +120,14 @@ from live server objects, so custom portals use their server-provided placement.
 
 ### GoArrow destinations and directions
 
-Open **NAV**, paste the full path to GoArrow's **locations.xml**, and click
-**Import locations**. Windows “Copy as path” quotes are accepted. A successful
+Open **NAV** and use **Browse locations** to select a GoArrow or CoD atlas XML
+file from your computer. The Windows and Linux file pickers show XML files and
+fill the path field; click **Import locations** to load the selected file. You
+can also paste a full path, including Windows “Copy as path” quotes. A successful
 import opens the searchable list and shows how many locations were loaded. An
 error appears beside the import controls and leaves the previous atlas available.
-Use **Browse locations** to reopen it after restarting the client. If you imported
+Use **View imported locations** to search the imported atlas or reopen it after
+restarting the client. If you imported
 with v157 or earlier, import the XML once more to add its portal exits.
 
 Search by name or type and select a row. Each row shows its coordinates so you
@@ -121,10 +145,20 @@ terrain obstacles, and character-specific access requirements are outside the
 planner. You move your character and use each portal yourself.
 Region boundaries come from [GoArrow's MapRegions.xml](https://github.com/Xanius/GoArrow-VVSEdition/blob/fb7e49f0f9f4d7bd1401c5310dfcfa9fd05ed84d/GoArrow/RouteFinding/MapRegions.xml).
 
-The importer accepts GoArrow's
-`<locations><loc name="..." type="..." NS="..." EW="..."/></locations>` format.
-It does not accept the older raw CoD `<atlas>` format. Invalid input preserves the
-previous atlas. The import reads data only and does not run Decal DLLs. The
+The importer accepts both GoArrow's
+`<locations><loc name="..." type="..." NS="..." EW="..."/></locations>` exports
+and raw Crossroads of Dereth `<atlas><location>...</location></atlas>` files,
+regardless of filename. It converts CoD's south-positive latitude and travel
+arrivals to the map's north-positive coordinates, and normalizes known location
+types. Raw arrivals with either coordinate zero are unknown; explicit zero-axis
+exits in GoArrow exports remain valid. These conventions follow
+[GoArrow's import code](https://github.com/Xanius/GoArrow-VVSEdition/blob/fb7e49f0f9f4d7bd1401c5310dfcfa9fd05ed84d/GoArrow/RouteFinding/Location.cs).
+
+Retired records and version metadata are excluded. Invalid location rows are
+skipped and counted in the import result; a bad travel exit is ignored without
+losing its valid entrance. Malformed XML, unsupported formats, and files with
+no usable locations preserve the previous atlas. The import reads data only and
+does not run Decal DLLs. The
 copyrighted GoArrow/CoD database is not bundled with this client. Atlas locations
 can be stale or differ on custom servers; nearby live portals remain authoritative.
 

@@ -93,6 +93,7 @@ void FACESession::Disconnect()
 	ManualAppraisalGuid = 0;
 	bBackgroundAppraisalContext = false;
 	PendingInventoryTransfers.Reset();
+	RecentGiveRequests.Reset();
 	GiveRecipientGuid = 0;
 	Confirmations.Reset();
 	ServerPopups.Reset();
@@ -281,6 +282,7 @@ void FACESession::RequestLogOff()
 
 void FACESession::ClearWorldState()
 {
+	RecentGiveRequests.Reset();
 	ResetBookEditing();
 	Confirmations.Reset();
 	ServerPopups.Reset();
@@ -2232,6 +2234,7 @@ void FACESession::HandleObjectCreate(FACEBinaryReader& Reader, bool bForceRecrea
 	}
 	Obj.StackSize = Decoded.StackSize;
 	Obj.MaxStackSize = Decoded.MaxStackSize;
+	LogGiveUpdate(Obj.Guid, TEXT("ObjectCreate"), Obj.StackSize, Obj.ContainerId);
 	Obj.Structure = Decoded.Structure;
 	Obj.MaxStructure = Decoded.MaxStructure;
 	Obj.SpellDID = Decoded.SpellDID;
@@ -5412,11 +5415,40 @@ void FACESession::SendGiveObjectRequest(int32 TargetGuid, int32 ItemGuid, int32 
 	{
 		return;
 	}
+	const double Now = FPlatformTime::Seconds();
+	for (auto It = RecentGiveRequests.CreateIterator(); It; ++It)
+		if (It.Value() <= Now) It.RemoveCurrent();
+	// A bounded, short-lived receipt trace diagnoses server-specific NPC turn-ins
+	// without changing inventory ownership or imposing a quantity on bulk trades.
+	if (RecentGiveRequests.Num() >= 64 && !RecentGiveRequests.Contains(ItemGuid))
+	{
+		int32 OldestGuid = 0; double OldestUntil = TNumericLimits<double>::Max();
+		for (const auto& Pair : RecentGiveRequests)
+			if (Pair.Value < OldestUntil) { OldestGuid = Pair.Key; OldestUntil = Pair.Value; }
+		RecentGiveRequests.Remove(OldestGuid);
+	}
+	RecentGiveRequests.Add(ItemGuid, Now + 120.0);
+	const auto* Item = WorldObjects.Find(ItemGuid);
+	const auto* Target = WorldObjects.Find(TargetGuid);
+	Log(FString::Printf(TEXT("Give request: item=0x%08X wcid=%d stack=%d amount=%d container=0x%08X target=0x%08X targetWcid=%d"),
+		ItemGuid, Item ? Item->WeenieClassId : 0, Item ? Item->StackSize : -1, Amount,
+		Item ? Item->ContainerId : 0, TargetGuid, Target ? Target->WeenieClassId : 0));
 	FACEBinaryWriter W;
 	W.WriteUInt32(static_cast<uint32>(TargetGuid));
 	W.WriteUInt32(static_cast<uint32>(ItemGuid));
 	W.WriteInt32(Amount);
 	SendGameAction(ACEGameAction::GiveObjectRequest, W.GetData(), ACEQueue::WeenieQueue);
+}
+
+void FACESession::LogGiveUpdate(int32 ItemGuid, const TCHAR* Receipt, int32 StackSize, int32 ContainerGuid)
+{
+	const double* Until = RecentGiveRequests.Find(ItemGuid);
+	if (!Until) return;
+	if (*Until <= FPlatformTime::Seconds()) { RecentGiveRequests.Remove(ItemGuid); return; }
+	const auto* Item = WorldObjects.Find(ItemGuid);
+	Log(FString::Printf(TEXT("Give receipt: item=0x%08X %s stack=%d container=0x%08X previousStack=%d previousContainer=0x%08X known=%d"),
+		ItemGuid, Receipt, StackSize, ContainerGuid, Item ? Item->StackSize : -1,
+		Item ? Item->ContainerId : 0, Item != nullptr));
 }
 
 void FACESession::SendNoLongerViewingContents(int32 ContainerGuid)
@@ -7450,7 +7482,6 @@ void FACESession::ApplyPropertyDataID(int32 ObjectGuid, uint32 PropertyId, uint3
 
 void FACESession::HandleInventoryPutObjInContainer(FACEBinaryReader& Reader)
 {
-	++InventoryDataRevision;
 	// GameEventItemServerSaysContainId: itemGuid, containerGuid, placement, containerType.
 	if (!Reader.CanRead(16))
 	{
@@ -7460,6 +7491,14 @@ void FACESession::HandleInventoryPutObjInContainer(FACEBinaryReader& Reader)
 	const int32 ContainerGuid = static_cast<int32>(Reader.ReadUInt32());
 	const int32 Placement = Reader.ReadInt32();
 	const int32 ContainerType = Reader.ReadInt32();
+	const auto* GivingItem = WorldObjects.Find(ItemGuid);
+	LogGiveUpdate(ItemGuid, TEXT("ContainId"), GivingItem ? GivingItem->StackSize : -1, ContainerGuid);
+	ApplyInventoryContainment(ItemGuid, ContainerGuid, Placement, ContainerType);
+}
+
+void FACESession::ApplyInventoryContainment(int32 ItemGuid, int32 ContainerGuid, int32 Placement, int32 ContainerType)
+{
+	++InventoryDataRevision;
 	PendingInventoryTransfers.Remove(ItemGuid);
 	EquipmentRemovalEvidence.Remove(ItemGuid);
 
@@ -7812,6 +7851,7 @@ void FACESession::HandleInventoryRemoveObject(FACEBinaryReader& Reader)
 
 void FACESession::RemoveInventoryObject(int32 ItemGuid)
 {
+	LogGiveUpdate(ItemGuid, TEXT("RemoveInventoryObject"), 0, 0);
 	EquipmentRemovalEvidence.Remove(ItemGuid);
 	PendingInventoryTransfers.Remove(ItemGuid);
 	// Whole-item turn-ins have no SetStackSize. Invalidate cached inventories
@@ -7886,6 +7926,8 @@ void FACESession::HandleSetStackSize(FACEBinaryReader& Reader)
 	const int32 Guid = static_cast<int32>(Reader.ReadUInt32());
 	const int32 Stack = static_cast<int32>(Reader.ReadUInt32());
 	const int32 Value = static_cast<int32>(Reader.ReadUInt32());
+	const auto* GivingItem = WorldObjects.Find(Guid);
+	LogGiveUpdate(Guid, TEXT("SetStackSize"), Stack, GivingItem ? GivingItem->ContainerId : 0);
 	if (FACEWorldObject* Obj = WorldObjects.Find(Guid))
 	{
 		Obj->StackSize = Stack;
@@ -7986,6 +8028,11 @@ void FACESession::HandlePublicUpdatePropertyInt(FACEBinaryReader& Reader)
 	if (Guid == PlayerGuid)
 	{
 		ApplyPlayerIntQuality(Prop, Value);
+	}
+	if (Prop == 12)
+	{
+		const auto* GivingItem = WorldObjects.Find(Guid);
+		LogGiveUpdate(Guid, TEXT("StackSizeQuality"), Value, GivingItem ? GivingItem->ContainerId : 0);
 	}
 	if (Prop == 134)
 	{
@@ -8179,6 +8226,17 @@ void FACESession::ApplyPropertyInstanceId(int32 Guid, uint32 Prop, int32 Value)
 	{
 		if (Prop == 2) // PropertyInstanceId.Container
 		{
+			LogGiveUpdate(Guid, TEXT("ContainerQuality"), Obj->StackSize, Value);
+			// Retail ACCWeenieObject::OnStatUpdated (InstanceID, 0058E220)
+			// moves an unowned item into slot zero when Container becomes the
+			// player. GDLE returns NPC hand-in remainders this way, and its
+			// return CreateObject can precede the ordered transfer to the NPC.
+			// Owned items and pending moves still wait for their own receipt.
+			if (PlayerGuid && Value == PlayerGuid && !HasPlayerInventoryState(*Obj))
+			{
+				ApplyInventoryContainment(Guid, PlayerGuid, 0, IsPackSlotItem(*Obj) ? 1 : 0);
+				return;
+			}
 			// The ordered inventory event owns removal and insertion, including
 			// Container=0 before a gift/drop. Clearing ownership here loses the
 			// source placement, leaving gaps and duplicate indices on later drags.

@@ -60,6 +60,12 @@ int32 UPersonalFarTerrainSubsystem::VisibleRadius() const
 	return ShellMesh && ShellMesh->IsVisible() ? BuiltRadius : 0;
 }
 
+float UPersonalFarTerrainSubsystem::FogCoverageDistanceCm(const FVector& CameraLocation) const
+{
+	return VisibleRadius() > 0
+		? PersonalFarTerrainMesh::CoverageDistanceCm(BuiltCoverageCells, CameraLocation, BuiltWorldScale) : 0.f;
+}
+
 void UPersonalFarTerrainSubsystem::SetShown(bool bShown)
 {
 	if (ShellMesh && ShellMesh->IsVisible() != bShown)
@@ -176,6 +182,8 @@ void UPersonalFarTerrainSubsystem::ApplyMesh(const TSharedRef<FPersonalFarTerrai
 	bWireframe = false;
 	BuiltCenter = Mesh->Center;
 	BuiltRadius = Radius;
+	BuiltCoverageCells = Mesh->Levels.IsEmpty() ? FIntRect() : FIntRect(Mesh->Levels.Last().Min, Mesh->Levels.Last().Max);
+	BuiltWorldScale = WorldScale;
 	BuiltHoles = MoveTemp(Holes);
 	// The loaded terrain may have changed while the worker ran.
 	Update();
@@ -376,7 +384,10 @@ void UPersonalFarTerrainSubsystem::Update()
 	{
 		WantDetail = DetailCenter;
 	}
-	const int32 SceneryRadius = PersonalFarScenery::IsOn() ? FMath::Min(Radius, PersonalFarScenery::Radius()) : 0;
+	// The prefetched outer ring can become visible before this shell finishes
+	// recentering. Keep its ground native too, rather than starting the morph at R.
+	const int32 SceneryRadius = PersonalFarScenery::IsOn()
+		? PersonalFarScenery::NativeTerrainRing(PersonalFarScenery::Radius(), Radius) : 0;
 	const bool bChanged = SceneryRadius != RequestedSceneryRadius || Center != BuiltCenter || Radius != BuiltRadius || Holes.Num() != BuiltHoles.Num() || !Holes.Includes(BuiltHoles)
 		|| WantDetail != BuiltDetailCenter;
 	if (bChanged && !bBuilding)

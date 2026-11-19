@@ -78,6 +78,7 @@ DECLARE_MULTICAST_DELEGATE_FourParams(FACEOnCombatFeedback, const FString&, int3
 class ACECLIENT_API FACESession : public TSharedFromThis<FACESession>
 {
     friend class FACEPluginWorldPlateTest;
+    friend class FACEPluginWindowTest;
     friend class FACEFoundryTest;
 	friend class FACERetailLogoutTest;
 	friend class FACECollisionSizingTest;
@@ -197,6 +198,7 @@ class ACECLIENT_API FACESession : public TSharedFromThis<FACESession>
 	friend class FACERetailAugmentationStatsTest;
 	friend class FACEAugmentationTest;
 	friend class FACERetailInventoryOrderTest;
+	friend class FACENPCStackExchangeTest;
 	friend class FACEClosedContainerLifetimeTest;
 	friend class FACEEquippedLookupTest;
 	friend class FACEInventoryUICostTest;
@@ -941,6 +943,7 @@ private:
 	void HandleInventoryRemoveObject(FACEBinaryReader& Reader);
 	void HandleSetStackSize(FACEBinaryReader& Reader);
 	void HandleInventoryPutObjInContainer(FACEBinaryReader& Reader);
+	void ApplyInventoryContainment(int32 ItemGuid, int32 ContainerGuid, int32 Placement, int32 ContainerType);
 	void HandleWieldItem(FACEBinaryReader& Reader);
 	void HandleInventoryPutObjIn3D(FACEBinaryReader& Reader);
 	void HandlePickupEvent(FACEBinaryReader& Reader);
@@ -961,6 +964,9 @@ private:
 	void RemoveInventoryObject(int32 ItemGuid);
 	int32 PendingEquipmentGuid = 0;
 	TMap<int32,double> PendingInventoryTransfers;
+	// Diagnostics only; never predict consumption or keep an item owned locally.
+	TMap<int32, double> RecentGiveRequests;
+	void LogGiveUpdate(int32 ItemGuid, const TCHAR* Receipt, int32 StackSize, int32 ContainerGuid);
 	uint32 PendingEquipmentCombatMode = 0;
 	bool bPendingEquipmentWieldSent = false;
 	int64 PendingEquipmentLocation = 0;

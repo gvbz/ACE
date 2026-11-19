@@ -97,6 +97,7 @@
 #include "Camera/CameraComponent.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
 #include "Layout/WidgetPath.h"
 #if WITH_EDITOR
 #include "Editor.h"
@@ -8185,6 +8186,16 @@ bool AACEPlayerController::IsMouseOverBlockingUI() const
 	{
 		return false;
 	}
+	// A map pan still owns the gesture after the cursor leaves its bounds.
+	// Only this UI capture blocks world input; the viewport also captures the
+	// cursor for ordinary camera movement and must keep that behavior.
+	if (const auto User = FSlateApplication::Get().GetCursorUser())
+	{
+		if (const auto Captor = User->GetCursorCaptor(); Captor && Captor->GetTag() == TEXT("Waypoint.MapSurface"))
+		{
+			return true;
+		}
+	}
 
 	// Must use absolute desktop coords — GetMousePosition() is viewport-local and made
 	// LocateWindowUnderMouse always hit the wrong Visible chrome (blocking all world picks).
@@ -8223,7 +8234,8 @@ bool AACEPlayerController::IsMouseOverBlockingUI() const
 		const FString Type = W.GetTypeAsString();
 		// SBorder/SImage: HUD chrome (AddArt/AddPanel) binds mouse handlers — must block
 		// world pick when the cursor is over those panels.
-		return Type == TEXT("SButton")
+		return W.GetTag() == TEXT("Waypoint.MapSurface")
+			|| Type == TEXT("SButton")
 			|| Type == TEXT("SBorder")
 			|| Type == TEXT("SImage")
 			|| Type == TEXT("SScrollBar")

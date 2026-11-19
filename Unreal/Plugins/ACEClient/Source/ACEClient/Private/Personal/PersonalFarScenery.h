@@ -12,6 +12,40 @@ namespace PersonalFarScenery
 	/** Interior room meshes and window panels are only useful in the nearer rings. */
 	inline constexpr int32 InteriorRings = 8;
 	inline constexpr int32 WorldLandblocks = 255;
+	/** CPD 0/1 are already used for depth bias/selection by the ordinary object graph. */
+	inline constexpr int32 SizeFadePrimitiveDataIndex = 2;
+	inline constexpr float FadeStartFraction = 0.8f;
+
+	/** Prepare an invisible outer ring before the player crosses a landblock boundary. */
+	inline int32 PlacementRing(int32 VisibleRing)
+	{
+		return FMath::Clamp(VisibleRing + 1, NearRing, LastRing);
+	}
+
+	/** Keep prefetched scenery on native heights while a recentered shell is still building. */
+	inline int32 NativeTerrainRing(int32 VisibleRing, int32 TerrainRing)
+	{
+		return FMath::Min(PlacementRing(VisibleRing), FMath::Max(TerrainRing, 0));
+	}
+
+	/** A prefetched ring covers one-block recenter latency; a cell covers the camera boom. */
+	inline float FadeRadius(int32 OuterRing, float BlockSize)
+	{
+		const float Rings = FMath::Max(float(OuterRing < LastRing ? OuterRing : LastRing - 1) - .125f, 0.f);
+		return Rings * FMath::Max(BlockSize, 0.f);
+	}
+
+	/** Coverage is zero before hardware culling can remove any still-visible surface. */
+	inline float CullDistance(float FadeEnd, float BoundsRadius)
+	{
+		return FadeEnd + FMath::Max(BoundsRadius, 1.f);
+	}
+
+	/** Matches the material's smooth distance transition; zero end disables that limit. */
+	inline float FadeAmount(float Distance, float End)
+	{
+		return End > 0.f ? 1.f - FMath::SmoothStep(End * FadeStartFraction, End, Distance) : 1.f;
+	}
 
 	/** Check box "Far Terrain Objects". */
 	inline constexpr const TCHAR* OptionKey = TEXT("PersonalFarScenery");
@@ -61,6 +95,12 @@ namespace PersonalFarScenery
 	inline int32 FogRing(float FogEnd, float BlockSize)
 	{
 		return FMath::Clamp(1 + FMath::FloorToInt32(FMath::Max(FogEnd, 0.f) / BlockSize), 0, LastRing);
+	}
+
+	/** Retain existing blocks one ring beyond the build limit; this does not request new placement. */
+	inline int32 RetentionRing(int32 BuildRing)
+	{
+		return FMath::Clamp(BuildRing + 1, 0, LastRing);
 	}
 
 	/**

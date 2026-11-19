@@ -14,6 +14,21 @@ namespace ACEWaypoint
     bool Parse(const FString& Text, FVector2D& Out);
     FString Format(FVector2D Coordinates);
     FString MarkerLabel(const FString& Name);
+    struct FMapLabelCandidate
+    {
+        int32 Index;
+        FVector2D Point,Size;
+        FString Key;
+        int32 Priority=0;
+    };
+    struct FMapLabel { int32 Index; FVector2D Origin,Size; };
+    // Screen-local layout: marker icons remain independent of label admission.
+    TArray<FMapLabel> LayoutLabels(TArray<FMapLabelCandidate> Candidates,FVector2D ViewSize,const TArray<FBox2D>& Reserved);
+    struct FMapClusterPoint { int32 Index; FVector2D Point; FString Key; };
+    struct FMapCluster { FVector2D Point; TArray<int32> Indices; };
+    // Point is a fixed screen-local anchor; every member stays within Radius.
+    // Invalid positions are ignored. A nonpositive/nonfinite radius keeps singletons.
+    TArray<FMapCluster> ClusterMarkers(TArray<FMapClusterPoint> Points,double Radius=18.);
     FVector2D Coordinates(const FACEPosition& Position);
     double RelativeBearing(FVector2D From, FVector2D To, FVector2D Forward);
     inline double NorthBearing(FVector2D Forward)

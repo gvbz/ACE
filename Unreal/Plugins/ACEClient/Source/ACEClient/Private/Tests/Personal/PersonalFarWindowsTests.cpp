@@ -717,6 +717,12 @@ bool FPersonalFarWindowsDrawTest::RunTest(const FString& Parameters)
 					&& Component->GetMaterial(0) && Windows->PanelMaterials.Contains(Component->GetMaterial(0)) && !Component->IsVisible()
 					&& !Component->IsCollisionEnabled() && !Component->CastShadow && Component->ComponentHasTag(TEXT("PersonalFarWindowsPanel"));
 				Wrong += bGood ? 0 : 1;
+				if (Component)
+				{
+					const auto& Data = Component->GetCustomPrimitiveData().Data;
+					const int32 Index = PersonalFarScenery::SizeFadePrimitiveDataIndex;
+					TestTrue(TEXT("Panel size-fade opt-out is initialized before its first draw"), Data.IsValidIndex(Index) && Data[Index] == 0.f);
+				}
 				if (Component) Mine.FindOrAdd(Panel.Room, FBox(ForceInit)) += Component->Bounds.GetBox();
 			}
 			const uint32 Key = (uint32(Pair.Key.X) << 24) | (uint32(Pair.Key.Y) << 16);
@@ -1926,6 +1932,12 @@ bool FPersonalFarWindowsRoomsDrawTest::RunTest(const FString& Parameters)
 				&& Component->GetMaterial(0) && !Component->IsVisible() && !Component->IsCollisionEnabled() && !Component->CastShadow
 				&& !Channels.bChannel0 && Channels.bChannel1 && Component->ComponentHasTag(TEXT("PersonalFarRooms")) && Building.Entries.Num() > 0;
 			Wrong += bGood ? 0 : 1;
+			if (Component)
+			{
+				const auto& Data = Component->GetCustomPrimitiveData().Data;
+				const int32 Index = PersonalFarScenery::SizeFadePrimitiveDataIndex;
+				TestTrue(TEXT("Room size-fade opt-out is initialized before its first draw"), Data.IsValidIndex(Index) && Data[Index] == 0.f);
+			}
 			if (!Component || !Apertures)
 			{
 				continue;

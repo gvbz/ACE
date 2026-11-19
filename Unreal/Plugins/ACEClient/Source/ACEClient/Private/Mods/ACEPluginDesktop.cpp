@@ -308,11 +308,21 @@ void SACEPluginDesktop::Resize(const FString& Id,FVector2D Delta,bool Save)
 }
 void SACEPluginDesktop::Raise(const FString& Id)
 {if(Id!=BarId)if(auto* W=Windows.Find(Id))W->Slot->SetZOrder(++TopOrder);}
+FString SACEPluginDesktop::ResolveWindowId(const FString& Id) const
+{
+    // NAV and Map are entry views of the same interactive Waypoint interface.
+    // Keep the first frame and its current page, input and layout. The pinned
+    // minimap and direction arrow remain separate HUD readouts.
+    if(Id==TEXT("waypoint")||Id==TEXT("waypoint.map"))
+        for(const TCHAR* Existing:{TEXT("waypoint"),TEXT("waypoint.map")})
+            if(Windows.Contains(Existing))return Existing;
+    return Id;
+}
 bool SACEPluginDesktop::IsOpen(const FString& Id) const
-{const auto* W=Windows.Find(Id);return W&&W->Open;}
+{const auto* W=Windows.Find(ResolveWindowId(Id));return W&&W->Open;}
 bool SACEPluginDesktop::ContainsPoint(const FString& Id,FVector2D Absolute) const
 {
-    const auto* W=Windows.Find(Id);
+    const auto* W=Windows.Find(ResolveWindowId(Id));
     return W&&W->Open&&W->Widget&&W->Widget->GetCachedGeometry().IsUnderLocation(Absolute);
 }
 void SACEPluginDesktop::Hide(const FString& Id,bool Remember)
@@ -329,16 +339,23 @@ void SACEPluginDesktop::Hide(const FString& Id,bool Remember)
         if(Focused)FSlateApplication::Get().SetAllUserFocusToGameViewport();
     }
 }
-void SACEPluginDesktop::Toggle(const FString& Id)
+void SACEPluginDesktop::Toggle(const FString& RequestedId)
 {
-    if(!Host.IsValid())return;
+    const FString Id=ResolveWindowId(RequestedId);
+    if(IsOpen(Id))Hide(Id);
+    else Open(Id);
+}
+bool SACEPluginDesktop::Open(const FString& RequestedId)
+{
+    if(!Host.IsValid())return false;
+    const FString Id=ResolveWindowId(RequestedId);
     const bool Manager=Id==TEXT("__manager");
     TSharedPtr<FACEClientPlugin> Plugin;
     for(auto P:Host->Plugins)if((P->Id==Id || (Id.StartsWith(TEXT("waypoint."))&&P->Id==TEXT("waypoint")) || (Id==TEXT("ucm.log")&&P->Id==TEXT("ucm")))&&(P->Enabled||Id==TEXT("ucm.log")))Plugin=P;
-    if(!Plugin&&!Manager)return;
+    if(!Plugin&&!Manager)return false;
     FACEPluginStyle::Use(Host.Get());
     const bool Arrow=Id==TEXT("waypoint.arrow");
-    if(Arrow&&!Host->ShouldShowWaypointArrow())return;
+    if(Arrow&&!Host->ShouldShowWaypointArrow())return false;
     TAttribute<EVisibility> OpenVisibility(EVisibility::Visible);
     if(Arrow)OpenVisibility.BindLambda([H=Host]()
     {
@@ -347,9 +364,8 @@ void SACEPluginDesktop::Toggle(const FString& Id)
     });
     if(auto* W=Windows.Find(Id))
     {
-        if(W->Open)Hide(Id);
-        else {Host->SavePluginWindowVisibility(Id,true);W->Open=true;W->Widget->SetVisibility(OpenVisibility);Raise(Id);}
-        return;
+        Host->SavePluginWindowVisibility(Id,true);W->Open=true;W->Widget->SetVisibility(OpenVisibility);
+        Layout(*W);Raise(Id);return true;
     }
     FWindow W;W.Id=Id;W.Position=Host->GetPluginWindowPosition(Id,FVector2D(84+24*(Windows.Num()-1),80+24*(Windows.Num()-1)));W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(780,700));
     const bool Dungeon=Id==TEXT("waypoint.dungeon");
@@ -369,17 +385,18 @@ void SACEPluginDesktop::Toggle(const FString& Id)
         .CanManipulate([H=Host,Id]{return H.IsValid()&&H->CanManipulatePluginWindow(Id);})
         .Move([this,Id](FVector2D D,bool Save){Move(Id,D,Save);})
         .Resize(Arrow?TFunction<void(FVector2D,bool)>():TFunction<void(FVector2D,bool)>([this,Id](FVector2D D,bool Save){Resize(Id,D,Save);}))
-        .Raise([this,Id](){Raise(Id);}).Close([this,Id,Manager](){if(Manager&&ManagerOnly){Host->TogglePanel();return;}Hide(Id);})[Manager?Host->MakePanel():Dungeon?Host->MakeWaypointDungeonOverlay():Arrow?Host->MakeWaypointPanel(false,true):Host->MakePanel(Id)];
+        .Raise([this,Id](){Raise(Id);}).Close([this,Id,Manager](){if(Manager&&ManagerOnly){Host->CloseDesktopPluginManager();return;}Hide(Id);})[Manager?Host->MakePanel():Dungeon?Host->MakeWaypointDungeonOverlay():Arrow?Host->MakeWaypointPanel(false,true):Host->MakePanel(Id)];
     if(Dungeon)W.Widget->SetVisibility(EVisibility::Collapsed); // Tick validates the current cell before showing it.
     if(Arrow)W.Widget->SetVisibility(OpenVisibility);
     Canvas->AddSlot().Expose(W.Slot).Alignment(FVector2D::ZeroVector).ZOrder(++TopOrder)[W.Widget.ToSharedRef()];Layout(W);Windows.Add(Id,W);
     Host->SavePluginWindowVisibility(Id,true);
+    return true;
 }
 void SACEPluginDesktop::Refresh()
 {
     if(!Host.IsValid()||ManagerOnly)return;
     FACEPluginStyle::Use(Host.Get());
-    for(const auto& P:Host->Plugins)if(P->Enabled&&Host->WasPluginWindowOpen(P->Id)&&!Windows.Contains(P->Id))Toggle(P->Id);
+    for(const auto& P:Host->Plugins)if(P->Enabled&&Host->WasPluginWindowOpen(P->Id)&&!Windows.Contains(ResolveWindowId(P->Id)))Open(P->Id);
     Windows.FindChecked(BarId).Widget->SetVisibility(Host->IsPluginBarVisible()?EVisibility::Visible:EVisibility::Collapsed);
     Layout(Windows.FindChecked(BarId));
     const bool Horizontal=Host->IsPluginBarHorizontal();
@@ -388,7 +405,7 @@ void SACEPluginDesktop::Refresh()
     if(Host->Plugins.ContainsByPredicate([](const auto& P){return P->Id==TEXT("ucm");}))Enabled.Add(TEXT("ucm.log"));
     for(const TCHAR* Id:{TEXT("ucm.log"),TEXT("waypoint.map")})
         if((Enabled.Contains(Id)||(FString(Id)==TEXT("waypoint.map")&&Enabled.Contains(TEXT("waypoint"))))
-            &&Host->WasPluginWindowOpen(Id)&&!Windows.Contains(Id))Toggle(Id);
+            &&Host->WasPluginWindowOpen(Id)&&!Windows.Contains(ResolveWindowId(Id)))Open(Id);
     if(Enabled.Contains(TEXT("waypoint")))
     {
         Enabled.Add(TEXT("waypoint.map"));Enabled.Add(TEXT("waypoint.arrow"));Enabled.Add(TEXT("waypoint.dungeon"));
@@ -445,9 +462,17 @@ void UACEPluginSubsystem::UpdateDesktopDock()
     auto* PC=Cast<AACEPlayerController>(GI->GetFirstLocalPlayerController());
     auto* C=GI->GetSubsystem<UACEClientSubsystem>();
     if(!V||!PC||!C||C->GetSessionState()!=EACESessionState::InWorld||PC->IsVRActive()||PC->IsMobileActive())
-    {RemoveDesktopDock();return;}
+    {
+        const bool LeavingDesktop=DesktopDock.IsValid()||(PC&&(PC->IsVRActive()||PC->IsMobileActive()));
+        RemoveDesktopDock();
+        if(LeavingDesktop)CloseDesktopPluginManager(false);
+        return;
+    }
     if(!DesktopDock)
     {
+        // A login manager may contain an embedded plugin. Desktop gameplay
+        // instead opens that plugin in its one dock-owned frame.
+        CloseDesktopPluginManager(false);
         DesktopDock=SNew(SACEPluginDesktop).Host(this);
         DesktopDock->SetVisibility(TAttribute<EVisibility>::CreateLambda([Weak=TWeakObjectPtr<AACEPlayerController>(PC)]()
             {return Weak.IsValid()&&!Weak->IsDesktopInterfaceHidden()?EVisibility::SelfHitTestInvisible:EVisibility::Collapsed;}));
@@ -461,6 +486,16 @@ void UACEPluginSubsystem::RemoveDesktopDock()
     if(DesktopDock)DesktopDock->SaveOverlayLayout();
     if(DesktopDock)if(auto* V=GetGameInstance()->GetGameViewportClient())V->RemoveViewportWidgetContent(DesktopDock.ToSharedRef());
     DesktopDock.Reset();
+}
+bool UACEPluginSubsystem::OpenPluginWindow(const FString& Id)
+{
+    if(auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());PC&&PC->IsMobileActive()&&PC->MobileWidget)
+    {
+        const FName Page(*(TEXT("Plugin:")+Id));
+        if(PC->MobileWidget->Panel!=Page&&!PC->MobileWidget->IsHUDPluginVisible(Id))PC->MobileWidget->OpenPanel(Page);
+        return IsPluginWindowOpen(Id);
+    }
+    UpdateDesktopDock();return DesktopDock&&DesktopDock->Open(Id);
 }
 void UACEPluginSubsystem::TogglePluginWindow(const FString& Id)
 {
@@ -503,7 +538,13 @@ void UACEPluginSubsystem::SavePluginWindowVisibility(const FString& Id,bool Open
     if(IsLedger(Id)){SetLedgerOption(Id,TEXT("visible"),Open);return;}
     const TSharedPtr<FJsonObject>* Existing=nullptr;
     auto Visible=Settings->TryGetObjectField(TEXT("_window_visibility"),Existing)?*Existing:MakeShared<FJsonObject>();
-    bool Previous=false;if(Visible->TryGetBoolField(Id,Previous)&&Previous==Open)return;
+    const FString Other=Id==TEXT("waypoint")?TEXT("waypoint.map"):Id==TEXT("waypoint.map")?TEXT("waypoint"):TEXT("");
+    bool Previous=false,OtherOpen=false;
+    const bool Same=Visible->TryGetBoolField(Id,Previous)&&Previous==Open;
+    if(Same&&(Other.IsEmpty()||(Visible->TryGetBoolField(Other,OtherOpen)&&!OtherOpen)))return;
+    // Restore only the entry view that owns the frame. A stale alias must not
+    // resurrect another interface after the user closes this one.
+    if(!Other.IsEmpty())Visible->SetBoolField(Other,false);
     Visible->SetBoolField(Id,Open);Settings->SetObjectField(TEXT("_window_visibility"),Visible);SaveSettings();
 }
 bool UACEPluginSubsystem::IsPluginBarVisible() const

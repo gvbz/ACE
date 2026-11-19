@@ -12,6 +12,8 @@ struct FPersonalFarTerrainMesh
 	{
 		/** Quad size in 24 m cells: 1, 2, 4, 8 or 16. */
 		int32 Step = 1;
+		/** Outer band blending toward the next level, beyond the protected native-detail radius. */
+		int32 TransitionCells = 0;
 		/** Corner range of the box, in cells from the world's low corner. */
 		FIntPoint Min = FIntPoint::ZeroValue;
 		FIntPoint Max = FIntPoint::ZeroValue;
@@ -56,4 +58,11 @@ namespace PersonalFarTerrainMesh
 
 	/** World position of the mesh origin for a center landblock. */
 	FVector Origin(FIntPoint Center, float WorldScale);
+
+	/**
+	 * Conservative camera-to-edge distance of an already built shell rectangle, in Unreal units.
+	 * Cells are absolute world cell corners. The one-cell guard covers movement between fog updates;
+	 * camera height does not increase the safe coverage of the horizontal terrain rectangle.
+	 */
+	float CoverageDistanceCm(const FIntRect& Cells, const FVector& CameraLocation, float WorldScale);
 }

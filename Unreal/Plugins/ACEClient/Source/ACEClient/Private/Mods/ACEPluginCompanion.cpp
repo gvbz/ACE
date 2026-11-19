@@ -325,7 +325,7 @@ bool UACEPluginSubsystem::CompanionAction(FACEClientPlugin& P,const TSharedPtr<F
             return C->GetSelectedObject().Guid==O.Guid;
         }
         if(!IsWaypointEnabled()){Error=TEXT("Enable Waypoint to show the navigation arrow");return false;}
-        const FVector2D Coordinates=ACEWaypoint::Coordinates(O.Position);const uint32 Dungeon=(uint32(O.Position.CellId)&65535)>=256?uint32(O.Position.CellId)>>16:0;
+        const FVector2D Coordinates=ACEWaypoint::Coordinates(O.Position);const uint32 Dungeon=(uint32(O.Position.CellId)&65535)>=256?(uint32(O.Position.CellId)&0xFFFF0000):0;
         FVector2D Previous;uint32 PreviousDungeon=0;
         if(!GetWaypoint(Previous,PreviousDungeon)||PreviousDungeon!=Dungeon||!Coordinates.Equals(Previous,.002))SetWaypoint(Coordinates,Dungeon);
         return true;

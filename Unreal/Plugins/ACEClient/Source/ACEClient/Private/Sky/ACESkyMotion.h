@@ -3,6 +3,34 @@
 
 namespace ACESkyMotion
 {
+// Measure only vertices referenced by the solid celestial card. Imported
+// sections can share a vertex buffer containing a much larger glow halo.
+struct FBodyShape
+{
+	FVector Center = FVector::ZeroVector;
+	double TanHalfAngle = 0.;
+
+	static FBodyShape Measure(const TArray<FVector>& Vertices, const TArray<int32>& Indices)
+	{
+		FBodyShape Result;
+		FBox Bounds(ForceInit);
+		for (int32 Index : Indices) Bounds += Vertices[Index];
+		if (!Bounds.IsValid) return Result;
+		Result.Center = Bounds.GetCenter();
+		const FQuat View = Result.Center.Rotation().Quaternion();
+		FBox2D Extent(ForceInit);
+		for (int32 Index : Indices)
+		{
+			const FVector P = View.UnrotateVector(Vertices[Index]);
+			if (P.X > UE_SMALL_NUMBER) Extent += FVector2D(P.Y,P.Z)/P.X;
+		}
+		// A square card and a bevelled disc have different corner radii even
+		// when their visible diameters match. Compare projected width/height.
+		if (Extent.bIsValid) Result.TanHalfAngle = Extent.GetSize().GetMax()*.5;
+		return Result;
+	}
+};
+
 // Reduce in double precision before uploading to float material parameters.
 // Portal-year timestamps are too large to pass directly to a shader clock.
 inline double Offset(double Seconds, double Velocity, double Initial = 0.)

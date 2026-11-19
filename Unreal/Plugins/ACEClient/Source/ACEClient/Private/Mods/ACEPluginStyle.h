@@ -118,6 +118,7 @@ public:
     using FArguments=STextBlock::FArguments;
     void Construct(const FArguments& Args);
     void SetJustification(TAttribute<ETextJustify::Type> InJustification);
+    void SetSingleLineEllipsis(TAttribute<bool> InEllipsis);
     virtual FVector2D ComputeDesiredSize(float) const override;
     virtual int32 OnPaint(const FPaintArgs&,const FGeometry&,const FSlateRect&,FSlateWindowElementList&,int32,const FWidgetStyle&,bool) const override;
 private:
@@ -127,7 +128,10 @@ private:
     TAttribute<bool> Wrap;
     TAttribute<float> WrapAt;
     TAttribute<ETextJustify::Type> Justification;
+    TAttribute<bool> SingleLineEllipsis;
+    mutable bool CachedEllipsis=false;
     mutable FString CachedText;
+    mutable FString DisplayText;
     mutable TArray<FACEBitmapTextLine> Lines;
     mutable int32 CachedWidth=-1;
     mutable float Width=0;

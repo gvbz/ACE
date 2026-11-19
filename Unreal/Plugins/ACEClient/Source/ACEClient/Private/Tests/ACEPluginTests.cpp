@@ -21,6 +21,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -34,6 +35,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Views/SListView.h"
 #include "Mods/ACEWaypointAtlas.h"
+#include "Mods/ACEWaypointFilePicker.h"
 #include "Widgets/Text/STextBlock.h"
 #include "ImageUtils.h"
 #include "RenderingThread.h"
@@ -55,6 +57,25 @@ namespace
         auto Children=W->GetChildren();
         for(int32 I=0;I<Children->Num();++I)if(auto Found=FindControl(Children->GetChildAt(I),Name))return Found;
         return nullptr;
+    }
+    bool IsControlEnabled(TSharedRef<SWidget> W,const TSharedPtr<SWidget>& Target,bool ParentEnabled=true)
+    {
+        const bool Enabled=ParentEnabled&&W->IsEnabled();
+        if(W==Target)return Enabled;
+        auto Children=W->GetChildren();
+        for(int32 I=0;I<Children->Num();++I)if(IsControlEnabled(Children->GetChildAt(I),Target,Enabled))return true;
+        return false;
+    }
+    bool SameWaypointLocations(const TArray<FACEWaypointLandmark>& Expected,const TArray<FACEWaypointLandmark>& Actual)
+    {
+        if(Expected.Num()!=Actual.Num())return false;
+        for(int32 I=0;I<Expected.Num();++I)
+        {
+            const auto& A=Expected[I];const auto& B=Actual[I];
+            if(A.Name!=B.Name||A.Type!=B.Type||!A.Coordinates.Equals(B.Coordinates,1.e-9)
+                ||A.TravelExit.IsSet()!=B.TravelExit.IsSet()||(A.TravelExit&&!A.TravelExit->Equals(*B.TravelExit,1.e-9)))return false;
+        }
+        return true;
     }
 }
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEPluginVMTest,"ACE.Plugins.Runtime",
@@ -445,10 +466,81 @@ bool FACEPluginHostTest::RunTest(const FString&)
         auto Click=[&](const TCHAR* Name)
         {
             auto B=StaticCastSharedPtr<SButton>(FindControl(Panel,Name));
-            if(TestTrue(Name,B.IsValid()))B->SimulateClick();
+            if(!TestTrue(Name,B.IsValid()))return;
+            B->UpdateAllAttributes();Panel->SlatePrepass(1.f);
+            // SimulateClick alone bypasses disabled ancestors. Check the same
+            // inherited enablement the user sees before exercising navigation.
+            if(TestTrue(*FString::Printf(TEXT("%s is enabled through its widget ancestry"),Name),IsControlEnabled(Panel,B)))B->SimulateClick();
+            B->UpdateAllAttributes();Panel->SlatePrepass(1.f);
+        };
+        TestTrue(TEXT("Browse-before-import fixture starts with no atlas"),H->GetWaypointLocations().IsEmpty());
+        ACEWaypointFilePicker::FComplete PickerComplete;
+        FString PickerInitialPath;int32 PickerRequests=0;
+        ACEWaypointFilePicker::SetTestPicker([&](const FString& InitialPath,ACEWaypointFilePicker::FComplete Complete)
+        {PickerInitialPath=InitialPath;++PickerRequests;PickerComplete=MoveTemp(Complete);});
+        ON_SCOPE_EXIT
+        {
+            if(PickerComplete){auto Finish=MoveTemp(PickerComplete);Finish(FString(),FString(),true);}
+            ACEWaypointFilePicker::SetTestPicker({});
         };
         auto PathBox=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasPath")));
-        if(!TestTrue(TEXT("Atlas path available in settings"),PathBox.IsValid()))return false;
+        auto Browse=FindControl(Panel,TEXT("Waypoint.BrowseLocations"));
+        if(!TestTrue(TEXT("XML Browse is distinct from viewing the imported atlas"),PathBox&&Browse
+            &&Browse==FindControl(Panel,TEXT("Browse locations"))
+            &&FindControl(Panel,TEXT("View imported locations")).IsValid()))return false;
+        auto CompletePicker=[&](const FString& Path,const FString& Error,bool Cancelled)
+        {
+            auto Finish=MoveTemp(PickerComplete);Finish(Path,Error,Cancelled);
+            // Deferred dialog completion changes a cached Slate enabled attribute;
+            // process the same attribute/layout update the next UI frame performs.
+            Browse->UpdateAllAttributes();Panel->SlatePrepass(1.f);
+        };
+        TestTrue(TEXT("XML Browse is enabled before any path or atlas exists"),PathBox->GetText().IsEmpty()&&IsControlEnabled(Panel,Browse));
+        Click(TEXT("Browse locations"));
+        TestEqual(TEXT("Browse requests one XML chooser"),PickerRequests,1);
+        TestTrue(TEXT("Chooser starts without a typed path"),PickerInitialPath.IsEmpty());
+        TestTrue(TEXT("An open chooser disables another Browse request"),ACEWaypointFilePicker::IsOpen()&&!IsControlEnabled(Panel,Browse));
+        TestFalse(TEXT("Concurrent chooser requests are rejected"),ACEWaypointFilePicker::Open(Atlas,[](const FString&,const FString&,bool){}));
+        if(!TestTrue(TEXT("XML chooser supplies an asynchronous completion"),bool(PickerComplete)))return false;
+        CompletePicker(Atlas,FString(),false);
+        TestEqual(TEXT("Selected XML populates the editable path"),PathBox->GetText().ToString(),Atlas);
+        TestTrue(TEXT("Selecting an XML waits for the explicit Import button"),H->GetWaypointLocations().IsEmpty()
+            &&FindControl(Panel,TEXT("Waypoint.AtlasPath"))==PathBox&&!FindControl(Panel,TEXT("Waypoint.AtlasResults")).IsValid());
+        TestTrue(TEXT("Browse is available again after choosing a file"),!ACEWaypointFilePicker::IsOpen()&&IsControlEnabled(Panel,Browse));
+        Click(TEXT("Browse locations"));
+        TestEqual(TEXT("The existing path seeds the next chooser"),PickerInitialPath,Atlas);
+        if(!TestTrue(TEXT("Picker failure callback is available"),bool(PickerComplete)))return false;
+        CompletePicker(FString(),TEXT("Could not open the XML chooser"),false);
+        auto PickerStatus=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.ImportStatus")));
+        if(!TestTrue(TEXT("Picker errors are visible without losing the typed path"),PickerStatus
+            &&PickerStatus->GetText().ToString().Contains(TEXT("Could not open the XML chooser"))&&PathBox->GetText().ToString()==Atlas))return false;
+        const FString BeforeCancel=PickerStatus->GetText().ToString();
+        Click(TEXT("Browse locations"));
+        if(!TestTrue(TEXT("Picker cancellation callback is available"),bool(PickerComplete)))return false;
+        CompletePicker(FString(),FString(),true);
+        TestTrue(TEXT("Cancelling the XML chooser preserves path, feedback and imported data"),PathBox->GetText().ToString()==Atlas
+            &&PickerStatus->GetText().ToString()==BeforeCancel&&H->GetWaypointLocations().IsEmpty());
+        Click(TEXT("Browse locations"));
+        if(!TestTrue(TEXT("Typed filename validation callback is available"),bool(PickerComplete)))return false;
+        CompletePicker(Root/TEXT("not an atlas.txt"),FString(),false);
+        TestTrue(TEXT("A typed non-XML filename cannot bypass the chooser filter"),PathBox->GetText().ToString()==Atlas
+            &&PickerStatus->GetText().ToString().Contains(TEXT("Choose a GoArrow or CoD XML file"))&&H->GetWaypointLocations().IsEmpty());
+        Click(TEXT("Browse locations"));
+        if(!TestTrue(TEXT("Uppercase XML filename callback is available"),bool(PickerComplete)))return false;
+        const FString UppercaseAtlas=Root/TEXT("Locations.XML");
+        CompletePicker(UppercaseAtlas,FString(),false);
+        TestEqual(TEXT("XML selection accepts case-insensitive extensions"),PathBox->GetText().ToString(),UppercaseAtlas);
+        TestTrue(TEXT("Choosing XML still leaves import under user control"),H->GetWaypointLocations().IsEmpty()
+            &&PickerStatus->GetText().ToString().Contains(TEXT("Import locations")));
+        Click(TEXT("View imported locations"));
+        auto EmptyStatus=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.AtlasStatus")));
+        auto EmptyResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
+        if(!TestTrue(TEXT("View imported locations opens an empty atlas with guidance back to import"),EmptyStatus&&EmptyResults
+            &&EmptyResults->GetItems().IsEmpty()&&EmptyStatus->GetText().ToString().Contains(TEXT("No locations imported"))
+            &&EmptyStatus->GetText().ToString().Contains(TEXT("Back"))))return false;
+        Click(TEXT("Back"));
+        PathBox=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasPath")));
+        if(!TestTrue(TEXT("Back from an empty browser restores the import path"),PathBox.IsValid()))return false;
         PathBox->SetText(FText::FromString(FString::Printf(TEXT("  \"%s\"  "),*Atlas)));
         Click(TEXT("Import locations"));
         auto Status=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.AtlasStatus")));
@@ -469,16 +561,95 @@ bool FACEPluginHostTest::RunTest(const FString&)
         {FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);FPlatformProcess::Sleep(.001f);}
         TestEqual(TEXT("Directions include one transport and the destination"),H->WaypointItinerary.Num(),2);
         TestTrue(TEXT("Arrow targets usable entrance and ignores disabled shortcut"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(1,0));
-        Click(TEXT("Back"));Click(TEXT("Browse locations"));
+        Click(TEXT("Back"));Click(TEXT("View imported locations"));
         Click(TEXT("2. Reach Test village at 0.00N, 56.00E"));
         TestTrue(TEXT("Reopened route can point to the final leg"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(56,0));
         TestFalse(TEXT("Choosing atlas destinations and route legs keeps the floating arrow hidden"),H->WaypointOption(TEXT("arrow")));
+        Click(TEXT("Back"));
+        const FString InvalidAtlas=Root/TEXT("invalid atlas.xml");
+        FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Invalid\" NS=\"NaN\" EW=\"3\" /></locations>"),*InvalidAtlas);
+        PathBox->SetText(FText::FromString(InvalidAtlas));Click(TEXT("Import locations"));
+        auto ImportStatus=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.ImportStatus")));
+        TestTrue(TEXT("Failed import stays in settings and displays its error"),ImportStatus&&!ImportStatus->GetText().IsEmpty()
+            &&FindControl(Panel,TEXT("Waypoint.AtlasPath")).IsValid()&&!FindControl(Panel,TEXT("Waypoint.AtlasResults")).IsValid());
+        TestEqual(TEXT("Failed import preserves the successful atlas"),H->GetWaypointLocations().Num(),3);
+        Click(TEXT("View imported locations"));
+        auto PreservedResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
+        if(!TestTrue(TEXT("View imported locations remains enabled after failure and opens the preserved atlas"),PreservedResults&&PreservedResults->GetItems().Num()==3))return false;
+        Click(TEXT("Back"));
+        TestTrue(TEXT("Back preserves the failed file path for correction"),PathBox->GetText().ToString()==InvalidAtlas
+            &&FindControl(Panel,TEXT("Waypoint.AtlasPath"))==PathBox);
     }
     H->bWaypointLocationsLoaded=false;
     TestEqual(TEXT("Imported locations reload from disk"),H->GetWaypointLocations().Num(),3);
     FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Invalid\" NS=\"NaN\" EW=\"3\" /></locations>"),*Atlas);
     TestFalse(TEXT("Invalid atlas rejected"),H->ImportWaypointLocations(Atlas));
     TestEqual(TEXT("Rejected import preserves atlas"),H->GetWaypointLocations().Num(),3);
+#if PLATFORM_WINDOWS
+    {
+        // Windows refuses replacing a read-only destination. The new XML is
+        // valid, so this reaches save/replace failure rather than parse rejection.
+        const FString SavedAtlas=H->UserDirectory()/TEXT("Waypoint/locations.json"),Replacement=Root/TEXT("replacement atlas.xml");
+        FString Before,After;
+        if(!TestTrue(TEXT("Save-failure fixture has a previously saved atlas"),FFileHelper::LoadFileToString(Before,*SavedAtlas)))return false;
+        const TArray<FACEWaypointLandmark> Cached=H->GetWaypointLocations();
+        const auto Revision=H->WaypointLocationsRevision;
+        const bool Routing=H->bWaypointAtlasHasRoutingData;
+        TArray<FString> BeforeTemps,AfterTemps;
+        IFileManager::Get().FindFiles(BeforeTemps,*(SavedAtlas+TEXT(".*.tmp")),true,false);BeforeTemps.Sort();
+        if(!TestTrue(TEXT("Valid replacement XML is written"),FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Replacement town\" type=\"Town\" NS=\"1\" EW=\"2\" /></locations>"),*Replacement)))return false;
+        auto& Physical=FPlatformFileManager::Get().GetPlatformPhysical();
+        if(!TestTrue(TEXT("Saved atlas can be made read-only for replace failure"),Physical.SetReadOnly(*SavedAtlas,true)))return false;
+        ON_SCOPE_EXIT{Physical.SetReadOnly(*SavedAtlas,false);};
+        TestFalse(TEXT("Import fails when the saved atlas cannot be replaced"),H->ImportWaypointLocations(Replacement));
+        TestTrue(TEXT("Replace failure reports that existing locations were preserved"),H->Notice.Contains(TEXT("preserved")));
+        TestEqual(TEXT("Replace failure does not publish a new atlas revision"),H->WaypointLocationsRevision,Revision);
+        TestTrue(TEXT("Replace failure preserves every cached location and routing flag"),H->bWaypointLocationsLoaded
+            &&H->bWaypointAtlasHasRoutingData==Routing&&SameWaypointLocations(Cached,H->GetWaypointLocations()));
+        TestTrue(TEXT("Read-only saved atlas remains readable after failed replacement"),FFileHelper::LoadFileToString(After,*SavedAtlas));
+        TestEqual(TEXT("Replace failure leaves the saved atlas byte-for-byte unchanged"),After,Before);
+        IFileManager::Get().FindFiles(AfterTemps,*(SavedAtlas+TEXT(".*.tmp")),true,false);AfterTemps.Sort();
+        TestTrue(TEXT("Replace failure cleans up its unique temporary atlas"),AfterTemps==BeforeTemps);
+        H->bWaypointLocationsLoaded=false;
+        TestTrue(TEXT("Replace failure preserves every saved location after cache clear"),SameWaypointLocations(Cached,H->GetWaypointLocations()));
+    }
+    {
+        const FString SavedRoot=H->StorageRoot,SavedNotice=H->Notice;
+        const auto SavedLocations=H->WaypointLocations;
+        const auto SavedItinerary=H->WaypointItinerary;
+        const auto SavedRevision=H->WaypointLocationsRevision;
+        const bool SavedLoaded=H->bWaypointLocationsLoaded,SavedRouting=H->bWaypointAtlasHasRoutingData;
+        ON_SCOPE_EXIT
+        {
+            H->StorageRoot=SavedRoot;H->Notice=SavedNotice;H->WaypointLocations=SavedLocations;
+            H->WaypointItinerary=SavedItinerary;H->WaypointLocationsRevision=SavedRevision;
+            H->bWaypointLocationsLoaded=SavedLoaded;H->bWaypointAtlasHasRoutingData=SavedRouting;
+        };
+        FString LongRoot=FPaths::ConvertRelativePathToFull(Root/TEXT("long-atlas-root"));
+        while(LongRoot.Len()<=300)LongRoot/=TEXT("nested-atlas-storage-for-windows-long-path-validation");
+        H->StorageRoot=LongRoot;H->bWaypointLocationsLoaded=false;H->WaypointLocations.Reset();H->bWaypointAtlasHasRoutingData=false;
+        const FString LongFile=LongRoot/TEXT("Waypoint/locations.json"),Source=Root/TEXT("long-path-source.xml");
+        TestTrue(TEXT("Long-path storage fixture exceeds the Windows legacy path limit"),LongRoot.Len()>260);
+        TestFalse(TEXT("Long-path atlas initially does not exist"),IFileManager::Get().FileExists(*LongFile));
+        const TCHAR* Imports[]={
+            TEXT("<locations><loc name=\"Long path portal\" type=\"Portal\" NS=\"1\" EW=\"2\" exitNS=\"3\" exitEW=\"4\"/><loc name=\"Long path town\" type=\"Town\" NS=\"3\" EW=\"4\"/></locations>"),
+            TEXT("<locations><loc name=\"Replacement long path town\" type=\"Town\" NS=\"5\" EW=\"6\"/></locations>")};
+        for(int32 Pass=0;Pass<2;++Pass)
+        {
+            if(!TestTrue(TEXT("Long-path source XML is written at the short source path"),FFileHelper::SaveStringToFile(Imports[Pass],*Source)))return false;
+            const bool Imported=H->ImportWaypointLocations(Source);
+            if(!TestTrue(*FString::Printf(TEXT("Long-path atlas %s succeeds: %s"),Pass?TEXT("replacement"):TEXT("first creation"),*H->Notice),Imported))return false;
+            const TArray<FACEWaypointLandmark> Cached=H->GetWaypointLocations();
+            TestEqual(TEXT("Long-path atlas contains only the current import"),Cached.Num(),Pass?1:2);
+            TestTrue(TEXT("Long-path atlas is saved on disk"),IFileManager::Get().FileExists(*LongFile));
+            H->bWaypointLocationsLoaded=false;
+            TestTrue(TEXT("Long-path atlas reload preserves every name, type, coordinate and exit"),SameWaypointLocations(Cached,H->GetWaypointLocations()));
+            TestTrue(TEXT("Long-path reload preserves routing metadata"),H->bWaypointAtlasHasRoutingData);
+            TArray<FString> Temps;IFileManager::Get().FindFiles(Temps,*(LongFile+TEXT(".*.tmp")),true,false);
+            TestTrue(TEXT("Long-path import leaves no staging files"),Temps.IsEmpty());
+        }
+    }
+#endif
     FString AtlasFixture;
     if(FParse::Value(FCommandLine::Get(),TEXT("WaypointAtlas="),AtlasFixture))
     {
@@ -495,6 +666,57 @@ bool FACEPluginHostTest::RunTest(const FString&)
             TestTrue(TEXT("Real atlas route between distant towns uses a transport"),Trip.Num()>1&&Trip.Last().Name==To->Name);
             for(const auto& Step:Trip)AddInfo(TEXT("Holtburg to Ayan Baqur: ")+Step.Name);
         }
+    }
+    FString AtlasDirectory;
+    if(FParse::Value(FCommandLine::Get(),TEXT("WaypointAtlasDirectory="),AtlasDirectory))
+    {
+        TArray<FString> Files;IFileManager::Get().FindFiles(Files,*(AtlasDirectory/TEXT("*.xml")),true,false);Files.Sort();
+        if(!TestTrue(TEXT("Atlas directory contains XML fixtures"),!Files.IsEmpty()))return false;
+        TArray<FACEWaypointLandmark> LastLocations;
+        for(const auto& File:Files)
+        {
+            const bool Imported=H->ImportWaypointLocations(AtlasDirectory/File);
+            if(!TestTrue(*FString::Printf(TEXT("Host imports %s: %s"),*File,*H->Notice),Imported))return false;
+            LastLocations=H->GetWaypointLocations();
+            if(!TestTrue(*FString::Printf(TEXT("%s has usable locations"),*File),!LastLocations.IsEmpty()))return false;
+            H->bWaypointLocationsLoaded=false;
+            if(!TestTrue(*FString::Printf(TEXT("%s saves and reloads every name, type, coordinate and travel exit"),*File),SameWaypointLocations(LastLocations,H->GetWaypointLocations())))return false;
+            TestTrue(TEXT("Reloaded atlas retains routing metadata"),H->bWaypointAtlasHasRoutingData);
+
+            auto Panel=H->MakeWaypointPanel();
+            auto Browse=StaticCastSharedPtr<SButton>(FindControl(Panel,TEXT("View imported locations")));
+            if(!TestTrue(*FString::Printf(TEXT("Browse is enabled for %s"),*File),Browse&&IsControlEnabled(Panel,Browse)))return false;
+            Browse->SimulateClick();
+            auto Search=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasSearch")));
+            auto Results=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
+            if(!TestTrue(TEXT("Imported directory fixture opens the atlas browser"),Search&&Results))return false;
+            TestEqual(*FString::Printf(TEXT("Browse exposes all %s locations"),*File),Results->GetItems().Num(),LastLocations.Num());
+            for(const TCHAR* Filter:{TEXT("Arwic"),TEXT("Town")})
+            {
+                int32 Expected=0;
+                for(const auto& Place:LastLocations)if(Place.Name.Contains(Filter)||Place.Type.Contains(Filter))++Expected;
+                Search->SetText(FText::FromString(Filter));
+                TestTrue(*FString::Printf(TEXT("%s contains %s results"),*File,Filter),Expected>0);
+                TestEqual(*FString::Printf(TEXT("Browse %s filter preserves all matching %s records"),Filter,*File),Results->GetItems().Num(),Expected);
+                for(const auto& Place:Results->GetItems())
+                    if(!Place||(!Place->Name.Contains(Filter)&&!Place->Type.Contains(Filter)))
+                    {AddError(FString::Printf(TEXT("Browse returned an unrelated %s record for %s"),*File,Filter));break;}
+            }
+            auto Back=StaticCastSharedPtr<SButton>(FindControl(Panel,TEXT("Back")));
+            if(!TestTrue(TEXT("Directory fixture browser keeps Back enabled"),Back&&IsControlEnabled(Panel,Back)))return false;
+            Back->SimulateClick();TestTrue(TEXT("Back restores atlas import controls"),FindControl(Panel,TEXT("Waypoint.AtlasPath")).IsValid());
+            AddInfo(FString::Printf(TEXT("Host atlas roundtrip and View imported locations: %s (%d locations)"),*File,LastLocations.Num()));
+        }
+        const FString SavedAtlas=H->UserDirectory()/TEXT("Waypoint/locations.json"),BadAtlas=Root/TEXT("directory-invalid-atlas.xml");
+        FString Before,After;
+        TestTrue(TEXT("Last directory atlas exists on disk"),FFileHelper::LoadFileToString(Before,*SavedAtlas));
+        FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Invalid\" NS=\"NaN\" EW=\"3\" /></locations>"),*BadAtlas);
+        TestFalse(TEXT("Bad import after directory fixtures is rejected"),H->ImportWaypointLocations(BadAtlas));
+        TestTrue(TEXT("Rejected directory import leaves every cached location unchanged"),SameWaypointLocations(LastLocations,H->GetWaypointLocations()));
+        TestTrue(TEXT("Last directory atlas remains readable"),FFileHelper::LoadFileToString(After,*SavedAtlas));
+        TestEqual(TEXT("Rejected directory import leaves saved JSON unchanged"),After,Before);
+        H->bWaypointLocationsLoaded=false;
+        TestTrue(TEXT("Rejected directory import preserves every saved location on reload"),SameWaypointLocations(LastLocations,H->GetWaypointLocations()));
     }
 
     TestTrue(TEXT("Independent loot editor is discovered"),H->Find(TEXT("looteditor")).IsValid());
@@ -701,6 +923,94 @@ bool FACEPluginHostTest::RunTest(const FString&)
     }
     auto Second=MakeShared<FACEClientPlugin>();Second->Id=TEXT("monitor");Second->Name=TEXT("Example Monitor");Second->Enabled=true;
     Second->Manifest=Json(TEXT("{\"short_name\":\"MON\"}"));Second->Profile=MakeShared<FJsonObject>();H->Plugins.Add(Second);
+    {
+        // Manager Open is idempotent, unlike the launcher's intentional toggle.
+        // Exercise both entry points into the same full-size Waypoint window.
+        FString OriginalSettings;FJsonSerializer::Serialize(H->Settings.ToSharedRef(),TJsonWriterFactory<>::Create(&OriginalSettings));
+        const auto OriginalDock=H->DesktopDock,OriginalManager=H->DesktopPanel;
+        const bool OriginalMinimized=H->WaypointOption(TEXT("map_minimized"),false);
+        ON_SCOPE_EXIT{H->DesktopDock=OriginalDock;H->DesktopPanel=OriginalManager;H->Settings=Json(*OriginalSettings);H->SaveSettings();H->SetWaypointOption(TEXT("map_minimized"),OriginalMinimized);Ui->SetUiLocked(true);};
+        Ui->SetUiLocked(false);
+        for(const FString& First:{FString(TEXT("waypoint")),FString(TEXT("waypoint.map"))})
+        {
+            H->Settings=Json(*OriginalSettings);
+            H->SavePluginWindowVisibility(TEXT("waypoint"),false);H->SavePluginWindowVisibility(TEXT("waypoint.map"),false);
+            const FString Alias=First==TEXT("waypoint")?TEXT("waypoint.map"):TEXT("waypoint");
+            auto TestDock=SNew(SACEPluginDesktop).Host(H);H->DesktopDock=TestDock;
+            TestDock->Tick(FGeometry::MakeRoot(FVector2D(1920,1080),FSlateLayoutTransform()),1,.016f);
+            if(!TestTrue(TEXT("Explicit Open creates the requested Waypoint view"),TestDock->Open(First)))return false;
+            auto* Initial=TestDock->Windows.Find(First);
+            if(!TestNotNull(TEXT("The first request owns the full-size frame"),Initial))return false;
+            const auto OriginalWidget=Initial->Widget;
+            auto Editor=StaticCastSharedPtr<SEditableTextBox>(FindControl(OriginalWidget.ToSharedRef(),TEXT("SACEPluginEditableTextBox")));
+            if(!TestTrue(TEXT("Waypoint retains an editable navigation control"),Editor.IsValid()))return false;
+            Editor->SetText(FText::FromString(TEXT("Uncommitted Arwic destination")));
+            const bool InitiallySettings=FindControl(OriginalWidget.ToSharedRef(),TEXT("Waypoint.AtlasPath")).IsValid();
+            TestEqual(TEXT("The first alias selects its intended initial view"),InitiallySettings,First==TEXT("waypoint"));
+            H->SetPluginWindowPinned(First,false);
+            TestDock->Move(First,FVector2D(35,45),false);TestDock->Resize(First,FVector2D(-100,-80),false);
+            const FVector2D Position=TestDock->Windows[First].Position,WindowSize=TestDock->Windows[First].Size;
+            const float InitialOrder=TestDock->Windows[First].Slot->GetZOrder();
+            TestTrue(TEXT("Another plugin can cover the existing Waypoint window"),TestDock->Open(TEXT("monitor")));
+            const auto MonitorWidget=TestDock->Windows[TEXT("monitor")].Widget;
+            const int32 WindowCount=TestDock->Windows.Num();
+            for(int32 Repeat=0;Repeat<2;++Repeat)
+            {
+                TestTrue(TEXT("Generic plugin Open succeeds repeatedly"),TestDock->Open(TEXT("monitor")));
+                TestTrue(TEXT("Generic plugin Open retains one visible widget"),TestDock->IsOpen(TEXT("monitor"))&&TestDock->Windows[TEXT("monitor")].Widget==MonitorWidget&&TestDock->Windows.Num()==WindowCount);
+            }
+            TestDock->Toggle(TEXT("monitor"));TestFalse(TEXT("Generic launcher toggle still hides the plugin"),TestDock->IsOpen(TEXT("monitor")));
+            TestTrue(TEXT("Generic explicit Open restores the hidden widget"),TestDock->Open(TEXT("monitor"))&&TestDock->Windows[TEXT("monitor")].Widget==MonitorWidget);
+            const float OtherOrder=TestDock->Windows[TEXT("monitor")].Slot->GetZOrder();
+            H->SetPluginWindowPinned(First,true);
+            H->SetWaypointOption(TEXT("map_minimized"),true);
+            for(const FString& Requested:{First,Alias,First})
+            {
+                TestTrue(TEXT("Repeated Open succeeds without toggling the plugin closed"),TestDock->Open(Requested));
+                TestTrue(TEXT("Both Waypoint aliases report the same visible window"),TestDock->IsOpen(First)&&TestDock->IsOpen(Alias));
+                TestTrue(TEXT("Repeated and aliased Open retain the exact widget"),TestDock->Windows[First].Widget==OriginalWidget&&!TestDock->Windows.Contains(Alias));
+                TestEqual(TEXT("Repeated Open retains an uncommitted text edit"),Editor->GetText().ToString(),FString(TEXT("Uncommitted Arwic destination")));
+                TestEqual(TEXT("Repeated Open preserves the selected settings or map view"),FindControl(OriginalWidget.ToSharedRef(),TEXT("Waypoint.AtlasPath")).IsValid(),InitiallySettings);
+                TestEqual(TEXT("Repeated Open preserves frame position"),TestDock->Windows[First].Position,Position);
+                TestEqual(TEXT("Repeated Open preserves frame size"),TestDock->Windows[First].Size,WindowSize);
+                TestTrue(TEXT("Repeated Open preserves the frame pin"),H->IsPluginWindowPinned(First));
+                TestTrue(TEXT("Repeated Open preserves the independent minimap's minimized state"),H->WaypointOption(TEXT("map_minimized")));
+                TestTrue(TEXT("Opening an existing tool raises it above intervening windows"),TestDock->Windows[First].Slot->GetZOrder()>OtherOrder&&TestDock->Windows[First].Slot->GetZOrder()>InitialOrder);
+            }
+            if(FApp::CanEverRender())
+            {
+                FWidgetRenderer Renderer(false,true);const FVector2D RenderSize(1920,1080);
+                auto* Target=FWidgetRenderer::CreateTargetFor(RenderSize,TF_Bilinear,true);
+                for(int32 Pass=0;Pass<2;++Pass){Renderer.DrawWidget(Target,TestDock,RenderSize,.016f);FlushRenderingCommands();}
+                const auto& Geometry=OriginalWidget->GetCachedGeometry();
+                const FVector2D Inside=Geometry.LocalToAbsolute(Geometry.GetLocalSize()*.5);
+                TestTrue(TEXT("Both aliases protect input over the same rendered frame"),TestDock->ContainsPoint(First,Inside)&&TestDock->ContainsPoint(Alias,Inside));
+                TestFalse(TEXT("Aliases do not consume input outside the frame"),TestDock->ContainsPoint(Alias,Geometry.LocalToAbsolute(FVector2D(-10,-10))));
+                TestDock->Toggle(Alias);
+                TestFalse(TEXT("Hidden aliases no longer protect their old bounds"),TestDock->ContainsPoint(First,Inside)||TestDock->ContainsPoint(Alias,Inside));
+                TestDock->Open(First);Target->ReleaseResource();
+            }
+            TestDock->Toggle(Alias);
+            TestFalse(TEXT("Launcher toggle closes the shared aliased window"),TestDock->IsOpen(First)||TestDock->IsOpen(Alias));
+            TestTrue(TEXT("Explicit Open reopens a hidden aliased window"),TestDock->Open(Alias));
+            TestTrue(TEXT("Hidden reopen keeps the widget, draft and pin"),TestDock->Windows[First].Widget==OriginalWidget&&Editor->GetText().ToString()==TEXT("Uncommitted Arwic destination")&&H->IsPluginWindowPinned(First));
+            TestEqual(TEXT("Hidden reopen preserves size"),TestDock->Windows[First].Size,WindowSize);
+            TestEqual(TEXT("Hidden reopen preserves position"),TestDock->Windows[First].Position,Position);
+            TestTrue(TEXT("Opening tools never manufactures a manager window"),H->DesktopPanel==OriginalManager);
+            TestDock->SaveOverlayLayout();
+            FString Saved;TestTrue(TEXT("Shared window preferences save to disk"),FFileHelper::LoadFileToString(Saved,*(Root/TEXT("settings.json"))));
+            H->Settings=Json(*Saved);auto Reloaded=SNew(SACEPluginDesktop).Host(H);
+            TestTrue(TEXT("Reload restores one full-size frame accessible through both aliases"),Reloaded->IsOpen(First)&&Reloaded->IsOpen(Alias)&&Reloaded->Windows.Contains(First)&&!Reloaded->Windows.Contains(Alias));
+            if(const auto* Restored=Reloaded->Windows.Find(First))
+            {
+                TestEqual(TEXT("Aliased frame reload restores position"),Restored->Position,Position);
+                TestEqual(TEXT("Aliased frame reload restores size"),Restored->Size,WindowSize);
+                TestEqual(TEXT("Aliased frame reload restores the initial view"),FindControl(Restored->Widget.ToSharedRef(),TEXT("Waypoint.AtlasPath")).IsValid(),InitiallySettings);
+            }
+            TestTrue(TEXT("Aliased frame pin survives disk reload"),H->IsPluginWindowPinned(First));
+            Reloaded->Toggle(Alias);TestFalse(TEXT("Restored aliases still toggle a single frame"),Reloaded->IsOpen(First)||Reloaded->IsOpen(Alias));
+        }
+    }
     auto Dock=SNew(SACEPluginDesktop).Host(H);H->DesktopDock=Dock;
     TestTrue(TEXT("Pinned map reopens with desktop dock"),Dock->IsOpen(TEXT("waypoint.dungeon")));
     TestEqual(TEXT("Pinned map restores its size"),Dock->Windows[TEXT("waypoint.dungeon")].Size,FVector2D(300,300));

@@ -117,8 +117,8 @@ namespace
 		Test.TestEqual(Name + TEXT("normals point up"), Down, 0);
 		Test.TestTrue(Name + TEXT("arrays match"), Mesh.Normals.Num() == Mesh.Vertices.Num() && Mesh.UVs.Num() == Mesh.Vertices.Num());
 
-		// Away from the borders between levels, the full-detail level has the heights
-		// the client draws. This is what makes the join with loaded terrain exact.
+		// Inside the protected native-detail region (before the outer morph band),
+		// the shell has exactly the heights the client draws.
 		const auto& Fine = Mesh.Levels[0];
 		int32 Wrong = 0;
 		for (int32 I = 0; I < Mesh.Vertices.Num(); ++I)
@@ -126,7 +126,8 @@ namespace
 			const FIntPoint C = Mesh.Corners[I];
 			const bool bInside = Mesh.Levels.Num() == 1
 				? (C.X >= Fine.Min.X && C.X <= Fine.Max.X && C.Y >= Fine.Min.Y && C.Y <= Fine.Max.Y)
-				: (C.X > Fine.Min.X && C.X < Fine.Max.X && C.Y > Fine.Min.Y && C.Y < Fine.Max.Y);
+				: (C.X >= Fine.Min.X + Fine.TransitionCells && C.X <= Fine.Max.X - Fine.TransitionCells
+					&& C.Y >= Fine.Min.Y + Fine.TransitionCells && C.Y <= Fine.Max.Y - Fine.TransitionCells);
 			if (!bInside) continue;
 			const int32 X = FMath::Clamp(C.X, 0, FPersonalFarTerrainBake::Dim - 1), Y = FMath::Clamp(C.Y, 0, FPersonalFarTerrainBake::Dim - 1);
 			const double Expected = 2. * ((X * 7 + Y * 13 + X * Y) % 50) * 100.;
@@ -135,6 +136,50 @@ namespace
 		}
 		Test.TestEqual(Name + TEXT("full-detail vertices are the baked corners"), Wrong, 0);
 	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPersonalFarTerrainCoverageTest, "ACE.Personal.FarTerrain.Coverage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
+bool FPersonalFarTerrainCoverageTest::RunTest(const FString& Parameters)
+{
+	using PersonalFarTerrainMesh::CoverageDistanceCm;
+	const FIntRect AppliedCells(800, 600, 1000, 800);
+	constexpr float CellCm = PersonalFarTerrainMesh::CellSizeAc * FarShellScale;
+	auto Camera = [](double X, double Y, double Z = 0.)
+	{
+		return FVector(-X * CellCm, Y * CellCm, Z);
+	};
+	TestEqual(TEXT("Center uses the nearest built edge minus one safety cell"),
+		CoverageDistanceCm(AppliedCells, Camera(900, 700), FarShellScale), 99.f * CellCm);
+	TestEqual(TEXT("Altitude does not extend horizontal terrain coverage"),
+		CoverageDistanceCm(AppliedCells, Camera(900, 700, 1.e7), FarShellScale), 99.f * CellCm);
+	TestEqual(TEXT("Camera boom position is included before the shell follows"),
+		CoverageDistanceCm(AppliedCells, Camera(900, 700) + FVector(750.f, 0., 0.), FarShellScale), 99.f * CellCm - 750.f);
+	for (const FVector2D Delta : {FVector2D(8, 0), FVector2D(-8, 0), FVector2D(0, 8), FVector2D(0, -8), FVector2D(8, 8)})
+	{
+		TestEqual(TEXT("Crossing a landblock uses the old displayed rectangle until replacement"),
+			CoverageDistanceCm(AppliedCells, Camera(900 + Delta.X, 700 + Delta.Y), FarShellScale), 91.f * CellCm);
+	}
+	const FIntRect RecenteredCells(808, 600, 1008, 800);
+	TestEqual(TEXT("The new rectangle is usable only once that mesh is applied"),
+		CoverageDistanceCm(RecenteredCells, Camera(908, 700), FarShellScale), 99.f * CellCm);
+	for (const FVector2D Point : {FVector2D(800, 700), FVector2D(1000, 700), FVector2D(900, 600), FVector2D(900, 800),
+		FVector2D(799, 700), FVector2D(1001, 700), FVector2D(900, 599), FVector2D(900, 801), FVector2D(801, 601)})
+	{
+		TestEqual(TEXT("A camera at or outside the guarded rectangle cannot expose the edge"),
+			CoverageDistanceCm(AppliedCells, Camera(Point.X, Point.Y), FarShellScale), 0.f);
+	}
+	TestEqual(TEXT("Corner distance uses the nearest edge rather than the diagonal"),
+		CoverageDistanceCm(AppliedCells, Camera(802, 602), FarShellScale), CellCm);
+	TestEqual(TEXT("An empty rectangle has no safe visible extent"),
+		CoverageDistanceCm(FIntRect(), Camera(900, 700), FarShellScale), 0.f);
+	TestEqual(TEXT("Invalid scale cannot advertise coverage"),
+		CoverageDistanceCm(AppliedCells, Camera(900, 700), 0.f), 0.f);
+	TestEqual(TEXT("Coverage uses the applied scale"),
+		CoverageDistanceCm(AppliedCells, Camera(900, 700) / FarShellScale, 1.f), 99.f * PersonalFarTerrainMesh::CellSizeAc);
+	TestEqual(TEXT("World-edge continuation uses actual negative cell bounds"),
+		CoverageDistanceCm(FIntRect(-64, -64, 72, 72), Camera(4, 4), FarShellScale), 67.f * CellCm);
+	return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPersonalFarTerrainShellTest, "ACE.Personal.FarTerrain.Shell",
@@ -258,11 +303,14 @@ bool FPersonalFarTerrainShellTest::RunTest(const FString& Parameters)
 	{
 		const FIntPoint C = Mesh.Corners[I];
 		if (C.X > -400 || C.Y > -400) continue;
-		// The edge value of whichever level the vertex belongs to.
-		bool bEdgeValue = false;
+		// The clamped edge heights, including their convex transition blend.
+		float Minimum = TNumericLimits<float>::Max(), Maximum = -TNumericLimits<float>::Max();
 		for (int32 L = 0; L < FPersonalFarTerrainBake::LevelCount; ++L)
-			bEdgeValue |= FMath::IsNearlyEqual(Mesh.Vertices[I].Z, Bake.HeightAt(L, 0, 0) * 100., 0.01);
-		if (!bEdgeValue) ++WrongOutside;
+		{
+			Minimum = FMath::Min(Minimum, Bake.HeightAt(L, 0, 0));
+			Maximum = FMath::Max(Maximum, Bake.HeightAt(L, 0, 0));
+		}
+		if (Mesh.Vertices[I].Z < Minimum * 100. - .01 || Mesh.Vertices[I].Z > Maximum * 100. + .01) ++WrongOutside;
 	}
 	TestEqual(TEXT("World corner: outside takes the edge height"), WrongOutside, 0);
 

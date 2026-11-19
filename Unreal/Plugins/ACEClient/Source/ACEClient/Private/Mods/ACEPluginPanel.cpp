@@ -129,8 +129,7 @@ namespace ACEPluginPanelPrivate
                 // The manager is a launcher. Each desktop tool has its own
                 // window; opening settings must not embed a second loot editor.
                 auto H=Host;
-                if(!H->IsPluginWindowOpen(PluginId))H->TogglePluginWindow(PluginId);
-                H->TogglePanel();
+                if(H->OpenPluginWindow(PluginId))H->CloseDesktopPluginManager();
                 return;
             }
             // Login, VR and touch use the same manager in a single panel.
@@ -380,13 +379,16 @@ void UACEPluginSubsystem::TogglePanel()
             VR->OpenPluginManager(); return;
         }
     auto* Viewport=GetGameInstance()->GetGameViewportClient(); if(!Viewport)return;
-    if(DesktopPanel)
-    {
-        DesktopPanel->SaveOverlayLayout();SavePluginWindowVisibility(TEXT("__manager"),false);
-        Viewport->RemoveViewportWidgetContent(DesktopPanel.ToSharedRef());DesktopPanel.Reset();return;
-    }
+    if(DesktopPanel){CloseDesktopPluginManager();return;}
     DesktopPanel=SNew(SACEPluginDesktop).Host(this).ManagerOnly(true);
     Viewport->AddViewportWidgetContent(DesktopPanel.ToSharedRef(),1600);
+}
+void UACEPluginSubsystem::CloseDesktopPluginManager(bool Remember)
+{
+    if(!DesktopPanel)return;
+    DesktopPanel->SaveOverlayLayout();if(Remember)SavePluginWindowVisibility(TEXT("__manager"),false);
+    if(auto* Viewport=GetGameInstance()->GetGameViewportClient())Viewport->RemoveViewportWidgetContent(DesktopPanel.ToSharedRef());
+    DesktopPanel.Reset();
 }
 TSharedRef<SWidget> UACEPluginPanel::RebuildWidget()
 {

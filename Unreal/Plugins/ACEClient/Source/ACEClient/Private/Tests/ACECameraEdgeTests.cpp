@@ -26,6 +26,10 @@
 #include "InputKeyEventArgs.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
+#include "Layout/WidgetPath.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SVirtualWindow.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACECameraEdgeTest,"ACE.RetailParity.CameraAndEdges",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::EngineFilter)
@@ -279,6 +283,40 @@ bool FACECameraEdgeTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Releasing an inspect click preserves held keyboard movement"),Controller->IsInputKeyDown(EKeys::W));
     Controller->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::W,IE_Released,0.f));
     Controller->PlayerInput->ProcessInputStack({},1.f/60,false);
+    if (FSlateApplication::IsInitialized())
+    {
+        auto& Slate=FSlateApplication::Get();const auto User=Slate.GetCursorUser();
+        const auto SavedCaptor=User->GetCursorCaptor();const auto SavedCapturePath=User->GetCursorCaptorPath();
+        const FVector2D SavedCursor=Slate.GetCursorPos();
+        auto MapSurface=SNew(SBox).Tag(TEXT("Waypoint.MapSurface"));
+        auto Window=SNew(SVirtualWindow).Size(FVector2D(160,160));Window->SetContent(MapSurface);
+        Slate.RegisterVirtualWindow(Window);Window->SlatePrepass();
+        ON_SCOPE_EXIT
+        {
+            User->ReleaseCursorCapture();Slate.UnregisterVirtualWindow(Window);Slate.SetCursorPos(SavedCursor);
+            if(SavedCaptor&&SavedCapturePath.IsValid())User->SetCursorCaptor(SavedCaptor.ToSharedRef(),SavedCapturePath);
+        };
+        // Keep the cursor outside every window: only the captured map should
+        // block a world click or orbit after dragging beyond the minimap edge.
+        User->ReleaseCursorCapture();Slate.SetCursorPos(FVector2D(-100000,-100000));
+        TestFalse(TEXT("Map capture fixture begins outside blocking UI"),Controller->IsMouseOverBlockingUI());
+        FWidgetPath MapPath;
+        if(TestTrue(TEXT("Map pan surface has a Slate path"),Slate.GeneratePathToWidgetUnchecked(MapSurface,MapPath)))
+        {
+            TestTrue(TEXT("Map pan captures the cursor"),User->SetCursorCaptor(MapSurface,MapPath));
+            TestTrue(TEXT("Captured map blocks world input outside its bounds"),Controller->IsMouseOverBlockingUI());
+            Controller->UpdateMouseButtons(false,false,false,false);
+            Controller->UpdateMouseButtons(false,true,false,Controller->IsMouseOverBlockingUI());
+            TestFalse(TEXT("Map pan cannot arm left-drag camera orbit"),Controller->bLeftOrbitEligible);
+            Controller->UpdateMouseButtons(true,true,false,Controller->IsMouseOverBlockingUI());
+            TestFalse(TEXT("Map pan cannot start camera turning or forward movement"),Controller->bMouseLookActive||Controller->bMouseForwardActive);
+            Controller->UpdateMouseButtons(false,false,false,false);
+            User->ReleaseCursorCapture();
+            TestFalse(TEXT("Releasing map capture restores world input"),Controller->IsMouseOverBlockingUI());
+            MapSurface->SetTag(TEXT("Camera.Viewport"));User->SetCursorCaptor(MapSurface,MapPath);
+            TestFalse(TEXT("Ordinary viewport capture does not block camera input"),Controller->IsMouseOverBlockingUI());
+        }
+    }
     // Exercise wheel math without depending on the physical desktop cursor:
     // headless automation can run with that cursor over the editor's own UI.
     if (Controller->IsMouseOverBlockingUI())

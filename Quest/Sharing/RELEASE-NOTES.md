@@ -1,30 +1,32 @@
-# AC:Unreal / AC:VR release 160
+# AC:Unreal / AC:VR release 161
 
-Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.18.160**.
+Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.18.161**.
 
-## VR controls and inventory
+## Waypoint maps and atlas imports
 
-- Cast targeted spells and use casting-item spells on standard ACE servers from the VR controls. Enhanced free-aim combat still requires a server that supports the VR extension.
-- Equipped items can be inspected and removed through the VR inventory. Either controller can activate inventory items, and inventory refreshes no longer interrupt held clicks.
-- Use **Unlock retail windows** below the desktop-style floating panel to move and resize individual retail windows.
-- Tune **Inventory recenter radius** in VR settings from 30 to 120 degrees. The default is 55 degrees, and wider panels expand the radius so you can look toward their edges. This setting applies to body-anchored menus and saves in the headset.
+- Crowded map markers group into clickable counts. Select a result from the list instead of reading overlapping portal and dungeon labels.
+- Drag the minimap to pan and use the mouse wheel to zoom, including while the interface is locked. Use the crosshair button (**center player**) to resume following your character. Overworld maps support closer zoom levels.
+- **Browse locations** opens an XML file picker on Windows and Linux; **Import locations** loads the selected file. Expanded GoArrow and Crossroads of Dereth XML support covers the supplied atlas variants. Import buttons retain single-line labels and consistent padding.
+- Opening a plugin again brings its existing interface forward instead of creating another copy.
+- Third Eye directions correctly recognize targets in the same dungeon.
 
-## Desktop and custom-server fixes
+## Third Eye audio alerts
 
-- Waypoint town markers use geographic coordinates rather than map-art label positions, including Mayoi and Wai Jhou.
-- Windows display scaling, including 135%, now scales the interface consistently and preserves text clipping boundaries.
-- The journal's **New** button creates and selects a new page, with navigation and deletion controls updated as pages change.
-- Vendors support server-managed alternate currency such as DreamWeave Class Ability Points without requiring an inventory token. Pending purchases reserve the balance, and rejected purchases release it.
+- Enable an optional chime when a new matching entity is found. Alerts are off by default and can be used independently of chat notifications.
+- The Audio tab includes a bundled chime, custom WAV selection, volume, sound preview, and restore-default controls. Settings save per character and server.
 
-## Sky animation and admin preview commands
+## Sky, fog, and distant scenery
 
-- Classic and imported AC2 cloud movement now follows the synchronized sky clock. Imported clouds follow the classic sky's travel direction; sun and moon positions remain aligned with AC1. Imported cloud shadows advance with the sky clock, while falling rain keeps its normal speed.
-- The optional [LocalSkyPreview server mod](https://github.com/Thwargle/ACE/tree/master/Source/Mods/LocalSkyPreview) provides `/weather`, `/time set`, and `/timelapse [multiplier]`. All require an admin character, including status/reset/stop and aliases; an admin account's `sudo` cannot bypass that restriction.
-- `/timelapse` defaults to 4x. Use a positive multiplier such as `/timelapse 64` for faster transitions, `/timelapse stop` for 1x, or `/weather reset` to restore live time. Preview changes affect only the invoking session.
-- Thanks to **gvbz** for the far-distance rendering contribution introduced in v159.
+- Imported AC2 skies use authored fog colors separately from cloud tint. Fog coverage accounts for the terrain actually displayed, including camera offsets and delayed terrain loading.
+- Smooth terrain detail transitions and fade distant scenery near its range limit to reduce abrupt popping and foliage speckles while preserving cutout shapes.
+- Ground cloud shadows disappear when imported sky clouds are absent.
+- Correct the imported primary moon's orientation and apparent size relative to AC1. Rendered checks verify both moons remain behind opaque clouds and fog.
+- Thanks to **gvbz** for the far-distance rendering contribution.
 
-## Verification
+## Inventory and verification
 
-Automated regression checks cover VR controls and panel recentering, journal pages, fractional DPI, vendor currency, minimap coordinates, and classic/imported sky behavior. Server checks cover admin permissions, custom clock speeds, and session isolation. Package validation does not replace a physical headset or live custom-server playtest.
+- Restore visibility of NPC-returned stack remainders in GDLE-compatible inventory update sequences, and add bounded turn-in diagnostics. This does not establish that the reported Coldeve trinket exchange consumes or returns the correct quantities on the server.
+- Automated regression and package checks cover map input, atlas imports, plugin window reuse, audio settings, inventory updates, sky behavior, fog coverage, and runtime materials. Desktop packages are exercised on Windows and Linux; Android and Quest packages receive signing, content, and version checks.
+- Fog blending still differs from retail in some color transitions, and terrain popping is reduced rather than eliminated. Physical headset testing remains important for fine foliage and distant scenery. The additional terrain detail and retained scenery can use more memory.
 
 Players supply their own AC1 data and, for the optional imported sky, their own Legions data. No retail game data, saved profiles, or server credentials are included.

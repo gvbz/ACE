@@ -1,7 +1,11 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
+#include "ACEClientSubsystem.h"
 #include "ACESession.h"
 #include "ACEInventoryRules.h"
+#include "UI/ACEUIGameplayBinder.h"
+#include "Engine/GameInstance.h"
 #include "Protocol/ACEBinaryReader.h"
 #include "Protocol/ACEBinaryWriter.h"
 #include "Sockets.h"
@@ -721,6 +725,250 @@ bool FACERetailInventoryOrderTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Remote unequip location still updates"),Session.WorldObjects[7].CurrentWieldedLocation,int64(0));
     Session.SocketC2S->Close(); Sockets->DestroySocket(Session.SocketC2S); Session.SocketC2S=nullptr;
     Receiver->Close(); Sockets->DestroySocket(Receiver);
+    return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACENPCStackExchangeTest, "ACE.RetailParity.NPCStackExchange",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FACENPCStackExchangeTest::RunTest(const FString& Parameters)
+{
+    auto* GI = NewObject<UGameInstance>(); GI->Init();
+    ON_SCOPE_EXIT { GI->Shutdown(); };
+    auto* Client = GI->GetSubsystem<UACEClientSubsystem>();
+    auto& Session = *Client->GetSession();
+    auto* Binder = NewObject<UACEUIGameplayBinder>(); Binder->Client = Client;
+    auto* Sockets = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+    auto* Receiver = Sockets->CreateSocket(NAME_DGram, TEXT("NPC stack exchange receiver"), false);
+    auto Address = Sockets->CreateInternetAddr(); bool Valid = false;
+    Address->SetIp(TEXT("127.0.0.1"), Valid); Address->SetPort(0);
+    if (!Receiver || !Receiver->Bind(*Address))
+    {
+        if (Receiver) Sockets->DestroySocket(Receiver);
+        AddError(TEXT("Could not create isolated NPC stack exchange fixture")); return false;
+    }
+    ON_SCOPE_EXIT { Receiver->Close(); Sockets->DestroySocket(Receiver); };
+    Receiver->GetAddress(*Address);
+    Session.SocketC2S = Sockets->CreateSocket(NAME_DGram, TEXT("NPC stack exchange sender"), false);
+    if (!TestNotNull(TEXT("NPC exchange sender exists"), Session.SocketC2S)) return false;
+    ON_SCOPE_EXIT
+    {
+        Session.SocketC2S->Close(); Sockets->DestroySocket(Session.SocketC2S); Session.SocketC2S = nullptr;
+    };
+    Session.ServerC2SAddr = Address; Session.IssacClient = MakeUnique<FACEIsaac>(123u);
+
+    auto Item = [](int32 Guid, int32 Container, int32 Place, bool Pack = false)
+    {
+        FACEWorldObject O; O.Guid = Guid; O.ContainerId = Container; O.PlacementPosition = Place;
+        O.ItemType = Pack ? ACEItemType::Container : ACEItemType::Misc;
+        O.ItemsCapacity = Pack ? 24 : 0; O.StackSize = 1; O.IconId = 0x060011CB;
+        return O;
+    };
+    auto StackUpdate = [&](uint8 Stamp, int32 Count)
+    {
+        FACEBinaryWriter W; W.WriteUInt32(ACEOpcode::SetStackSize); W.WriteUInt8(Stamp);
+        W.WriteUInt32(202); W.WriteUInt32(Count); W.WriteUInt32(Count * 100);
+        Session.ReceiveGameMessage(W.GetData());
+    };
+    auto Give = [&](int32 Count)
+    {
+        Session.CachedC2SPackets.Reset(); Session.SendGiveObjectRequest(900, 202, Count);
+        uint32 Last = 0; for (const auto& Pair : Session.CachedC2SPackets) Last = FMath::Max(Last, Pair.Key);
+        if (!TestTrue(TEXT("NPC gift sends a reliable request"), Last != 0)) return;
+        FACEBinaryReader R(Session.CachedC2SPackets[Last].Payload); R.Skip(24);
+        TestEqual(TEXT("NPC gift uses GiveObjectRequest"), R.ReadUInt32(), ACEGameAction::GiveObjectRequest);
+        TestEqual(TEXT("NPC gift retains recipient"), R.ReadUInt32(), 900u);
+        TestEqual(TEXT("NPC gift retains original stack GUID"), R.ReadUInt32(), 202u);
+        TestEqual(TEXT("NPC gift preserves the offered quantity"), R.ReadInt32(), Count);
+    };
+    auto CreateStack = [&](int32 Guid, const TCHAR* Name, int32 Count, int32 Value, int32 Container)
+    {
+        FACEBinaryWriter W; W.WriteUInt32(ACEOpcode::ObjectCreate); W.WriteUInt32(Guid);
+        W.WriteUInt8(0x11); W.WriteUInt8(0); W.WriteUInt8(0); W.WriteUInt8(0);
+        W.WriteUInt32(0); W.WriteUInt32(0);
+        for (int32 I = 0; I < ACEPhysicsTimeStamp::Count; ++I) W.WriteUInt16(1);
+        W.Align(); W.WriteUInt32(0x7008); // Value, StackSize, MaxStackSize, Container.
+        W.WriteString16L(Name); W.WriteUInt16(Guid == 202 ? 100 : 101); W.WriteUInt16(0x11CB);
+        W.WriteUInt32(ACEItemType::Misc); W.WriteUInt32(0); W.Align();
+        W.WriteUInt32(Value); W.WriteUInt16(Count); W.WriteUInt16(100); W.WriteUInt32(Container); W.Align();
+        Session.ReceiveGameMessage(W.GetData());
+    };
+    auto Contain = [&](int32 Guid, int32 Container, int32 Place, uint32 Stamp)
+    {
+        FACEBinaryWriter W;
+        W.WriteUInt32(ACEOpcode::GameEvent); W.WriteUInt32(100); W.WriteUInt32(Stamp);
+        W.WriteUInt32(ACEGameEvent::InventoryPutObjInContainer);
+        W.WriteUInt32(Guid); W.WriteUInt32(Container); W.WriteInt32(Place); W.WriteUInt32(0);
+        Session.ReceiveGameMessage(W.GetData()); Session.DrainOutOfOrderS2C();
+    };
+    auto Reward = [&](int32 Place)
+    {
+        // ACE sends a real ObjectCreate followed by the ordered containment
+        // receipt. The reward must not replace the offered stack.
+        CreateStack(300, TEXT("Writ of Refuge"), 1, 1, 100); Contain(300, 100, Place, 1);
+    };
+    auto ContainerQuality = [&](uint8 Stamp, int32 Container)
+    {
+        FACEBinaryWriter W; W.WriteUInt32(ACEOpcode::PublicUpdateInstanceId); W.WriteUInt8(Stamp);
+        W.WriteUInt32(202); W.WriteUInt32(2); W.WriteUInt32(Container);
+        Session.ReceiveGameMessage(W.GetData());
+    };
+
+    // Cover the main backpack, a side pack, and deeper ownership; reward
+    // ObjectCreate and the stack quantity can arrive on independent streams.
+    for (int32 Container : {100, 10, 20}) for (bool RewardFirst : {false, true})
+    {
+        Session.ClearWorldState(); Session.PlayerGuid = 100; Session.State = EACESessionState::InWorld;
+        Session.UpsertWorldObject(Item(100, 0, INDEX_NONE, true));
+        Session.UpsertWorldObject(Item(10, 100, 0, true));
+        Session.UpsertWorldObject(Item(20, 10, 0, true));
+        Session.UpsertWorldObject(Item(201, Container, 0));
+        auto Trinkets = Item(202, Container, 1); Trinkets.Name = TEXT("Ancient Falatacot Trinket");
+        Trinkets.StackSize = 3; Trinkets.MaxStackSize = 100; Trinkets.Value = 300; Trinkets.WeenieClassId = 100;
+        Session.UpsertWorldObject(Trinkets); Session.UpsertWorldObject(Item(203, Container, 2));
+        // Include authoritative inventory lists, so preserving only the
+        // WorldObjects record cannot conceal a lost bag membership reference.
+        for (int32 Bag : {100, 10, 20})
+        {
+            FACEBinaryWriter Contents; Contents.WriteUInt32(Bag);
+            Contents.WriteUInt32((Bag == 20 ? 0 : 1) + (Bag == Container ? 3 : 0));
+            if (Bag != 20) { Contents.WriteUInt32(Bag == 100 ? 10 : 20); Contents.WriteUInt32(1); }
+            if (Bag == Container) for (int32 Guid : {201, 202, 203})
+            { Contents.WriteUInt32(Guid); Contents.WriteUInt32(0); }
+            FACEBinaryReader R(Contents.GetData()); Session.HandleViewContents(R);
+        }
+        Binder->SelectedPackGuid = Container;
+        const uint64 BeforeGive = Binder->HashInventoryOverlayState();
+        Give(3);
+        TestEqual(TEXT("Offering the whole stack does not predict consumption"), Session.WorldObjects[202].StackSize, 3);
+        TestEqual(TEXT("Offering leaves the inventory UI unchanged"), Binder->HashInventoryOverlayState(), BeforeGive);
+
+        if (RewardFirst) Reward(Container == 100 ? 3 : 0);
+        const uint64 BeforeReply = Binder->HashInventoryOverlayState();
+        StackUpdate(11, 2);
+        TestTrue(TEXT("Partial hand-in refreshes the inventory count immediately"), Binder->HashInventoryOverlayState() != BeforeReply);
+        const uint64 AfterReply = Binder->HashInventoryOverlayState();
+        StackUpdate(10, 3);
+        FACEBinaryWriter Stale;
+        Stale.WriteUInt32(ACEOpcode::PublicUpdatePropertyInt); Stale.WriteUInt8(10);
+        Stale.WriteUInt32(202); Stale.WriteUInt32(12); Stale.WriteInt32(0);
+        Session.ReceiveGameMessage(Stale.GetData());
+        TestEqual(TEXT("Stale stack and quality replies cannot alter the visible remainder"), Binder->HashInventoryOverlayState(), AfterReply);
+        if (!RewardFirst) Reward(Container == 100 ? 3 : 0);
+
+        const auto Visible = Client->GetPackItems(Container);
+        const auto* Remainder = Visible.FindByPredicate([](const auto& O) { return O.Guid == 202; });
+        if (TestNotNull(TEXT("Remainder is visible in its original bag without relogging"), Remainder))
+        {
+            TestEqual(TEXT("One trinket is consumed per exchange"), Remainder->StackSize, 2);
+            TestEqual(TEXT("Remainder retains server value"), Remainder->Value, 200);
+            TestEqual(TEXT("Remainder retains original container"), Remainder->ContainerId, Container);
+            TestEqual(TEXT("Remainder retains original inventory slot"), Remainder->PlacementPosition, 1);
+        }
+        TestEqual(TEXT("Nested remainder still belongs to the player"), Session.ResolveContainerRoot(202), 100);
+        const auto MainPack = Client->GetPackItems(100);
+        const auto* Writ = MainPack.FindByPredicate([](const auto& O) { return O.Guid == 300; });
+        if (TestNotNull(TEXT("Reward create is visible alongside the remaining trinkets"), Writ))
+        {
+            TestEqual(TEXT("Exchange creates one writ"), Writ->StackSize, 1);
+            TestEqual(TEXT("Reward name survives wire decode"), Writ->Name, FString(TEXT("Writ of Refuge")));
+        }
+        TestEqual(TEXT("Partial exchange does not shift the following item"), Session.WorldObjects[203].PlacementPosition, 2);
+
+        StackUpdate(12, 1); Give(1);
+        TestTrue(TEXT("Final item waits for authoritative removal"), Session.WorldObjects.Contains(202));
+        const uint64 BeforeRemoval = Binder->HashInventoryOverlayState();
+        FACEBinaryWriter Removed; Removed.WriteUInt32(ACEOpcode::InventoryRemoveObject); Removed.WriteUInt32(202);
+        Session.ReceiveGameMessage(Removed.GetData());
+        TestFalse(TEXT("Final hand-in removes only the consumed stack"), Session.WorldObjects.Contains(202));
+        TestTrue(TEXT("Final hand-in invalidates the inventory UI"), Binder->HashInventoryOverlayState() != BeforeRemoval);
+        TestFalse(TEXT("Final hand-in leaves no phantom inventory slot"), Client->GetPackItems(Container).ContainsByPredicate(
+            [](const auto& O) { return O.Guid == 202; }));
+        TestEqual(TEXT("Final removal compacts the following item"), Session.WorldObjects[203].PlacementPosition, 1);
+        TestTrue(TEXT("Final removal preserves the earlier reward"), Session.WorldObjects.Contains(300));
+        StackUpdate(11, 2);
+        TestFalse(TEXT("Delayed stack update cannot resurrect a consumed item"), Session.WorldObjects.Contains(202));
+    }
+
+    // GDLE Monster::FinishGiveItem transfers the original GUID to the NPC.
+    // OnReceiveInventoryItem then consumes one and SimulateGiveObject returns
+    // the remainder using MakeAware/CreateObject plus Container IID=player;
+    // no second player-owned InventoryMove is required. OBJECT_MSG and the
+    // ordered PRIVATE_MSG can arrive in either order.
+    for (int32 ReturnOrder : {0, 1, 2})
+    {
+        Session.ClearWorldState(); Session.PlayerGuid = 100; Session.State = EACESessionState::InWorld;
+        Session.UpsertWorldObject(Item(100, 0, INDEX_NONE, true));
+        Session.UpsertWorldObject(Item(900, 0, INDEX_NONE));
+        Session.UpsertWorldObject(Item(201, 100, 0));
+        CreateStack(202, TEXT("Ancient Falatacot Trinket"), 3, 300, 100);
+        Session.WorldObjects[202].PlacementPosition = 1;
+        Session.UpsertWorldObject(Item(203, 100, 2));
+        FACEBinaryWriter Contents; Contents.WriteUInt32(100); Contents.WriteUInt32(3);
+        for (int32 Guid : {201, 202, 203}) { Contents.WriteUInt32(Guid); Contents.WriteUInt32(0); }
+        FACEBinaryReader R(Contents.GetData()); Session.HandleViewContents(R);
+        Binder->SelectedPackGuid = 100; Give(3);
+        ContainerQuality(1, 0); ContainerQuality(2, 0);
+        TestEqual(TEXT("Preliminary GDLE quality clears retain source ownership"), Session.WorldObjects[202].ContainerId, 100);
+        TestEqual(TEXT("Preliminary GDLE quality clears retain source slot"), Session.WorldObjects[202].PlacementPosition, 1);
+        auto ReturnDescription = [&] { CreateStack(202, TEXT("Ancient Falatacot Trinket"), 2, 200, 100); };
+        if (ReturnOrder == 0) ReturnDescription();
+        Contain(202, 900, 0, 1);
+        TestEqual(TEXT("GDLE whole-stack receipt transfers ownership to NPC"), Session.WorldObjects[202].ContainerId, 900);
+        TestFalse(TEXT("Transferred stack is absent until server returns it"), Client->GetPackItems(100).ContainsByPredicate(
+            [](const auto& O) { return O.Guid == 202; }));
+        StackUpdate(11, 2);
+        if (ReturnOrder == 1) ReturnDescription();
+        const uint64 BeforeReturn = Binder->HashInventoryOverlayState();
+        const uint64 BeforeRevision = Session.InventoryDataRevision;
+        ContainerQuality(3, 100);
+        if (ReturnOrder != 1)
+        {
+            TestTrue(TEXT("Unowned GDLE remainder returns on authoritative Container IID"),
+                Binder->HashInventoryOverlayState() != BeforeReturn);
+            TestTrue(TEXT("Container-only return invalidates cached plugin inventory"), Session.InventoryDataRevision > BeforeRevision);
+            TestTrue(TEXT("Container-only return restores main-pack membership"), Session.ContainerContents[100].ContainsByPredicate(
+                [](const auto& Ref) { return Ref.ItemGuid == 202; }));
+            TestEqual(TEXT("Retail Container IID return inserts at slot zero"), Session.WorldObjects[202].PlacementPosition, 0);
+            TestEqual(TEXT("Returned stack shifts the first surviving item"), Session.WorldObjects[201].PlacementPosition, 1);
+            TestEqual(TEXT("Returned stack shifts the second surviving item"), Session.WorldObjects[203].PlacementPosition, 2);
+        }
+        if (ReturnOrder == 2) ReturnDescription();
+        const auto ReturnedItems = Client->GetPackItems(100);
+        const auto* Returned = ReturnedItems.FindByPredicate([](const auto& O) { return O.Guid == 202; });
+        if (TestNotNull(TEXT("GDLE return keeps the remainder visible without relogging"), Returned))
+        {
+            TestEqual(TEXT("GDLE return contains the original stack GUID"), Returned->Guid, 202);
+            TestEqual(TEXT("GDLE return leaves all but one trinket"), Returned->StackSize, 2);
+            TestEqual(TEXT("GDLE return retains the adjusted value"), Returned->Value, 200);
+            TestEqual(TEXT("GDLE return is owned by the player"), Returned->ContainerId, 100);
+        }
+        const uint64 AfterReturn = Binder->HashInventoryOverlayState();
+        ContainerQuality(2, 900); // Stale retransmission must not undo the newer return.
+        ContainerQuality(4, 100); // Already-owned updates must not reinsert/reorder it.
+        TestEqual(TEXT("Stale or duplicate container qualities do not move the returned stack"), Binder->HashInventoryOverlayState(), AfterReturn);
+        CreateStack(300, TEXT("Writ of Refuge"), 1, 1, 100); Contain(300, 100, 3, 2);
+        TestTrue(TEXT("GDLE reward creation preserves returned stack"), Client->GetPackItems(100).ContainsByPredicate(
+            [](const auto& O) { return O.Guid == 202 && O.StackSize == 2; }));
+        TestTrue(TEXT("GDLE exchange also exposes its single reward"), Client->GetPackItems(100).ContainsByPredicate(
+            [](const auto& O) { return O.Guid == 300 && O.StackSize == 1; }));
+        if (ReturnOrder == 0)
+        {
+            ContainerQuality(5, 901); ContainerQuality(6, 0);
+            TestEqual(TEXT("Preliminary foreign/zero IID updates cannot move an owned stack"), Session.WorldObjects[202].ContainerId, 100);
+            Contain(202, 900, 0, 3);
+            ContainerQuality(10, 901); ContainerQuality(9, 100);
+            TestEqual(TEXT("Older return IID cannot override a newer foreign-container quality"), Session.WorldObjects[202].ContainerId, 900);
+            ContainerQuality(12, 0); ContainerQuality(11, 100);
+            TestEqual(TEXT("Older return IID cannot override a newer cleared-container quality"), Session.WorldObjects[202].ContainerId, 0);
+            Contain(202, 900, 0, 4);
+            Session.PendingInventoryTransfers.Add(202, FPlatformTime::Seconds());
+            ContainerQuality(13, 100);
+            TestEqual(TEXT("Container IID cannot complete a pending inventory request"), Session.WorldObjects[202].ContainerId, 900);
+            TestTrue(TEXT("Container IID cannot clear pending inventory arbitration"), Session.PendingInventoryTransfers.Contains(202));
+            Session.PendingInventoryTransfers.Remove(202);
+            ContainerQuality(14, 100);
+            TestEqual(TEXT("Unowned item can return after its pending request ends"), Session.WorldObjects[202].ContainerId, 100);
+        }
+    }
     return true;
 }
 #endif
