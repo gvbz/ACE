@@ -1,4 +1,4 @@
-# Plan history (gvbz at 7b94a2e84 with the Development Dashboard and Max Fog Distance, client v162, 2026.11.19.162)
+# Plan history (gvbz at a050fb43a with the Development Dashboard and Max Fog Distance, client v163, 2026.11.20.163)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -713,3 +713,9 @@ Thwargle's release v162 (ab8ad50d, 2026.11.19.162), merged into `gvbz` as e487d6
 
 - One conflict, in `ACEPluginSubsystem.cpp`: v162 adds the new `client_messaging` permission to both permission lists, and a line that allows it only from plugin API 2. The Development Dashboard's two `dev_tools` lines stay in front of the two lists; v162's lines are unchanged. The dashboard's marked lines are now `ACEPluginSubsystem.cpp` 459 and 464 and `ACEPluginPublicAPI.cpp` 7, 312 and 318.
 - Unity build (7b94a2e84): v162's new `ACEPluginClientBus.cpp` and `ACEPluginClientMessaging.cpp` keep their helpers (`S`, `Encode`, `Name`, `Available`) directly in an anonymous namespace. In a unity build they share a file with the other `Mods/` files and clash with their helpers, so a clean build stops with errors. `gvbz` puts them in a namespace named after the file (`ACEPluginClientBusPrivate`, `ACEPluginClientMessagingPrivate`) and pulls them in per function, as the other `Mods/` files do. Marked `// personal: unity-build`; no change in behavior.
+
+### v163
+
+Thwargle's release v163 (93209864, 2026.11.20.163), merged into `gvbz` as a050fb43a. No change to the fork's features; the Development Dashboard's marked lines keep their v162 line numbers.
+
+- Unity build: v163 gives the helpers in `ACEPluginClientBus.cpp` and `ACEPluginClientMessaging.cpp` their own names (`BusString`, `EncodeBusMessage`, `ClientMessageString`, `IsClientChannelName`, `ClientMessagingAvailable`), so they no longer clash with the other `Mods/` files. Both files were taken as in Thwargle's client, so the v162 fix (7b94a2e84) is gone and the two files match Thwargle's `master`.
