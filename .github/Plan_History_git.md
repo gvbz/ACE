@@ -1,4 +1,4 @@
-# Plan history (gvbz at 44e788eb5 plus the Development Dashboard and Max Fog Distance, client v161, 2026.11.18.161)
+# Plan history (gvbz at 7b94a2e84 with the Development Dashboard and Max Fog Distance, client v162, 2026.11.19.162)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -706,3 +706,10 @@ Thwargle's release v161 (670bc29d, 2026.11.18.161), merged into `gvbz` as bb8d32
 - Imported AC2 sky: the fog color is the AC2 fog color only (no longer tinted by the sky dome, and no night rain tint); cloud shadows on the land follow the opacity of the drawn cloud layer (`M_ACELandLit_v42`); the AC2 moon is turned and sized to match the AC1 moon.
 - Unchanged: the horizon band, the shell's 1 cm drop, the objects radius range (3 to 24), the options window rows, the camera.
 - New tests: `ACE.Personal.FarScenery.Fade`, `ACE.Personal.FarTerrain.LODMovement`, `ACE.Personal.FarTerrain.Coverage`.
+
+### v162
+
+Thwargle's release v162 (ab8ad50d, 2026.11.19.162), merged into `gvbz` as e487d6799. No change to the fork's features.
+
+- One conflict, in `ACEPluginSubsystem.cpp`: v162 adds the new `client_messaging` permission to both permission lists, and a line that allows it only from plugin API 2. The Development Dashboard's two `dev_tools` lines stay in front of the two lists; v162's lines are unchanged. The dashboard's marked lines are now `ACEPluginSubsystem.cpp` 459 and 464 and `ACEPluginPublicAPI.cpp` 7, 312 and 318.
+- Unity build (7b94a2e84): v162's new `ACEPluginClientBus.cpp` and `ACEPluginClientMessaging.cpp` keep their helpers (`S`, `Encode`, `Name`, `Available`) directly in an anonymous namespace. In a unity build they share a file with the other `Mods/` files and clash with their helpers, so a clean build stops with errors. `gvbz` puts them in a namespace named after the file (`ACEPluginClientBusPrivate`, `ACEPluginClientMessagingPrivate`) and pulls them in per function, as the other `Mods/` files do. Marked `// personal: unity-build`; no change in behavior.
