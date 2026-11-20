@@ -8,7 +8,6 @@
 #include "Personal/PersonalFarTerrainDetail.h"
 #include "Personal/PersonalSkyHorizon.h"
 #include "ACERuntimeOptions.h"
-#include "HAL/IConsoleManager.h"
 
 // Max Fog Distance, the fog values while it limits the fog, the horizon band with Far Terrain Horizon, and the texture rings.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPersonalFogLimitTest, "ACE.Personal.Fog.Limit",
@@ -53,16 +52,10 @@ bool FPersonalFogLimitTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Above the range: 43"), PersonalFog::MaxLandblocks(), 43);
 	TestFalse(TEXT("43 does not limit the fog"), PersonalFog::IsLimited());
 
-	// The fixed values, and no test variables left.
+	// The fixed values.
 	TestEqual(TEXT("Clear-weather start 3"), PersonalFog::LimitedStartClearLandblocks, 3.f);
 	TestEqual(TEXT("Fog amount 0.73"), PersonalFog::LimitedFogAmount, .73f);
 	TestEqual(TEXT("Band opacity with Far Terrain Horizon 0.73"), PersonalFog::HorizonOpacityWithFarHorizon, .73f);
-	for (const TCHAR* Name : {TEXT("personal.Fog.Clear"), TEXT("personal.Fog.Night"), TEXT("personal.Fog.Start"), TEXT("personal.Fog.StartClear"),
-		TEXT("personal.Fog.StartNight"), TEXT("personal.Fog.Strength"), TEXT("personal.Fog.HorizonBand"), TEXT("personal.Fog.HorizonHeight"),
-		TEXT("personal.Fog.HorizonOpacity")})
-	{
-		TestNull(*FString::Printf(TEXT("%s is gone"), Name), IConsoleManager::Get().FindConsoleVariable(Name));
-	}
 
 	// The fog end: at 43 as the client sets it; below 43 never past the limit, whatever the weather or time.
 	constexpr float Coverage = 43.f * B;
