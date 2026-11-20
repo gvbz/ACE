@@ -8,7 +8,37 @@ with a few added options. The original README is in the repository root.
 - `master` matches Thwargle's repository.
 - `gvbz` has the changes below, on top of client v161 (2026.11.18.161). Since v159 they are also part of Thwargle's client (pull request #1), with his later changes.
 
-## Changes
+## Changes in v161
+
+- Max Fog Distance: the fog never reaches past the set distance, in
+  any weather (`Max Fog Distance`, 5 to 43 landblocks, default 11; 43
+  is no limit). Below 43 the fog starts at 3 landblocks in clear
+  weather by day and lets 27 % of the distant land show through, and
+  the far terrain textures stop at the limit. It applies with the far
+  terrain on.
+- Far Terrain Horizon: with it on, the horizon band is drawn at 73 %
+  opacity, so the horizon line shows through the haze.
+- Development Dashboard: a bundled Lua plugin (off until enabled in
+  Manage Plugins) with test controls for the fork's `personal.` console
+  variables (Far Terrain, Far Scenery and Far Rooms tabs; values are not
+  saved), and an Admin tab with server admin commands, saved locations,
+  place suggestions and map coordinates, for a server where the
+  character is an admin. It uses a new plugin service `dev`.
+
+How each change was built: [Plan_History_git.md](Plan_History_git.md)
+
+Screenshots of each change, on and off: [Comparisons.md](Comparisons.md)
+
+Added code is in `Personal` folders and files named `Personal*`. Edits
+in existing files are marked `// personal:`.
+
+## License
+
+AGPL-3.0, the same as the original. See LICENSE.
+
+## v158
+
+Sent to Thwargle in pull request #1 and part of his client since v159, with his later changes.
 
 - Camera: a height slider for the third person camera (1.5, the client's
   height, to 5). `Save Camera Position` keeps the distance and pitch
@@ -37,20 +67,3 @@ with a few added options. The original README is in the repository root.
   objects on.
 - The far terrain options stay on inside buildings, for the view out of
   doors and windows, and turn off in dungeons.
-- Development Dashboard: a bundled Lua plugin (off until enabled in
-  Manage Plugins) with test controls for the fork's `personal.` console
-  variables (Far Terrain, Far Scenery and Far Rooms tabs; values are not
-  saved), and an Admin tab with server admin commands, saved locations,
-  place suggestions and map coordinates, for a server where the
-  character is an admin. It uses a new plugin service `dev`.
-
-How each change was built: [Plan_History_git.md](Plan_History_git.md)
-
-Screenshots of each change, on and off: [Comparisons.md](Comparisons.md)
-
-Added code is in `Personal` folders and files named `Personal*`. Edits
-in existing files are marked `// personal:`.
-
-## License
-
-AGPL-3.0, the same as the original. See LICENSE.

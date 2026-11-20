@@ -1,17 +1,34 @@
 # Comparisons
 
-Screenshots of each change in this fork, with its setting off and on. Each pair is from the same spot, camera and time of day. Client v158 (2026.11.15.158) at 3440x1440, shown at half size. Click a picture to open it.
+Screenshots of each change in this fork, with its setting off and on. Each pair is from the same spot, camera and time of day. The pictures are at 3440x1440, shown at half size. Click a picture to open it.
 
-- [Camera Height](#camera-height)
-- [Free Camera Restriction](#free-camera-restriction)
-- [Far Terrain](#far-terrain)
-- [Far Terrain Objects](#far-terrain-objects)
-- [Far Terrain Textures](#far-terrain-textures)
-- [Far Terrain Horizon](#far-terrain-horizon)
-- [Far Terrain Rooms](#far-terrain-rooms)
-- [All Features](#all-features)
+- [v161](#v161)
+  - [All Features](#all-features)
+- [v158](#v158)
+  - [Camera Height](#camera-height)
+  - [Free Camera Restriction](#free-camera-restriction)
+  - [Far Terrain](#far-terrain)
+  - [Far Terrain Objects](#far-terrain-objects)
+  - [Far Terrain Textures](#far-terrain-textures)
+  - [Far Terrain Horizon](#far-terrain-horizon)
+  - [Far Terrain Rooms](#far-terrain-rooms)
+  - [All Features](#all-features-1)
 
-## Camera Height
+## v161
+
+### All Features
+
+Every feature of this fork on in both pictures, client v161 (2026.11.18.161), with `Far Terrain Horizon` on: Off is the fog without a limit and with the horizon band fully opaque, On is the fog limited to 12 landblocks (taken while testing; the default is 11), starting at 3 landblocks, at 73 % strength, with the horizon band at 73 % opacity. The chat box and two windows are blurred.
+
+| Off | On |
+|---|---|
+| [![All features on, fog limit off, v161, 1](comparisons/all-features-v161_1_off.jpg)](comparisons/all-features-v161_1_off.jpg) | [![All features on, fog limit on, v161, 1](comparisons/all-features-v161_1_on.jpg)](comparisons/all-features-v161_1_on.jpg) |
+
+## v158
+
+Client v158 (2026.11.15.158), the features as sent in pull request #1.
+
+### Camera Height
 
 Raises the point the third person camera turns around, so the view looks over the character. Setting: `Camera Height` (1.5 to 5; 1.5 is the client's height). Both pictures are at the same zoom.
 
@@ -19,7 +36,7 @@ Raises the point the third person camera turns around, so the view looks over th
 |---|---|
 | [![Camera Height at the default](comparisons/camera-height_off.jpg)](comparisons/camera-height_off.jpg) | [![Camera Height raised](comparisons/camera-height_on.jpg)](comparisons/camera-height_on.jpg) |
 
-## Free Camera Restriction
+### Free Camera Restriction
 
 Lets the camera zoom out to the same distance at every angle. With it off, the zoom limit depends on the camera angle, and can only be zoomed out far if the camera is positioned directly above the character (retail). Setting: `Free Camera Restriction`. The first picture shows retail zoom distance restriction, the second shows it with the setting enabled.
 
@@ -27,7 +44,7 @@ Lets the camera zoom out to the same distance at every angle. With it off, the z
 |---|---|
 | [![Free Camera Restriction off](comparisons/free-camera-restriction_off.jpg)](comparisons/free-camera-restriction_off.jpg) | [![Free Camera Restriction on](comparisons/free-camera-restriction_on.jpg)](comparisons/free-camera-restriction_on.jpg) |
 
-## Far Terrain
+### Far Terrain
 
 Draws low-detail terrain past the loaded landblocks, out to `Far Terrain Radius`, so hills and coastlines show to the horizon. Setting: `Far Terrain`.
 
@@ -43,7 +60,7 @@ Mayoi:
 |---|---|
 | [![Far Terrain off, Mayoi](comparisons/far-terrain_mayoi_off.jpg)](comparisons/far-terrain_mayoi_off.jpg) | [![Far Terrain on, Mayoi](comparisons/far-terrain_mayoi_on.jpg)](comparisons/far-terrain_mayoi_on.jpg) |
 
-## Far Terrain Objects
+### Far Terrain Objects
 
 Draws trees, rocks, buildings and other objects on the far terrain, out to `Far Terrain Objects Radius`, with simpler models further out. Setting: `Far Terrain Objects` (needs `Far Terrain`).
 
@@ -51,7 +68,7 @@ Draws trees, rocks, buildings and other objects on the far terrain, out to `Far 
 |---|---|
 | [![Far Terrain Objects off](comparisons/far-terrain-objects_off.jpg)](comparisons/far-terrain-objects_off.jpg) | [![Far Terrain Objects on](comparisons/far-terrain-objects_on.jpg)](comparisons/far-terrain-objects_on.jpg) |
 
-## Far Terrain Textures
+### Far Terrain Textures
 
 Draws the far terrain within about 2.7 km with the same terrain textures as the loaded land, instead of flat colors. Setting: `Far Terrain Textures` (needs `Far Terrain`).
 
@@ -61,7 +78,7 @@ The far cliffs, both pictures cropped to the same area:
 |---|---|
 | [![Far Terrain Textures off, close-up](comparisons/far-terrain-textures_detail_off.jpg)](comparisons/far-terrain-textures_detail_off.jpg) | [![Far Terrain Textures on, close-up](comparisons/far-terrain-textures_detail_on.jpg)](comparisons/far-terrain-textures_detail_on.jpg) |
 
-## Far Terrain Horizon
+### Far Terrain Horizon
 
 Continues the night sky below eye level, so no bright strip shows between the far terrain and the sky from sunset to dawn. Setting: `Far Terrain Horizon` (needs `Far Terrain`).
 
@@ -69,7 +86,7 @@ Continues the night sky below eye level, so no bright strip shows between the fa
 |---|---|---|
 | [![Far Terrain off](comparisons/far-terrain-horizon_far-terrain-off.jpg)](comparisons/far-terrain-horizon_far-terrain-off.jpg) | [![Far Terrain Horizon off](comparisons/far-terrain-horizon_off.jpg)](comparisons/far-terrain-horizon_off.jpg) | [![Far Terrain Horizon on](comparisons/far-terrain-horizon_on.jpg)](comparisons/far-terrain-horizon_on.jpg) |
 
-## Far Terrain Rooms
+### Far Terrain Rooms
 
 Shows the rooms behind the windows and open doorways of far buildings, with their own lights at night. Doors get a dark panel until the door itself is in range. Setting: `Far Terrain Rooms` (needs `Far Terrain Objects`).
 
@@ -85,7 +102,7 @@ Holtburg at night, both pictures cropped to the same area around the town:
 |---|---|
 | [![Far Terrain Rooms off, night](comparisons/far-terrain-rooms_night_off.jpg)](comparisons/far-terrain-rooms_night_off.jpg) | [![Far Terrain Rooms on, night](comparisons/far-terrain-rooms_night_on.jpg)](comparisons/far-terrain-rooms_night_on.jpg) |
 
-## All Features
+### All Features
 
 Every feature of this fork off, and every feature on, at eight places. The other sections show one feature at a time.
 
