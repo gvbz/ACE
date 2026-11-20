@@ -140,6 +140,9 @@ public:
 	}
 
 	bool BuildEnvCell(uint32 EnvCellId, float WorldScale, FACEBuiltEnvCellMesh& OutMesh);
+	/** Arrival-only point lookup using raw CellBSP; never builds textures or render meshes. */
+	bool ResolvePlacementCell(uint32 HintCellId, uint32 NumCells, const FVector& BlockPoint,
+		uint32& OutCellId, bool& bComplete);
 
 private:
 	bool LoadEnvironment(uint32 EnvironmentId, FACEDatEnvironment& Out);

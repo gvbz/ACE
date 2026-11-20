@@ -160,6 +160,7 @@ void UACEPluginSubsystem::FlushPluginState(FACEClientPlugin& P)
 
 void UACEPluginSubsystem::StopCompanion(FACEClientPlugin& P,const FString& Reason)
 {
+    ResetClientMessaging(P);
     using namespace ACEPluginCompanionPrivate; using ACEPluginCompanionPrivate::S; using ACEPluginCompanionPrivate::N;
     FlushPluginState(P);P.Running=false;P.CompanionStopped=true;P.VM.Reset();
     P.ChatInbox.Empty();P.ChatInboxBytes=0;P.ChatInboxDropped=0;

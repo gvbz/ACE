@@ -209,17 +209,17 @@ bool FACEUCMSchedulingTest::RunTest(const FString&)
   auto P=Json(TEXT(R"({"buffing":false,"recovery":true,"combat":"melee","looting":true,"loot_rules":[{"material":59,"min_workmanship":7,"action":"keep"},{"action":"skip"}]})"));
   S->SetNumberField(TEXT("container"),700);S->SetBoolField(TEXT("container_is_corpse"),true);
   TArray<TSharedPtr<FJsonValue>> Items;
-  for(int Id=701;Id<=706;++Id)
+  for(int Id=701;Id<=710;++Id)
   {
    auto Item=Json(TEXT(R"({"name":"Ring","count":1,"type":8,"material":59,"identified":false})"));Item->SetNumberField(TEXT("id"),Id);Item->SetNumberField(TEXT("wcid"),Id);Items.Add(MakeShared<FJsonValueObject>(Item));
   }
   S->SetArrayField(TEXT("contents"),Items);
-  for(int Id=701;Id<=704;++Id)
+  for(int Id=701;Id<=708;++Id)
   {
    auto I=Step(VM,S,P);TestEqual(TEXT("Appraisals advance without waiting for first reply"),I->GetNumberField(TEXT("item")),double(Id));
    TestEqual(TEXT("Unresolved first rule requests appraisal, never falls through to Skip"),I->GetStringField(TEXT("action")),FString(TEXT("identify")));
   }
-  auto I=Step(VM,S,P);TestFalse(TEXT("At most four unresolved appraisals; no premature corpse close"),I->HasField(TEXT("action")));
+  auto I=Step(VM,S,P);TestFalse(TEXT("At most eight unresolved appraisals; no premature corpse close"),I->HasField(TEXT("action")));
   TestEqual(TEXT("Outstanding appraisals are visible to user"),I->GetStringField(TEXT("status")),FString(TEXT("Waiting for loot appraisal")));
   // Replies can arrive out of order. A completed item should be collected now.
   Items[2]->AsObject()->SetBoolField(TEXT("identified"),true);Items[2]->AsObject()->SetNumberField(TEXT("workmanship"),8);

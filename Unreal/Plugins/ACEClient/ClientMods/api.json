@@ -52,6 +52,7 @@
       "components_required_usage": "Pass snapshot.components_required ~= false; only explicit false bypasses components",
       "unavailable_until": "numeric spell ID keys with monotonic retry times",
       "supplied": "booleans keyed by numeric spell ID",
+      "component_requirements": "spell.components is the full personalized or focused name-to-quantity map; components_known indicates validity; scarabs is the legacy subset used only when components is absent",
       "limits": {"spells":16384,"inventory_entries":4096,"native_visits_per_callback":131072}
     },
     "string.contains": {
@@ -174,7 +175,7 @@
   "companion_api": 1,
   "companion": {
     "mode": "companion",
-    "api2_additional_permissions": ["profiles", "data", "say"],
+    "api2_additional_permissions": ["profiles", "data", "say", "client_messaging"],
     "permissions": [
       "chat",
       "chat_filter",
@@ -257,7 +258,8 @@
       "messaging",
       "commands",
       "profiles",
-      "data"
+      "data",
+      "client_messaging"
     ],
     "policy_modules": [
       "ucm",
@@ -274,11 +276,27 @@
       "world_plates",
       "terrain_overlay",
       "messages",
+      "client_channels",
+      "client_messages",
       "requests",
       "profile_patch",
       "runtime_route",
       "presentation"
     ],
+    "client_messaging": {
+      "permission": "client_messaging",
+      "platforms": ["Windows", "Linux", "PC VR"],
+      "scope": "Same computer, OS-user namespace, normalized configured server host/port plus reported server name, plugin ID and channel. No LAN or retail UtilityBelt protocol compatibility.",
+      "subscriptions": "client_channels: replacement array of case-sensitive ASCII [A-Za-z0-9_.-] names, 1..64 characters; omission retains, [] leaves all",
+      "send": "client_messages: [{channel, data: object, to?: peer_instance}]; omit to for broadcast, sender excluded",
+      "receive": "events: [{type: client_message, sender: instance, character, player, plugin, channel, data, serial}]",
+      "snapshot": "client_bus: {available, connected, instance, channels, peers:[{instance,character,player,channels}], error}; request client_bus in snapshot_fields",
+      "limits": {"channels_per_plugin":8,"channels_per_client":64,"clients":32,"messages_per_callback":8,"messages_per_plugin_per_second":20,"messages_per_client_per_second":80,"payload_utf8_bytes":4096,"payload_nesting":10,"receive_queue":64,"connection_queue_bytes":262144},
+      "lifecycle": "Only enabled/running API 2 plugins in world; stop, disable, reload, logout or character/session change clears subscriptions. Relay automatically re-elects after exit. Instance IDs are transient.",
+      "delivery": "Transient best effort, no replay or acknowledgement; disconnected/backpressured/rate-limited sends report client_bus.error. Plugins needing guarantees must acknowledge/deduplicate and retry explicitly.",
+      "security": "Loopback only. Does not grant sockets/require, execute received commands, send server chat, or bypass action permissions. Local applications are trusted; namespace separation is not authentication.",
+      "example": "Docs/Plugins/Examples/client_channel"
+    },
     "target_snapshot": {
       "selection": "Selected object details, or null; no assessment requests are generated",
       "tracked_targets": "Object details keyed by decimal GUID string: selection, active plate targets, and objects with active confirmed timers",
@@ -541,8 +559,10 @@
       "identify": {
         "permission": "inventory",
         "fields": [
-          "item"
-        ]
+          "item",
+          "pipeline"
+        ],
+        "notes": "Optional pipeline=true skips the appraisal action wait only for policy plugins identifying an item directly inside the currently open external container (validated at dispatch). Default behavior is unchanged. The policy must bound outstanding requests, retry timeouts, and await identified data before evaluating dependent rules. Use continue_work=true for next-frame continuation after nonblocking actions; waiting polls use 50 ms and receipts wake immediately. Other action/busy/permission gates still apply. Companion identify commands are unchanged."
       },
       "store_item": {
         "permission": "inventory",

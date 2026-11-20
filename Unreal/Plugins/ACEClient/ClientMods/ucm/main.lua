@@ -1848,18 +1848,28 @@ local function tick(s,p)
   if length==0 then return end
   for _,door in ipairs(s.route_objects or {}) do
    if door.object_class==26 then
-    if door.door_open then door_attempts[door.id]=nil
-    elseif door.distance<=option('door_range',2) and s.time>=(until_time['door'..door.id] or 0) then
+    if door.door_open then door_attempts[door.id]=nil;until_time['door'..door.id]=nil
+    elseif door.distance<=option('door_range',2) then
      local x,y=world(door);local along=((x-px)*dx+(y-py)*dy)/length
      if along>=0 and along<=1 and (x-px-along*dx)^2+(y-py-along*dy)^2<2.25 then
       local attempt=door_attempts[door.id]
       -- A used door can close again. Only bound retries at the same obstruction;
       -- opening it, moving away, or returning later starts a fresh attempt.
       if not attempt or distance(s.position,attempt.position)>2 or s.time-attempt.time>30 then
-       attempt={count=0,position=s.position};door_attempts[door.id]=attempt
+       attempt={count=0,position=s.position,time=s.time};door_attempts[door.id]=attempt
+       until_time['door'..door.id]=nil
+      end
+      -- Appraisal and unlock receipts finish their own stage. Their retry
+      -- watchdog must not delay the next stage or keep walking into the door.
+      if attempt.phase=='identify' and door.door_identified~=false
+       or attempt.phase=='unlock' and (door.door_locked==false or door.door_identified==false) then
+       attempt.phase=nil;until_time['door'..door.id]=nil
+      end
+      if s.time<(until_time['door'..door.id] or 0) then
+       return {status='Waiting for route door',continue_work=true}
       end
       if door.door_identified==false then
-       attempt.ids=(attempt.ids or 0)+1;attempt.time=s.time;until_time['door'..door.id]=s.time+5
+       attempt.ids=(attempt.ids or 0)+1;attempt.time=s.time;attempt.phase='identify';until_time['door'..door.id]=s.time+5
        if attempt.ids>3 then return pause_navigation('cannot assess route door') end
        return {action='identify',item=door.id,status='Inspecting route door'}
       end
@@ -1883,8 +1893,9 @@ local function tick(s,p)
       if attempt.count>=3 then return pause_navigation('door remains closed after three attempts') end
       attempt.count=attempt.count+1;attempt.time=s.time
       until_time['door'..door.id]=s.time+5
-      if pick then return {action='apply_item',item=pick.id,target=door.id,status='Unlocking route door'} end
-      return {action='use_world',item=door.id,status='Opening route door'}
+      attempt.phase=pick and 'unlock' or 'open'
+      if pick then return {action='apply_item',item=pick.id,target=door.id,status='Unlocking route door',continue_work=true} end
+      return {action='use_world',item=door.id,status='Opening route door',continue_work=true}
      end
     end
    end
@@ -2626,7 +2637,7 @@ local function tick(s,p)
  if corpse_pending then
   local receipt=action_receipt(s,'use',corpse_pending.serial,corpse_pending.started,corpse_pending.id)
   if s.container==corpse_pending.id then item_attempts['corpse'..corpse_pending.id]=0;corpse_pending=nil
-  elseif s.time<corpse_pending.deadline and not (receipt and (receipt.error or 0)~=0) then return result(nil,'Approaching / waiting for corpse to open')
+  elseif s.time<corpse_pending.deadline and not (receipt and (receipt.error or 0)~=0) then return loot_progress('Approaching / waiting for corpse to open')
   else
    local key='corpse'..corpse_pending.id;local blacklisted=(item_attempts[key] or 0)>=option('corpse_attempts',30)
    corpses[corpse_pending.id]=s.time+(blacklisted and option('corpse_blacklist_seconds',200) or 10)
@@ -2644,7 +2655,7 @@ local function tick(s,p)
      if v.id==loot_pending.id and (v.count or 1)>=loot_pending.amount then received_exact=true end
     end
     if not received_exact and (present or owned<loot_pending.expected) then
-     if s.time<loot_pending.expires then return result(nil,'Waiting for loot transfer') end
+     if s.time<loot_pending.expires then return loot_progress('Waiting for loot transfer') end
      -- A timeout does not prove full packs or lost ownership. Release this
      -- corpse so combat/recovery continue; retry it later without flooding Use.
      return failed('Loot transfer unconfirmed; leaving items untouched')
@@ -2679,7 +2690,7 @@ local function tick(s,p)
    if s.container_is_corpse==false then corpse_contents_wait=nil;return end
    if s.contents_ready==false then
     if not corpse_contents_wait or corpse_contents_wait.id~=s.container then corpse_contents_wait={id=s.container,deadline=s.time+20} end
-    if s.time<corpse_contents_wait.deadline then return result(nil,'Waiting for corpse item descriptions') end
+    if s.time<corpse_contents_wait.deadline then return loot_progress('Waiting for corpse item descriptions') end
     corpses[s.container]=s.time+30;corpse_contents_wait=nil
     return {action='close_corpse',status='Corpse contents incomplete; retrying later'}
    end
@@ -2697,6 +2708,9 @@ local function tick(s,p)
     for _,v in ipairs(inventory) do if v.object_class==42 and (v.spell or 0)>0 then carried_scrolls[v.spell]=true end end
    end
    local pending_appraisals=0
+   -- Bound in-flight work independently of the host action gate. Only requests
+   -- for this open corpse count; identified replies retire their retry state at
+   -- the start of the callback. Unanswered IDs retry at most three times.
    for _,item in ipairs(contents) do if not item.identified and s.time<(until_time['id'..item.id] or 0) then pending_appraisals=pending_appraisals+1 end end
    local function progress()
     local r=result(nil,'Checking loot rules: item '..loot_scan.item..'/'..#contents..', rule '..loot_scan.rule..'/'..#rules)
@@ -2728,10 +2742,11 @@ local function tick(s,p)
       -- VT's ID queue advances while earlier replies are pending. Preserve
       -- first-match rule order for this item, but keep examining other items.
       loot_scan.waiting=true;resolved=false
-      if pending_appraisals<4 and s.time>=(until_time[key] or 0) then
-       item_attempts[key]=(item_attempts[key] or 0)+1;until_time[key]=s.time+10
+      if pending_appraisals<8 and s.time>=(until_time[key] or 0) then
+       item_attempts[key]=(item_attempts[key] or 0)+1;until_time[key]=s.time+5
        loot_scan.item=loot_scan.item+1;loot_scan.rule=1
-       return {action='identify',item=item.id,status='Inspecting '..item.name..' for loot rule'}
+       if loot_scan.item>#contents then loot_scan={} end
+       return {action='identify',item=item.id,pipeline=true,continue_work=true,status='Inspecting '..item.name..' for loot rule'}
       end
       break
      elseif match then
@@ -2741,7 +2756,7 @@ local function tick(s,p)
       if rule.action~='skip' and amount>0 then
        local before={};for _,v in ipairs(inventory) do before[v.id]=true end
        loot_scan={};loot_pending={container=s.container,empties=#contents==1 and amount==item.count,before=before,amount=amount,id=item.id,count=item.count,wcid=item.wcid,expected=(owned[item.wcid] or 0)+amount,expires=s.time+10,after=rule.action,name=item.name or 'Item',rule=rule.label or 'Matching rule'}
-       return {action='loot',item=item.id,amount=amount,status='Looting '..item.name..' ('..(rule.label or 'matching rule')..')'}
+       return {action='loot',item=item.id,amount=amount,continue_work=true,status='Looting '..item.name..' ('..(rule.label or 'matching rule')..')'}
       end
       break
      end
@@ -2754,15 +2769,16 @@ local function tick(s,p)
      if not item.identified then
       local key='id'..item.id;loot_scan.waiting=true
       if (item_attempts[key] or 0)>=3 and s.time>=(until_time[key] or 0) then return failed('Unable to appraise mana-source loot') end
-      if pending_appraisals<4 and s.time>=(until_time[key] or 0) then
-       item_attempts[key]=(item_attempts[key] or 0)+1;until_time[key]=s.time+10
+      if pending_appraisals<8 and s.time>=(until_time[key] or 0) then
+       item_attempts[key]=(item_attempts[key] or 0)+1;until_time[key]=s.time+5
        loot_scan.item=loot_scan.item+1;loot_scan.rule=1
-       return {action='identify',item=item.id,status='Inspecting '..item.name..' for mana stone filling'}
+       if loot_scan.item>#contents then loot_scan={} end
+       return {action='identify',item=item.id,pipeline=true,continue_work=true,status='Inspecting '..item.name..' for mana stone filling'}
       end
      elseif mana_source_candidate(item,p,option) then
       local before={};for _,v in ipairs(inventory) do before[v.id]=true end
       loot_scan={};loot_pending={container=s.container,empties=#contents==1 and item.count==1,before=before,amount=1,id=item.id,count=item.count,wcid=item.wcid,expected=(owned[item.wcid] or 0)+1,expires=s.time+10,after='mana_source'}
-      return {action='loot',item=item.id,amount=1,status='Looting '..item.name..' to fill an empty mana stone'}
+      return {action='loot',item=item.id,amount=1,continue_work=true,status='Looting '..item.name..' to fill an empty mana stone'}
      end
     end
     loot_scan.item=loot_scan.item+1;loot_scan.rule=1

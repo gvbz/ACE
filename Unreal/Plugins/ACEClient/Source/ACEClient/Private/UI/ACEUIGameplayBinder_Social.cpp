@@ -24,6 +24,7 @@
 #include "Components/MultiLineEditableText.h"
 #include "Components/TextBlock.h"
 #include "Blueprint/WidgetTree.h"
+#include "Engine/GameInstance.h"
 #include "Styling/CoreStyle.h"
 
 namespace
@@ -33,6 +34,32 @@ namespace
 	static const FLinearColor SocialDim(0.65f, 0.65f, 0.6f, 1.f);
 	/** DAT paint climbs past 20k — overlays must sit above tab/frame chrome. */
 	constexpr int32 SocialOverlayZ = 100000;
+
+	TArray<int32> FellowshipExperiencePercentages(const FACEFellowshipInfo& Info, UACEDatSubsystem* Dat)
+	{
+		TArray<int32> Shares;
+		Shares.Init(Info.bShareXP ? -1 : 0, Info.Members.Num());
+		if (!Info.bShareXP || Info.Members.IsEmpty()) return Shares;
+		// gmFellowshipUI::UpdateFellowStats / FellowshipSystem::GetEvenSplitXPPctg.
+		// This is the retail nominal split, not quest XP or a distance-adjusted award.
+		if (Info.bEvenShare)
+		{
+			constexpr int32 RetailPercent[] = {0, 100, 75, 60, 55, 50, 45, 40, 35, 31, 28};
+			if (Info.Members.Num() < UE_ARRAY_COUNT(RetailPercent)) Shares.Init(RetailPercent[Info.Members.Num()], Info.Members.Num());
+			return Shares;
+		}
+		if (!Dat) return Shares;
+		TArray<uint64> Costs;
+		double Total = 0;
+		for (const auto& Member : Info.Members)
+		{
+			uint64 Cost = 0;
+			if (!Dat->TryGetLevelExperienceCost(Member.Level, Cost)) return Shares;
+			Costs.Add(Cost); Total += double(Cost);
+		}
+		for (int32 I = 0; I < Shares.Num(); ++I) Shares[I] = FMath::FloorToInt(100.0 * double(Costs[I]) / Total + 1.e-9);
+		return Shares;
+	}
 
 	FString ContractRepeatTime(double Seconds)
 	{
@@ -569,6 +596,7 @@ void UACEUIGameplayBinder::RefreshFellowshipOverlays()
 	EnsureOverlays();
 	EnsureSocialEntryBoxes();
 	const FACEFellowshipInfo Info = Client->GetFellowship();
+	const auto XpShares = FellowshipExperiencePercentages(Info, Client->GetGameInstance()->GetSubsystem<UACEDatSubsystem>());
 	if(!Info.Members.ContainsByPredicate([&](const auto& M){return M.Guid==SelectedFellowGuid;}))SelectedFellowGuid=0;
 	for(const TCHAR* Name:{TEXT("CreateFellowshipButton"),TEXT("FellowQuitButton"),TEXT("FellowOpenButton"),TEXT("FellowDisbandButton"),TEXT("FellowLeaderButton"),TEXT("FellowDismissButton"),TEXT("FellowRecruitButton")})
 		if(const auto Button=Manager->FindElementUnder(TEXT("FellowshipPage"),Name))
@@ -679,11 +707,16 @@ void UACEUIGameplayBinder::RefreshFellowshipOverlays()
 		Find=[&](TSharedPtr<FACEUIElement> N,const TCHAR* Name)->TSharedPtr<FACEUIElement>
 		{if(N->ElementName==Name)return N;for(const auto& C:N->Children)if(auto Found=Find(C,Name))return Found;return nullptr;};
 		auto NameEl=Find(Entry,TEXT("FellowName"));auto StatsEl=Find(Entry,TEXT("FellowStats"));
-		if(NameEl)NameEl->Width=FMath::Max(1,ListEl->Width-82);
-		if(StatsEl)StatsEl->X=FMath::Max(1,ListEl->Width-80);
+		const int32 StatsWidth=FMath::Min(128,ListEl->Width);
+		if(NameEl){NameEl->Width=FMath::Max(1,ListEl->Width-StatsWidth-2);NameEl->bTextOneLine=true;}
+		if(StatsEl){StatsEl->X=FMath::Max(1,ListEl->Width-StatsWidth);StatsEl->Width=StatsWidth;StatsEl->bTextOneLine=true;}
 		PlaceTextOnElement(Row,NameEl,M.Name,10,bSel?SocialGold:SocialWhite,SocialOverlayZ+10);
 		Row->SetClipping(EWidgetClipping::ClipToBounds);
-		PlaceTextOnElement(FellowDetailLabels[i*4],StatsEl,FString::Printf(TEXT("Level %d"),M.Level),10,SocialWhite,SocialOverlayZ+10);
+		Row->SetToolTipText(FText::FromString(M.Name));
+		const FString Share=XpShares[Index]>=0?FString::Printf(TEXT("%d%%"),XpShares[Index]):TEXT("--");
+		PlaceTextOnElement(FellowDetailLabels[i*4],StatsEl,FString::Printf(TEXT("Lv %d  XP %s"),M.Level,*Share),10,SocialWhite,SocialOverlayZ+10);
+		FellowDetailLabels[i*4]->SetAutoWrapText(false);
+		FellowDetailLabels[i*4]->SetToolTipText(FText::FromString(TEXT("Nominal retail XP share. Server bonuses, distance and quest rewards can change the actual award.")));
 		const TCHAR* Meters[]={TEXT("FellowHealth"),TEXT("FellowStamina"),TEXT("FellowMana")};
 		const TCHAR* Labels[]={TEXT("FellowHealthStats"),TEXT("FellowStaminaStats"),TEXT("FellowManaStats")};
 		const int32 Cur[]={M.HealthCur,M.StaminaCur,M.ManaCur},Max[]={M.HealthMax,M.StaminaMax,M.ManaMax};

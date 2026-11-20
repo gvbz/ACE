@@ -53,6 +53,8 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FACEOnApproachVendor, int32 /*VendorGuid*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FACEOnTradeEvent, int32 /*EventType*/);
 DECLARE_MULTICAST_DELEGATE(FACEOnCharacterTitlesChanged);
 DECLARE_MULTICAST_DELEGATE_OneParam(FACEOnUseDone, uint32 /*WeenieError*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FACEOnAttackDone, uint32 /*WeenieError*/);
+DECLARE_MULTICAST_DELEGATE(FACEOnInventoryStateChanged);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FACEOnSpellCastRequested, int32 /*SpellId*/, int32 /*TargetGuid*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FACEOnItemUseRequested, int32 /*SourceGuid*/, int32 /*TargetGuid*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FACEOnMoveToFailed, uint32 /*WeenieError*/);
@@ -109,6 +111,8 @@ class ACECLIENT_API FACESession : public TSharedFromThis<FACESession>
     friend class FACEPluginCompanionTest;
     friend class FACEThirdEyeTest;
     friend class FACEPluginPublicAPITest;
+    friend class FACEPluginClientMessagingTest;
+    friend class FACEFrontendFrameLimitTest;
 	friend class FACEItemToolsTest;
     friend class FACEAutoCraftTest;
     friend class FACELedgerTest;
@@ -251,6 +255,8 @@ public:
 	FACEOnTradeEvent OnTradeEvent;
 	FACEOnCharacterTitlesChanged OnCharacterTitlesChanged;
 	FACEOnUseDone OnUseDone;
+	FACEOnAttackDone OnAttackDone;
+	FACEOnInventoryStateChanged OnInventoryStateChanged;
 	FACEOnSpellCastRequested OnSpellCastRequested;
 	FACEOnItemUseRequested OnItemUseRequested;
 	FACEOnMoveToFailed OnMoveToFailed;
@@ -323,6 +329,8 @@ public:
 	uint16 GetForcePositionSeq() const { return ForcePositionSeq; }
 	const FString& GetAccountName() const { return AccountName; }
 	const FString& GetServerName() const { return ServerName; }
+	/** Non-secret endpoint identity for same-server local client channels. */
+	FString GetClientChannelScope() const { return Creds.Host.TrimStartAndEnd().ToLower()+TEXT(":")+FString::FromInt(Creds.Port)+TEXT("/")+ServerName; }
 	const TMap<int32, FACEWorldObject>& GetWorldObjects() const { return WorldObjects; }
 	bool GetWorldObject(int32 Guid, FACEWorldObject& Out) const;
 	const FACEPlayerVitals& GetPlayerVitals() const { return PlayerVitals; }

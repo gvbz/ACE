@@ -301,9 +301,11 @@ void UACEPluginSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     UCMLog.Load(UserDirectory()/TEXT("ucm-log.json"));
     Discover();
     Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UACEPluginSubsystem::Tick), .5f);
+    ClientBusTicker=FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this,&UACEPluginSubsystem::TickClientMessaging),.05f);
 }
 void UACEPluginSubsystem::Deinitialize()
 {
+    FTSTicker::GetCoreTicker().RemoveTicker(ClientBusTicker);ClientBus.Reset();
     SaveItemBuffTimers();
     SaveEquipmentAppraisals();
     RestoreWorldRendering();
@@ -455,12 +457,13 @@ void UACEPluginSubsystem::Discover()
             {
                 const FString Permission = V->AsString();
                 if (Permission == TEXT("dev_tools")) P->Permissions.AddUnique(Permission); else // personal: dev-dashboard
-                if (Permission != TEXT("identify") && Permission != TEXT("sound") && Permission != TEXT("admin_content") && Permission != TEXT("terrain") && Permission != TEXT("profiles") && Permission != TEXT("data") && Permission != TEXT("chat") && Permission != TEXT("chat_filter") && Permission != TEXT("state") && Permission != TEXT("ui") && Permission != TEXT("markers") && Permission != TEXT("waypoint") && Permission != TEXT("messaging") && Permission != TEXT("commands") && Permission != TEXT("local_tools") && Permission != TEXT("local_cosmetics") && Permission != TEXT("cast") && Permission != TEXT("combat") && Permission != TEXT("navigation") && Permission != TEXT("inventory") && Permission != TEXT("loot") && Permission != TEXT("say") && Permission != TEXT("fellowship") && Permission != TEXT("confirm")) Valid = false;
+                if (Permission != TEXT("identify") && Permission != TEXT("sound") && Permission != TEXT("admin_content") && Permission != TEXT("terrain") && Permission != TEXT("profiles") && Permission != TEXT("data") && Permission != TEXT("chat") && Permission != TEXT("chat_filter") && Permission != TEXT("state") && Permission != TEXT("ui") && Permission != TEXT("markers") && Permission != TEXT("waypoint") && Permission != TEXT("messaging") && Permission != TEXT("client_messaging") && Permission != TEXT("commands") && Permission != TEXT("local_tools") && Permission != TEXT("local_cosmetics") && Permission != TEXT("cast") && Permission != TEXT("combat") && Permission != TEXT("navigation") && Permission != TEXT("inventory") && Permission != TEXT("loot") && Permission != TEXT("say") && Permission != TEXT("fellowship") && Permission != TEXT("confirm")) Valid = false;
                 else P->Permissions.AddUnique(Permission);
             }
             if(P->Companion)for(const auto& Permission:P->Permissions)
                 if(Permission!=TEXT("dev_tools")) // personal: dev-dashboard
-                if(!TArray<FString>{TEXT("identify"),TEXT("sound"),TEXT("admin_content"),TEXT("terrain"),TEXT("chat"),TEXT("chat_filter"),TEXT("state"),TEXT("ui"),TEXT("markers"),TEXT("waypoint"),TEXT("messaging"),TEXT("commands"),TEXT("profiles"),TEXT("data"),TEXT("say")}.Contains(Permission))Valid=false;
+                if(!TArray<FString>{TEXT("identify"),TEXT("sound"),TEXT("admin_content"),TEXT("terrain"),TEXT("chat"),TEXT("chat_filter"),TEXT("state"),TEXT("ui"),TEXT("markers"),TEXT("waypoint"),TEXT("messaging"),TEXT("client_messaging"),TEXT("commands"),TEXT("profiles"),TEXT("data"),TEXT("say")}.Contains(Permission))Valid=false;
+            if(P->Api<2&&P->Permissions.Contains(TEXT("client_messaging")))Valid=false;
             if(P->LocalService)
             {
                 if(Number(M,TEXT("service_api"))!=1 || !P->Permissions.Contains(TEXT("local_cosmetics"))) Valid=false;
@@ -633,7 +636,7 @@ bool UACEPluginSubsystem::Start(const FString& Id)
     P->CombatTransitionIntent.Reset();P->Running = true; P->ActivityFailure.Reset(); P->Player = C->GetPlayerGuid(); P->Server = C->GetServerName();
     if(P->IsPolicy()){IdleManaVM.Reset();IdleManaOwner.Empty();IdleManaFailed=false;bRouteJoinRequested=true;RouteVisibilityOffset=0;
         bTrackRouteMovement=false;RouteMovementSamples.Reset();bRouteMovementOverflow=false;}
-    if(P->IsPolicy()){CombatTarget=0;PhysicalAttackNextSendAt=0;PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();CombatOutcomes.Empty();ClearBuffRequests();if(!Resume){RuntimeRoute.Reset();RoutePoint=1;}RouteRebuiltAt=0;}
+    if(P->IsPolicy()){CombatTarget=0;PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();CombatOutcomes.Empty();ClearBuffRequests();if(!Resume){RuntimeRoute.Reset();RoutePoint=1;}RouteRebuiltAt=0;}
     CachedSpells.Reset();
     P->LoggedActivity.Empty();P->LoggedRouteStatus.Empty();
     LogUCMEvent(*P,Resume?TEXT("UCM resumed"):TEXT("UCM started"));
@@ -704,6 +707,7 @@ void UACEPluginSubsystem::Stop(const FString& Id, const FString& Reason, bool Pr
 {
     if (auto P = Find(Id))
     {
+        ResetClientMessaging(*P);
         P->ChatFilters.Reset();
         P->ChatInbox.Empty();P->ChatInboxBytes=0;P->ChatInboxDropped=0;
         const bool OwnsPolicy=P->IsPolicy()&&(P->Running||PolicyPlugin()==P);
@@ -739,7 +743,7 @@ void UACEPluginSubsystem::Stop(const FString& Id, const FString& Reason, bool Pr
         if (FastCastOwner == Id) FastCastOwner.Empty();
         if (OptionalCastOwner == Id) OptionalCastOwner.Empty();
         if(OwnsPolicy)CombatTarget=0;
-        if(PhysicalAttackOwner==Id){PhysicalAttackOwner.Empty();PhysicalAttackTarget=0;PhysicalAttackNextSendAt=0;}
+        if(PhysicalAttackOwner==Id){PhysicalAttackOwner.Empty();PhysicalAttackTarget=0;}
         if (PendingSpellOwner == Id) { PendingSpell=0; PendingSpellOwner.Empty(); PendingSpellActivity.Empty(); }
         if(DeferredBuffOwner==Id){DeferredBuffIntent.Reset();DeferredBuffOwner.Empty();}
         if(!PendingSpell){BuffRetryAt=0;PendingBuffResultDriven=false;}
@@ -1319,9 +1323,10 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::Snapshot()
     for(const auto& Entry:V.Skills)if(Entry.AdvancementClass>=2)
         for(int32 School=1;School<SchoolSkills.Num();++School)if(Entry.SkillId==SkillIds[School])SchoolSkills[School]=Entry.Current;
     const uint64 Revision=C->GetSession()?C->GetSession()->GetSpellDataRevision():0;
-    if(CachedSpells.IsEmpty() || CachedSpellIds!=SpellIds || CachedSchoolSkills!=SchoolSkills || Revision!=CachedSpellRevision)
+    const uint32 FocusMask=D->GetPlayerSpellFocusMask();
+    if(CachedSpells.IsEmpty() || CachedSpellIds!=SpellIds || CachedSchoolSkills!=SchoolSkills || Revision!=CachedSpellRevision || FocusMask!=CachedSpellFocusMask)
     {
-    CachedSpells.Reset();CachedSpellIds=SpellIds;CachedSchoolSkills=SchoolSkills;CachedSpellRevision=Revision;
+    CachedSpells.Reset();CachedSpellIds=SpellIds;CachedSchoolSkills=SchoolSkills;CachedSpellRevision=Revision;CachedSpellFocusMask=FocusMask;
     CachedKnownSpellValues.Reset(Known.Num());for(int32 Id:Known)CachedKnownSpellValues.Add(MakeShared<FJsonValueNumber>(Id));
     for (int32 Id : SpellIds)
     {
@@ -1330,9 +1335,13 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::Snapshot()
         auto S = MakeShared<FJsonObject>(); S->SetNumberField(TEXT("id"), Id);
         S->SetBoolField(TEXT("known"), KnownIds.Contains(Id));
         TMap<FString,int32> ScarabCounts;auto Scarabs=MakeShared<FJsonObject>();
-        S->SetBoolField(TEXT("components_known"),D->TryGetPluginSpellScarabs(Id,ScarabCounts));
+        D->TryGetPluginSpellScarabs(Id,ScarabCounts);
         for(const auto& Pair:ScarabCounts)Scarabs->SetNumberField(Pair.Key,Pair.Value);
         S->SetObjectField(TEXT("scarabs"),Scarabs);
+        TMap<FString,int32> ComponentCounts;auto Components=MakeShared<FJsonObject>();
+        S->SetBoolField(TEXT("components_known"),D->TryGetPluginSpellComponents(Id,School<32&&(FocusMask&(1u<<School)),ComponentCounts));
+        for(const auto& Pair:ComponentCounts)Components->SetNumberField(Pair.Key,Pair.Value);
+        S->SetObjectField(TEXT("components"),Components);
         uint32 Level=0,LevelSchool=0;D->TryGetSpellSchoolAndLevel(Id,LevelSchool,Level);
         S->SetNumberField(TEXT("level"),Level);
         S->SetNumberField(TEXT("school"), School); S->SetNumberField(TEXT("power"), Power); S->SetNumberField(TEXT("category"), Category);
@@ -1611,6 +1620,11 @@ bool UACEPluginSubsystem::Tick(float)
         // UCM cannot issue a second action while the first is pending. Avoid
         // copying a large spellbook/inventory into Lua just to return "waiting".
         RefreshActionWait(*P);
+        // Check authoritative corpse/equipment receipts cheaply at the work cadence.
+        // The action/busy gates below still prevent Lua snapshot construction
+        // and dispatch until the operation finishes (or its timeout expires).
+        if(P->WaitAction==TEXT("loot")||P->WaitAction==TEXT("open_corpse")||P->WaitAction==TEXT("equip"))
+            ScheduleDecisionWake(FPlatformTime::Seconds()+.05);
         if(FPlatformTime::Seconds()<P->NextDecision)
         {
             // An event wake can arrive before a short decision/action gate.
@@ -1658,8 +1672,14 @@ bool UACEPluginSubsystem::Tick(float)
         if(P->Api>=2 && FPlatformTime::Seconds()>=P->NextStateSave){FlushPluginState(*P);P->NextStateSave=FPlatformTime::Seconds()+5;}
         // Idle/blocked policies need not rebuild world sight and inventory every frame.
         bool ContinueWork=false;if(Intent)Intent->TryGetBoolField(TEXT("continue_work"),ContinueWork);
-        P->NextDecision=FPlatformTime::Seconds()+(ContinueWork||CombatTarget?.05:.25);
-        if(ContinueWork||CombatTarget||!PhysicalAttackOwner.IsEmpty())ScheduleDecisionWake(FMath::Max(P->NextDecision,P->NextAction));
+        // An accepted, nonblocking work item (for example a pipelined corpse
+        // appraisal or closing a corpse) can continue on the very next frame.
+        // Polls with no new action stay bounded; receipts wake them immediately.
+        const bool WorkDispatched=ContinueWork&&Intent&&!String(Intent,TEXT("action")).IsEmpty();
+        P->NextDecision=FPlatformTime::Seconds()+(WorkDispatched?0.:ContinueWork||CombatTarget?.05:.25);
+        // Keep idle acquisition at the policy's own cadence (VT polls at 293ms),
+        // rather than silently falling back to the 500ms maintenance ticker.
+        if(P->IsPolicy()||ContinueWork||CombatTarget||!PhysicalAttackOwner.IsEmpty())ScheduleDecisionWake(FMath::Max(P->NextDecision,P->NextAction));
     }
     return true;
 }
@@ -1889,12 +1909,13 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
     if (!P.Permissions.Contains(Action==TEXT("attack_bar")?TEXT("combat"):Action==TEXT("craft")?TEXT("inventory"):Permission)) { ReportActivityFailure(P,I, TEXT("Action not permitted: ") + Action); return; }
     auto* C = GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
     auto* PC = Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());
-    if (!PC || !C->GetSession() || (C->IsUseBusy() && Action!=TEXT("confirm")&&Action!=TEXT("craft")) || PC->IsWorldTransitionActive()) return;
+    if (!PC || !C->GetSession() || PendingSpell || (C->IsUseBusy() && Action!=TEXT("confirm")&&Action!=TEXT("craft")) || PC->IsWorldTransitionActive()) return;
     const double Now = FPlatformTime::Seconds();
     if (Now < P.NextAction || P.CombatTransitionIntent) return;
-    // Steering does not send a use/cast action. Reserving the action throttle
-    // here blocked the arrival wake and stopped at every short return segment.
-    P.NextAction = (Action==TEXT("move") || Action==TEXT("face")) ? Now : Now + .5;
+    // Steering and combat use their own readiness checks. An obsolete/blocked
+    // target must not add a half-second cooldown before selecting another one.
+    // The policy's decision cadence still bounds repeated invalid requests.
+    P.NextAction = (Action==TEXT("move") || Action==TEXT("face") || Action==TEXT("attack") || Action==TEXT("cast")) ? Now : Now + .5;
     P.WaitAction.Empty();
     if(P.IsPolicy()&&Action==TEXT("identify")&&String(I,TEXT("activity"))==TEXT("combat"))
     {
@@ -1954,7 +1975,7 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
         if(C->GetWorldObject(Id,Target)&&(Target.IsSelectableWorldObject()||IsOwnedPluginItem(Target)))C->SelectObject(Id);
         else ReportActivityFailure(P,I,TEXT("Meta selection target disappeared"));return;
     }
-    if(Action==TEXT("cancel_attack")){PhysicalAttackUntil=Now+2;PhysicalAttackNextSendAt=0;CombatTarget=0;C->GetSession()->SendCancelAttack();P.NextAction=Now;return;}
+    if(Action==TEXT("cancel_attack")){PhysicalAttackUntil=Now+2;PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();CombatTarget=0;C->GetSession()->SendCancelAttack();P.NextAction=Now;return;}
     if(Action==TEXT("combat_mode")){const int Mode=int(Number(I,TEXT("mode")));if(Mode==1||Mode==2||Mode==4||Mode==8)if(PrepareCombatAction(P,I,Mode))P.NextAction=Now;return;}
     if(Action==TEXT("attack_bar")){if(PC)PC->SetPluginAttackPower(Number(I,TEXT("power")));return;}
     if(Action==TEXT("logout")){Stop(P.Id,TEXT("Logged out by meta"));C->Logout();return;}
@@ -2055,7 +2076,9 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
         if(FastCast&&P.Permissions.Contains(TEXT("navigation"))&&Dat->TryGetPluginSpellInfo(Spell,School,Power,Category,Flags,Duration)
             &&ACEPluginCastMotion::FastBuff(School,Power,Flags,Duration,Category))FastCastOwner=P.Id;
         ConfigureCastMotion(P,I,Spell,false);
-        C->GetSession()->SendCastSpell(Spell, Target); P.NextAction = Now + 3.5;
+        // PendingSpell owns the untagged UseDone. There is no additional cast
+        // cooldown: completion or rejection wakes the policy on the next frame.
+        C->GetSession()->SendCastSpell(Spell, Target); P.NextAction = Now;
     }
     else if (Action == TEXT("attack"))
     {
@@ -2097,10 +2120,12 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
         // Recovery/death events may wake Lua during an ongoing server repeat.
         // Re-evaluate policy immediately without restarting the same attack.
         if(PhysicalAttackOwner==P.Id&&PhysicalAttackTarget==Target&&PhysicalAttackMode==Mode
-            &&PhysicalAttackHeight==Height&&FMath::IsNearlyEqual(PhysicalAttackPower,Power,.001f)&&Now<PhysicalAttackNextSendAt)
+            &&PhysicalAttackHeight==Height&&FMath::IsNearlyEqual(PhysicalAttackPower,Power,.001f)
+            &&(C->GetSession()->IsServerAttackInProgress()
+                ||(!C->GetSession()->GetLastAttackError()&&C->IsCharacterOptionSet(0x00))))
         {P.NextAction=Now;return;}
         PhysicalAttackTarget=Target;PhysicalAttackOwner=P.Id;PhysicalAttackUntil=Now+30;
-        PhysicalAttackMode=Mode;PhysicalAttackHeight=Height;PhysicalAttackPower=Power;PhysicalAttackNextSendAt=Now+3.5;
+        PhysicalAttackMode=Mode;PhysicalAttackHeight=Height;PhysicalAttackPower=Power;
         if (Mode == 2) C->SendTargetedMeleeAttack(Target, Height, Power); else C->SendTargetedMissileAttack(Target, Height, Power);
         PC->ShowPluginAttack(Target, Height, Power);
         // Throttle duplicate network attacks above, not the entire policy.

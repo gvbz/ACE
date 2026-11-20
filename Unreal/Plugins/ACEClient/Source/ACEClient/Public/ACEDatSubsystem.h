@@ -344,6 +344,8 @@ public:
 
 	/** Raw EnvCell unpack (Flags / CellPortals) without building draw geometry. */
 	bool LoadEnvCell(uint32 EnvCellId, FACEDatEnvCell& OutCell);
+	/** Resolve a portal/login cell hint from its position. Complete false means missing DAT geometry. */
+	bool ResolveWorldEntryCell(const FACEPosition& Position, uint32& OutCellId, bool& bComplete);
 
 	const FACEBuiltEnvCellMesh* GetOrBuildEnvCellMesh(uint32 EnvCellId, float WorldScale = 100.f);
 
@@ -431,6 +433,8 @@ public:
 	bool TryGetPluginSpellInfo(uint32 SpellId, uint32& School, uint32& Power, uint32& Category, uint32& Flags, double& Duration);
 	bool IsPluginSingleTargetOffensiveSpell(uint32 SpellId);
 	bool TryGetPluginSpellScarabs(uint32 SpellId, TMap<FString, int32>& OutRequirements);
+	uint32 GetPlayerSpellFocusMask() const;
+	bool TryGetPluginSpellComponents(uint32 SpellId, bool bHasFocus, TMap<FString, int32>& OutRequirements);
 	bool TryGetSpellDescription(uint32 SpellId, FString& OutDescription);
 	bool TryGetSpellExamination(uint32 SpellId, FString& OutDetails);
 	/** DisplayOrder from SpellTable — used to sort the spellbook like retail. */
@@ -495,6 +499,8 @@ public:
 	/** Retail skill meter: XP within the server-reported rank, not remaining XP to the skill cap. */
 	bool TryGetSkillRankProgress(int32 AdvancementClass, int32 Ranks, int32 CurrentXpSpent, float& OutProgress01);
 	bool TryGetXpToNextLevel(int64 TotalExperience, int32 CurrentLevel, int64& OutXpNeeded, float* OutProgress01 = nullptr);
+	/** Full cost of the next level, used by retail's level-weighted fellowship split. */
+	bool TryGetLevelExperienceCost(int32 Level, uint64& OutCost);
 
 	/**
 	 * True once after land mesh format changes — terrain presenter should respawn landblocks.

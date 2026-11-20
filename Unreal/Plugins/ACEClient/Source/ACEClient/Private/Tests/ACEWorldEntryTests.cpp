@@ -308,6 +308,141 @@ bool FACEPortalMotionTest::RunTest(const FString&)
     return !HasAnyErrors();
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEPortalCellLookupTest,"ACE.RetailParity.PortalCellLookup",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
+bool FACEPortalCellLookupTest::RunTest(const FString&)
+{
+    FEntryWorld F;
+    auto* Dat=F.GI->GetSubsystem<UACEDatSubsystem>();
+    if(!Dat->LoadDatDirectory(ACETestDatDirectory())) return false;
+    struct FArrival { uint32 Hint,Expected; FVector Location; };
+    const FArrival Arrivals[]={
+        #include "ACEPortalCellFixtures.inl"
+    };
+    const double Start=FPlatformTime::Seconds();
+    for(const auto& Arrival:Arrivals)
+    {
+        FACEPosition Pose;Pose.CellId=Arrival.Hint;Pose.Location=Arrival.Location;
+        uint32 Resolved=0;bool Complete=false;
+        TestTrue(FString::Printf(TEXT("Arrival %08X at %s resolves"),Arrival.Hint,*Pose.Location.ToString()),
+            Dat->ResolveWorldEntryCell(Pose,Resolved,Complete));
+        // Shared room boundaries can have more than one valid cell. The physical
+        // arrival test below checks all 104 against actual streamed collision.
+        if(Resolved!=Arrival.Expected) AddInfo(FString::Printf(TEXT("Shared boundary %08X -> %08X (reported alternative %08X)"),Arrival.Hint,Resolved,Arrival.Expected));
+        if(Arrival.Hint==0x014F01B9u) TestEqual(TEXT("Maggreth resolves to its actual entrance"),Resolved,Arrival.Expected);
+        Pose.CellId=Resolved;
+        TestTrue(TEXT("Corrected destination is stable"),Dat->ResolveWorldEntryCell(Pose,Resolved,Complete));
+        TestEqual(TEXT("Corrected hint stays in its room"),Resolved,uint32(Pose.CellId));
+    }
+    FACEPosition Invalid;Invalid.CellId=0x014F01B9;Invalid.Location=FVector(3000,3000,-500);
+    uint32 Resolved=0;bool Complete=false;
+    TestFalse(TEXT("Outside every room has no invented cell"),Dat->ResolveWorldEntryCell(Invalid,Resolved,Complete));
+    TestTrue(TEXT("Complete geometry distinguishes an invalid position from missing files"),Complete);
+    Invalid.CellId=0xFFFFFFFF;
+    TestFalse(TEXT("Missing landblock has no placement"),Dat->ResolveWorldEntryCell(Invalid,Resolved,Complete));
+    TestFalse(TEXT("Missing data never qualifies for no-room recall"),Complete);
+    AddInfo(FString::Printf(TEXT("Checked %d distinct reported destinations in %.3fs (raw DAT only)"),
+        UE_ARRAY_COUNT(Arrivals),FPlatformTime::Seconds()-Start));
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEPortalReportedPlacementsTest,"ACE.RetailParity.PortalReportedPlacements",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
+bool FACEPortalReportedPlacementsTest::RunTest(const FString&)
+{
+    struct FArrival { uint32 Hint,Expected; FVector Location; };
+    const FArrival Arrivals[]={
+        #include "ACEPortalCellFixtures.inl"
+    };
+    for(const auto& Arrival:Arrivals)
+    {
+        // Retire each independent dungeon fixture before loading the next one.
+        ON_SCOPE_EXIT { CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS,true); };
+        FEntryWorld F;
+        auto* Dat=F.GI->GetSubsystem<UACEDatSubsystem>();
+        auto* Client=F.GI->GetSubsystem<UACEClientSubsystem>();auto Session=Client->GetSession();
+        auto* PC=F.World->SpawnActor<AACEPlayerController>();PC->Client=Client;F.World->AddController(PC);
+        if(&Arrival==&Arrivals[0])
+        {
+            // A real first login indexes portal data before it permits cell data
+            // to load. Do not permanently cache "not found" during that gap.
+            Dat->SetDatDirectory(ACETestDatDirectory());Dat->BeginBackgroundLoad();
+            double Deadline=FPlatformTime::Seconds()+30;
+            while(!Dat->IsDatReady()&&FPlatformTime::Seconds()<Deadline)
+            { FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);FPlatformProcess::Sleep(.002f); }
+            TestTrue(TEXT("Portal-only login index completes"),Dat->IsDatReady());
+            TestFalse(TEXT("Cell indexing is deferred until the portal tunnel"),Dat->IsCellReady());
+            FACEPosition Initial;Initial.CellId=Arrival.Hint;Initial.Location=Arrival.Location;
+            Session->SetLocalPosition(Initial);PC->ResolveWorldEntryDestinationCell();
+            TestFalse(TEXT("Deferred cell index must not cache an unresolved arrival"),PC->bWorldEntryPositionChecked);
+            Dat->SetWorldStreamingAllowed(true);Deadline=FPlatformTime::Seconds()+30;
+            while(!Dat->IsCellReady()&&FPlatformTime::Seconds()<Deadline)
+            { FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);FPlatformProcess::Sleep(.002f); }
+            if(!TestTrue(TEXT("Arrival cell index completes"),Dat->IsCellReady())) return false;
+        }
+        else if(!Dat->LoadDatDirectory(ACETestDatDirectory())) return false;
+        F.World->SetGameMode(FURL(nullptr,TEXT("/Game/Test?game=/Script/Engine.GameModeBase"),TRAVEL_Absolute));
+        auto* GM=F.World->GetAuthGameMode();
+        if(!TestNotNull(TEXT("Reported portal game mode"),GM)) return false;
+        auto* Terrain=NewObject<UACETerrainPresenterComponent>(GM);
+        GM->AddInstanceComponent(Terrain);Terrain->RegisterComponent();Terrain->Client=Client;
+        auto* Pawn=F.World->SpawnActor<APawn>();auto* Capsule=NewObject<UCapsuleComponent>(Pawn);
+        Capsule->InitCapsuleSize(48,91.75);Pawn->SetRootComponent(Capsule);Pawn->AddInstanceComponent(Capsule);
+        Capsule->RegisterComponent();PC->Possess(Pawn);Pawn->SetActorEnableCollision(false);
+        FACEPosition Pose;Pose.CellId=Arrival.Hint;Pose.Location=Arrival.Location;
+        Session->SetLocalPosition(Pose);PC->ResolveWorldEntryDestinationCell();Pose=Session->GetPlayerPosition();
+        TestTrue(TEXT("Cell correction preserves server XYZ"),Pose.Location.Equals(Arrival.Location,0));
+        Terrain->LastKnownCellId=Pose.CellId;Terrain->bHasKnownCell=true;
+        Dat->SetWorldStreamingAllowed(true);Dat->SetInPortalSpace(true);
+        TArray<int32> Ordered;TSet<int32> Needed;Terrain->CollectNeededEnvCells(Ordered,Needed);
+        const FVector Origin=FACEPosition::AceVectorToUnreal(FVector((Arrival.Hint>>24)*192,((Arrival.Hint>>16)&255)*192,0),100);
+        for(int32 Id:Ordered)
+        {
+            Dat->GetOrBuildEnvCellMesh(Id,100);
+            auto* Room=F.World->SpawnActor<AACEEnvCellActor>();
+            if(Room->LoadEnvCell(Id,Origin,100)) Terrain->SpawnedEnvCells.Add(Id,Room);
+            else AddError(FString::Printf(TEXT("Cannot load reported arrival %08X cell %08X"),Arrival.Hint,Id));
+        }
+        const double Deadline=FPlatformTime::Seconds()+30;
+        do
+        {
+            ++GFrameCounter;FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+            Terrain->UpdateBuildingVisibility();
+            for(const auto& Pair:Terrain->SpawnedEnvCells) Pair.Value->Tick(.016f);
+            if(PC->IsWorldEntryGeometryReady()) break;
+            FPlatformProcess::Sleep(.002f);
+        } while(FPlatformTime::Seconds()<Deadline);
+        TestTrue(FString::Printf(TEXT("Reported arrival %08X collision is ready"),Arrival.Hint),PC->IsWorldEntryGeometryReady());
+        FVector Placement;AACEPlayerController::EWorldEntryPlacement State;uint32 Cell=0;
+        const bool Placed=PC->FindWorldEntryPlacement(Placement,&State,&Cell);
+        TestTrue(FString::Printf(TEXT("Reported arrival %08X leaves portal space"),Arrival.Hint),Placed);
+        if(Placed)
+        {
+            TestTrue(TEXT("Final placement uses resident geometry"),PC->IsWorldEntryGeometryReady(Cell));
+            if(State==AACEPlayerController::EWorldEntryPlacement::Airborne)
+            {
+                // Some authored points are 0.7m above their entrance floor,
+                // beyond retail's normal step-down. Preserve the short fall
+                // while proving that actual resident collision catches it.
+                const auto Body=PC->GetPlayerCollisionBody();FHitResult Floor;
+                const FVector Start=Placement+Body.Centers[0];
+                const bool Supported=F.World->SweepSingleByChannel(Floor,Start,Start-FVector(0,0,200),
+                    FQuat::Identity,ECC_Pawn,FCollisionShape::MakeSphere(Body.Radii[0]),
+                    FCollisionQueryParams(SCENE_QUERY_STAT(ReportedPortalLanding),false,Pawn));
+                TestTrue(FString::Printf(TEXT("Reported arrival %08X has a nearby landing floor"),Arrival.Hint),
+                    Supported&&!Floor.bStartPenetrating&&Floor.ImpactNormal.Z>=.5f);
+                TestTrue(TEXT("Airborne arrival preserves the authored height"),
+                    FMath::IsNearlyEqual(Placement.Z-Capsule->GetScaledCapsuleHalfHeight(),Pose.ToUnrealLocation(100).Z,.01));
+                AddInfo(FString::Printf(TEXT("Reported landing %08X drop %.2fcm"),Arrival.Hint,Supported?Floor.Distance:-1));
+            }
+            else TestTrue(TEXT("Supported arrival is grounded"),State==AACEPlayerController::EWorldEntryPlacement::Grounded);
+            TestTrue(TEXT("Arrival stays within retail's local placement search"),FVector::Dist2D(Placement,Pose.ToUnrealLocation(100))<=400.1);
+        }
+        AddInfo(FString::Printf(TEXT("Reported placement %08X -> %08X ready=%d placed=%d state=%d"),Arrival.Hint,Cell,PC->IsWorldEntryGeometryReady(),Placed,int32(State)));
+    }
+    return !HasAnyErrors();
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEPortalDropTest,"ACE.RetailParity.PortalDrops",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
 bool FACEPortalDropTest::RunTest(const FString&)
@@ -316,6 +451,9 @@ bool FACEPortalDropTest::RunTest(const FString&)
     // real DAT geometry, not portal-name exceptions or a fabricated floor check.
     struct FArrival { const TCHAR* Name; uint32 Cell; FVector Location; bool Airborne; bool Water=false; };
     TArray<FArrival> Arrivals = {
+        {TEXT("Maggreth stale-cell portal"),0x014F01B9,FVector(30,-60,-12),false},
+        {TEXT("Weakened Vault Sewers distant-cell portal"),0x000C0142,FVector(110,0,.005),false},
+        {TEXT("Count Phainor's Tomb stale-cell portal"),0x58620396,FVector(240,-390,.005),false},
         {TEXT("Withered Beach coastal water arrival"),0x1B120033,FVector(158.300995,50.575699,-.895),false,true},
         {TEXT("Withered Beach drop into coastal water"),0x1B120033,FVector(158.300995,50.575699,1.105),true,true},
         {TEXT("Fort Tethana town-network arrival"),0x2681001D,FVector(77.7,108.1,240),false},
@@ -379,6 +517,8 @@ bool FACEPortalDropTest::RunTest(const FString&)
         Capsule->RegisterComponent();PC->Possess(Pawn);Pawn->SetActorEnableCollision(false);
         FACEPosition Pose;Pose.CellId=Arrival.Cell;Pose.Location=Arrival.Location;
         Session->SetLocalPosition(Pose);
+        PC->ResolveWorldEntryDestinationCell();
+        Pose=Session->GetPlayerPosition();
         Terrain->LastKnownCellId=Pose.CellId;Terrain->bHasKnownCell=true;
         Dat->SetWorldStreamingAllowed(true);Dat->SetInPortalSpace(true);
         const bool Indoor=ACECellTransit::IsIndoorCell(Pose.CellId);
@@ -2032,6 +2172,18 @@ bool FACERetailWorldEntryTest::RunTest(const FString& Parameters)
     Controller->TickWorldEntryRecovery(.02f, TEXT("lifestone-recall"));
     TestEqual(TEXT("Rejected or unanswered recall cannot wait forever"), Session->State, EACESessionState::Disconnected);
     TestTrue(TEXT("Unanswered recall explains attunement and server eligibility"), Controller->WorldEntryFailureReason.Contains(TEXT("attuned")));
+    // A corrupt destination outside every room used to be misclassified as
+    // unfinished collision forever, including on the next login.
+    FACEPosition NoRoom;NoRoom.CellId=0x014F01B9;NoRoom.Location=FVector(3000,3000,-500);
+    Session->SetLocalPosition(NoRoom);Session->State=EACESessionState::InWorld;
+    Controller->bAwaitingRecoveryDestination=false;Controller->bWorldEntryRecoveryAttempted=false;
+    Controller->ResolveWorldEntryDestinationCell();
+    TestTrue(TEXT("Complete raw geometry search detects no containing room"),Controller->bWorldEntryPositionOutsideCells);
+    Controller->EnterWorldLoadElapsed=46;
+    TestTrue(TEXT("No-room arrival enters bounded recall recovery"),Controller->TickWorldEntryRecovery(.016f,TEXT("spawn-placement")));
+    TestTrue(TEXT("No-room arrival requests one server recall"),Controller->bWorldEntryRecoveryAttempted&&Controller->bAwaitingRecoveryDestination);
+    Controller->ResetWorldEntryDestination();
+    TestFalse(TEXT("New destination clears the old invalid-position classification"),Controller->bWorldEntryPositionOutsideCells);
     Receiver->Close(); Sockets->DestroySocket(Receiver);
     Floor->Destroy(); Solid->Destroy();
     return true;

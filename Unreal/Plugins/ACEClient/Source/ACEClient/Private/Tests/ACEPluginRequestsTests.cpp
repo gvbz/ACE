@@ -731,7 +731,7 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         const double Sent=FPlatformTime::Seconds()-1.;
         H->PendingSpell=123;H->PendingSpellTarget=0;H->PendingSpellAt=Sent;H->PendingSpellOwner=P->Id;
         P->NextAction=Sent+3.5;H->ObserveUseDone(CastError);
-        TestTrue(TEXT("Completed cast releases immediately; rejected cast retains minimum request interval"),P->NextAction<=(CastError?Sent+.5:FPlatformTime::Seconds()));
+        TestTrue(TEXT("Completed or rejected cast releases immediately without a retry cooldown"),P->NextAction<=FPlatformTime::Seconds());
         TestTrue(TEXT("Cast completion clears owner and pending spell"),H->PendingSpellOwner.IsEmpty()&&H->PendingSpell==0);
         P->NextAction=Sent+8;H->ObserveUseDone(0);
         TestEqual(TEXT("Unrelated use completion cannot clear another action throttle"),P->NextAction,Sent+8);
@@ -793,19 +793,21 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         FTSTicker::GetCoreTicker().RemoveTicker(H->DecisionWakeTicker);H->DecisionWakeTicker.Reset();
         H->PendingSpell=123;H->PendingSpellOwner=P->Id;H->PendingSpellAt=FPlatformTime::Seconds();
         P->NextAction=H->PendingSpellAt+3.5;CompleteCast(1);
-        TestTrue(TEXT("Immediate rejection retains half-second retry floor"),H->DecisionWakeAt>=H->PendingSpellAt+.5);
-        DeliverWake();TestEqual(TEXT("Early retry cannot execute another decision"),P->Status,FString(TEXT("Decision 20")));
-        TestTrue(TEXT("Early event wake is retained at the action deadline instead of waiting for the half-second poll"),
+        TestTrue(TEXT("Immediate rejection schedules retry on the next frame"),H->DecisionWakeAt<=FPlatformTime::Seconds());
+        DeliverWake();TestEqual(TEXT("Rejected cast immediately returns control to policy"),P->Status,FString(TEXT("Decision 21")));
+        P->NextAction=FPlatformTime::Seconds()+.1;P->NextDecision=0;DeliverWake();
+        TestTrue(TEXT("An unrelated action gate is retained instead of waiting for the half-second poll"),
             H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt==P->NextAction);
         P->NextAction=0;P->NextDecision=FPlatformTime::Seconds()+.1;
         const double DecisionDeadline=P->NextDecision;DeliverWake();
         TestTrue(TEXT("Early wake also survives a decision gate"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt==DecisionDeadline);
-        TestEqual(TEXT("Early decision wake does not duplicate policy work"),P->Status,FString(TEXT("Decision 20")));
+        TestEqual(TEXT("Early decision wake does not duplicate policy work"),P->Status,FString(TEXT("Decision 21")));
         P->NextDecision=0;DeliverWake();
-        TestEqual(TEXT("Deferred wake runs as soon as its gate clears"),P->Status,FString(TEXT("Decision 21")));
+        TestEqual(TEXT("Deferred wake runs as soon as its gate clears"),P->Status,FString(TEXT("Decision 22")));
+        TestTrue(TEXT("Idle policy schedules its own 250ms acquisition poll"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds()+.26);
         H->PendingSpell=123;H->PendingSpellOwner=P->Id;CompleteCast(0);
         P->Running=false;DeliverWake();
-        TestEqual(TEXT("Stopping before a queued wake prevents another decision"),P->Status,FString(TEXT("Decision 21")));
+        TestEqual(TEXT("Stopping before a queued wake prevents another decision"),P->Status,FString(TEXT("Decision 22")));
     }
     auto Tell=[&](const FString& Text,int32 Sender=0x50000002,int32 Type=ACEChatMessageType::Tell)
     {
@@ -1163,6 +1165,63 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         TestTrue(TEXT("Loot regression uses the real local-controller dispatch"),GI->GetFirstLocalPlayerController()==LootPC);
         FACEWorldObject Corpse;Corpse.Guid=870;Corpse.Name=TEXT("Corpse of Red Rat");Corpse.bHasPosition=true;Corpse.Position=Session.PlayerPosition;Corpse.ObjectDescriptionFlags=ACEObjectDescFlag::Corpse;Session.WorldObjects.Add(870,Corpse);
         FACEWorldObject Drop;Drop.Guid=871;Drop.Name=TEXT("Loot");Drop.ContainerId=870;Drop.StackSize=1;Session.WorldObjects.Add(871,Drop);
+        // The preceding buff-request fixture stops UCM. Receipt-driven wakes
+        // intentionally affect only running policies, as in an actual loot run.
+        P->Running=true;
+        H->TrackActionWait(*P,TEXT("identify"),870);P->NextAction=FPlatformTime::Seconds()+.5;
+        FACEAppraisalInfo CorpseAssessment;CorpseAssessment.ObjectGuid=870;CorpseAssessment.bSuccess=true;
+        H->ObserveAppraisal(CorpseAssessment);
+        TestTrue(TEXT("Corpse ownership appraisal resumes immediately without a quarter-second floor"),
+            P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds()&&P->NextDecision==0&&H->DecisionWakeAt<=FPlatformTime::Seconds());
+        {
+            auto* Sockets=ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+            FSocket* Receiver=Sockets->CreateSocket(NAME_DGram,TEXT("UCM appraisal test receiver"),false);
+            const auto Address=Sockets->CreateInternetAddr();bool Valid=false;Address->SetIp(TEXT("127.0.0.1"),Valid);Address->SetPort(0);
+            if(!TestTrue(TEXT("Isolated appraisal test socket binds"),Receiver&&Receiver->Bind(*Address)))return false;
+            Receiver->GetAddress(*Address);Session.SocketC2S=Sockets->CreateSocket(NAME_DGram,TEXT("UCM appraisal test sender"),false);
+            Session.ServerC2SAddr=Address;Session.IssacClient=MakeUnique<FACEIsaac>(321u);
+            ON_SCOPE_EXIT {Session.SocketC2S->Close();Sockets->DestroySocket(Session.SocketC2S);Session.SocketC2S=nullptr;Session.ServerC2SAddr.Reset();Session.IssacClient.Reset();Receiver->Close();Sockets->DestroySocket(Receiver);};
+            const auto SavedRequests=H->AppraisalRequests;
+            const auto SavedAppraisals=H->Appraisals;
+            const auto SavedBackground=C->BackgroundAppraisals;
+            ON_SCOPE_EXIT {H->AppraisalRequests=SavedRequests;H->Appraisals=SavedAppraisals;C->BackgroundAppraisals=SavedBackground;
+                P->NextAction=0;P->NextDecision=0;P->WaitAction.Empty();Session.OpenExternalContainerGuid=0;Session.CachedC2SPackets.Reset();};
+            Session.OpenExternalContainerGuid=870;Session.bUseBusy=false;P->CombatTransitionIntent.Reset();
+            auto Identify=MakeShared<FJsonObject>();Identify->SetStringField(TEXT("action"),TEXT("identify"));Identify->SetNumberField(TEXT("item"),871);
+            auto Dispatch=[&]() {P->NextAction=0;P->WaitAction.Empty();Session.CachedC2SPackets.Reset();H->Execute(*P,Identify);};
+            Dispatch();
+            TestEqual(TEXT("Default appraisal retains its wait"),P->WaitAction,FString(TEXT("identify")));
+            Identify->SetBoolField(TEXT("pipeline"),false);Dispatch();
+            TestEqual(TEXT("Explicit pipeline=false retains its wait"),P->WaitAction,FString(TEXT("identify")));
+            Identify->SetBoolField(TEXT("pipeline"),true);Dispatch();
+            TestTrue(TEXT("Open-container appraisal pipelines without a fixed action delay"),P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds());
+            TestTrue(TEXT("Pipelined request reaches the network queue"),!Session.CachedC2SPackets.IsEmpty());
+            TestTrue(TEXT("Pipelined request updates the shared request ledger"),H->AppraisalRequests.Contains(871));
+            TestTrue(TEXT("Pipelined request marks a background appraisal"),C->BackgroundAppraisals.Contains(871));
+            Session.OpenExternalContainerGuid=872;Dispatch();
+            TestEqual(TEXT("Container changed since snapshot falls back to ordinary appraisal"),P->WaitAction,FString(TEXT("identify")));
+            Session.OpenExternalContainerGuid=0;Dispatch();
+            TestEqual(TEXT("Closed container cannot pipeline"),P->WaitAction,FString(TEXT("identify")));
+            Session.OpenExternalContainerGuid=870;Session.WorldObjects[871].ContainerId=Session.PlayerGuid;Dispatch();
+            TestEqual(TEXT("Owned inventory cannot pipeline"),P->WaitAction,FString(TEXT("identify")));
+            Session.WorldObjects[871].ContainerId=870;
+            FACEClientPlugin Other;Other.Id=TEXT("inventory-tool");Other.NextAction=FPlatformTime::Seconds()+.5;
+            H->ExecuteInventory(Other,Identify,TEXT("identify"));
+            TestEqual(TEXT("Non-policy automation cannot opt in"),Other.WaitAction,FString(TEXT("identify")));
+            Other.Api=2;Other.WaitAction.Empty();Other.NextAction=FPlatformTime::Seconds()+.5;
+            H->ExecuteInventory(Other,Identify,TEXT("identify"));
+            TestTrue(TEXT("Third-party API 2 policies can opt in without reserved plugin ID"),Other.WaitAction.IsEmpty()&&Other.NextAction<=FPlatformTime::Seconds());
+            Dispatch();
+            H->TrackActionWait(*P,TEXT("loot"),871,1);P->NextAction=FPlatformTime::Seconds()+1;P->NextDecision=FPlatformTime::Seconds()+.25;
+            const double PickupDeadline=P->NextAction;
+            FACEAppraisalInfo Reply;Reply.ObjectGuid=871;Reply.bSuccess=true;H->ObserveAppraisal(Reply);
+            TestEqual(TEXT("Late pipelined appraisal cannot acknowledge a pickup"),P->WaitAction,FString(TEXT("loot")));
+            TestEqual(TEXT("Late pipelined appraisal preserves the newer action gate"),P->NextAction,PickupDeadline);
+            Session.CachedC2SPackets.Reset();H->Execute(*P,Identify);
+            TestTrue(TEXT("Pipeline cannot bypass an earlier action gate"),Session.CachedC2SPackets.IsEmpty());
+            Session.bUseBusy=true;P->NextAction=0;H->Execute(*P,Identify);
+            TestTrue(TEXT("Pipeline cannot bypass actual busy state"),Session.CachedC2SPackets.IsEmpty());Session.bUseBusy=false;
+        }
         auto Intent=MakeShared<FJsonObject>();Intent->SetNumberField(TEXT("item"),870);
         for(int32 Mode:{1,2,4,8})for(const TCHAR* Action:{TEXT("open_corpse"),TEXT("use_world")})
         {
@@ -1171,6 +1230,8 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             TestTrue(TEXT("Corpse dispatch starts normal approach"),LootPC->IsUseApproachActive());
             TestEqual(TEXT("Opening corpse preserves peace/melee/missile/magic mode"),Session.PlayerVitals.CombatMode,Mode);
             Session.OpenExternalContainerGuid=870;
+            H->RefreshActionWait(*P);
+            TestTrue(TEXT("Confirmed corpse open removes the quarter-second floor"),P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds());
             auto Pickup=MakeShared<FJsonObject>();Pickup->SetNumberField(TEXT("item"),871);
             H->ExecuteInventory(*P,Pickup,TEXT("loot"));
             TestEqual(TEXT("Taking corpse loot preserves mode"),Session.PlayerVitals.CombatMode,Mode);
@@ -1178,9 +1239,15 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             TestEqual(TEXT("Unconfirmed pickup retains throttle"),P->NextAction,Deadline);
             FACEAppraisalInfo OtherID;OtherID.ObjectGuid=123456;H->ObserveAppraisal(OtherID);
             TestEqual(TEXT("Unrelated appraisal cannot release a pickup"),P->NextAction,Deadline);
-            ConfirmPut(871,Session.PlayerGuid);H->RefreshActionWait(*P);
-            TestTrue(TEXT("Ownership confirmation removes fixed one-second pickup delay"),P->NextAction<=P->ActionSentAt+.25);
+            const int32 PacketsBeforeReceipt=Session.CachedC2SPackets.Num();
+            FACEBinaryWriter Receipt;Receipt.WriteUInt32(ACEOpcode::GameEvent);Receipt.WriteUInt32(0);Receipt.WriteUInt32(0);
+            Receipt.WriteUInt32(ACEGameEvent::InventoryPutObjInContainer);Receipt.WriteUInt32(871);
+            Receipt.WriteUInt32(Session.PlayerGuid);Receipt.WriteInt32(0);Receipt.WriteInt32(0);
+            Session.ReceiveGameMessage(Receipt.GetData());
+            TestTrue(TEXT("Ownership confirmation removes all fixed pickup delay"),P->NextAction<=FPlatformTime::Seconds());
             TestEqual(TEXT("Confirmation wakes next policy decision"),P->NextDecision,0.);
+            TestTrue(TEXT("Actual containment packet schedules immediate loot wake without polling"),H->DecisionWakeAt<=FPlatformTime::Seconds());
+            TestEqual(TEXT("Receipt callback cannot send another pickup reentrantly"),Session.CachedC2SPackets.Num(),PacketsBeforeReceipt);
             Session.WorldObjects[871].ContainerId=870;
             H->ExecuteInventory(*P,Intent,TEXT("close_corpse"));
             TestEqual(TEXT("Closing corpse preserves mode"),Session.PlayerVitals.CombatMode,Mode);
@@ -1243,7 +1310,29 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                     TestEqual(TEXT("Loot routes to the available pack or compatible stack"),R.ReadUInt32(),uint32(MergeTo?MergeTo:Destination));
                     if(MergeTo)TestEqual(TEXT("Merge transfers only the requested quantity"),R.ReadInt32(),Amount);
                 }
-                ConfirmPut(Drop.Guid,Destination);
+                if(MergeTo)
+                {
+                    const int32 Original=Session.WorldObjects[Drop.Guid].StackSize;
+                    const double Deadline=P->NextAction;
+                    H->RefreshActionWait(*P);
+                    TestEqual(TEXT("Unconfirmed merge remains gated"),P->NextAction,Deadline);
+                    if(Amount==Original)Session.WorldObjects.Remove(Drop.Guid);
+                    else Session.WorldObjects[Drop.Guid].StackSize-=Amount;
+                    H->RefreshActionWait(*P);
+                    TestEqual(TEXT("Source removal/reduction alone cannot confirm merged loot"),P->NextAction,Deadline);
+                    Session.WorldObjects[MergeTo].StackSize+=Amount;
+                    H->RefreshActionWait(*P);
+                    TestTrue(TEXT("Destination stack confirmation releases merged pickup immediately"),P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds());
+                    // The destination packet may also arrive before the source.
+                    Session.WorldObjects=BeforeObjects;H->ExecuteInventory(*P,Pickup,TEXT("loot"));
+                    Session.WorldObjects[MergeTo].StackSize+=Amount;H->RefreshActionWait(*P);
+                    TestEqual(TEXT("Destination increase alone cannot confirm merged loot"),P->WaitAction,FString(TEXT("loot")));
+                    if(Amount==Original)Session.WorldObjects.Remove(Drop.Guid);
+                    else Session.WorldObjects[Drop.Guid].StackSize-=Amount;
+                    H->RefreshActionWait(*P);
+                    TestTrue(TEXT("Reordered merge updates release the gate once both arrive"),P->WaitAction.IsEmpty());
+                }
+                else ConfirmPut(Drop.Guid,Destination);
                 Session.WorldObjects=BeforeObjects;Session.ContainerContents=BeforeContents;
             };
             for(int32 Destination:{882,883})
@@ -1279,9 +1368,11 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         TestTrue(TEXT("World-use waits for server stance confirmation"),P->CombatTransitionIntent.IsValid());
         P->CombatTransitionIntent.Reset();Session.ApplyServerCombatMode(1);
         H->TrackActionWait(*P,TEXT("equip"),871,0x100000);P->NextAction=P->ActionSentAt+2;
+        TestTrue(TEXT("Equipment receipt is checked within 50ms, not the idle poll"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds()+.06);
         H->RefreshActionWait(*P);TestFalse(TEXT("Equipment request does not complete before wield update"),P->WaitAction.IsEmpty());
         Session.WorldObjects[871].WielderId=Session.PlayerGuid;Session.WorldObjects[871].CurrentWieldedLocation=0x100000;
-        H->RefreshActionWait(*P);TestTrue(TEXT("Wield confirmation releases equipment delay"),P->WaitAction.IsEmpty()&&P->NextAction<=P->ActionSentAt+.25);
+        H->RefreshActionWait(*P);TestTrue(TEXT("Wield confirmation releases immediately without a quarter-second floor"),P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds());
+        TestTrue(TEXT("Wield confirmation schedules the next decision"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds());
         H->TrackActionWait(*P,TEXT("identify"),871);P->NextAction=P->ActionSentAt+.5;
         FACEAppraisalInfo Reply;Reply.ObjectGuid=870;H->ObserveAppraisal(Reply);
         TestFalse(TEXT("Different appraisal cannot wake item decision"),P->WaitAction.IsEmpty());
@@ -1784,6 +1875,40 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         {auto I=MakeShared<FJsonObject>();I->SetStringField(TEXT("action"),TEXT("attack"));I->SetStringField(TEXT("activity"),TEXT("combat"));I->SetNumberField(TEXT("target"),Target);I->SetNumberField(TEXT("mode"),Mode);return I;};
         auto AttackCount=[&](){int32 Count=0;for(const auto& Packet:Session.CachedC2SPackets){FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);if(R.CanRead(4)){const uint32 Op=R.ReadUInt32();if(Op==ACEGameAction::TargetedMeleeAttack||Op==ACEGameAction::TargetedMissileAttack)++Count;}}return Count;};
         {
+            const bool WasGDLE=Session.Creds.bGDLE;const uint32 Options=Session.CharacterOptions1;
+            ON_SCOPE_EXIT{Session.Creds.bGDLE=WasGDLE;Session.CharacterOptions1=Options;H->PhysicalAttackOwner.Empty();Session.CachedC2SPackets.Reset();};
+            auto AttackDone=[&](uint32 Error)
+            {
+                FACEBinaryWriter Packet;Packet.WriteUInt32(ACEOpcode::GameEvent);Packet.WriteUInt32(0);Packet.WriteUInt32(0);
+                Packet.WriteUInt32(ACEGameEvent::AttackDone);Packet.WriteUInt32(Error);Session.ReceiveGameMessage(Packet.GetData());
+            };
+            for(bool GDLE:{false,true})for(int32 Mode:{2,4})for(bool Repeat:{false,true})
+            {
+                Session.Creds.bGDLE=GDLE;
+                Session.CharacterOptions1=Repeat?(Options|0x00000002u):(Options&~0x00000002u);
+                TestEqual(TEXT("Retry fixture sets the retail repeat option"),C->IsCharacterOptionSet(0x00),Repeat);
+                Session.WorldObjects.Add(970,Enemy);H->DefeatedTargets.Empty();H->PhysicalAttackOwner.Empty();
+                Session.PendingCombatMode=0;Session.ApplyServerCombatMode(Mode);Session.bServerAttackInProgress=false;
+                Session.LastAttackError=0x20;P->NextAction=0;P->NextDecision=0;P->WaitAction.Empty();
+                H->Execute(*P,AttackIntent(970,Mode));const int32 First=AttackCount();
+                for(int32 Frame=0;Frame<10;++Frame)H->Execute(*P,AttackIntent(970,Mode));
+                TestEqual(TEXT("Repeated decisions cannot restart an in-progress attack"),AttackCount(),First);
+                AttackDone(0);H->Execute(*P,AttackIntent(970,Mode));
+                TestEqual(TEXT("Successful repeat refill stays intact; single attack is immediately resent"),AttackCount(),First+(Repeat?0:1));
+                for(int32 Retry=0;Retry<4;++Retry)
+                {
+                    const int32 Before=AttackCount();P->NextDecision=FPlatformTime::Seconds()+.25;
+                    AttackDone(0x20);
+                    TestTrue(TEXT("Terminal attack packet wakes immediately without a 3.5 second timer"),P->NextDecision==0&&H->DecisionWakeAt<=FPlatformTime::Seconds());
+                    TestEqual(TEXT("Attack result never dispatches reentrantly"),AttackCount(),Before);
+                    H->Execute(*P,AttackIntent(970,Mode));
+                    TestEqual(TEXT("Every terminal result permits an immediate validated retry"),AttackCount(),Before+1);
+                }
+                AttackDone(0x20);Session.bUseBusy=true;const int32 BusyCount=AttackCount();
+                H->Execute(*P,AttackIntent(970,Mode));TestEqual(TEXT("Fast retry preserves real busy state"),AttackCount(),BusyCount);Session.bUseBusy=false;
+            }
+        }
+        {
             uint32 Imperil=0;for(uint32 Id=1;Id<7000;++Id){FString Name;uint32 Icon=0;if(Dat->TryGetSpellInfo(Id,Name,Icon)&&Name==TEXT("Imperil Other I")){Imperil=Id;break;}}
             if(!TestTrue(TEXT("Proc fixture finds retail Imperil"),Imperil!=0))return false;
             const bool WasGDLE=Session.Creds.bGDLE;
@@ -1844,8 +1969,8 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             TestFalse(TEXT("Next opponent is physically behind the wall"),H->HasClearCombatSight(NextEnemy));
             H->Execute(*P,AttackIntent(971,Mode));
             TestEqual(TEXT("Post-kill plugin attack cannot bypass a wall"),AttackCount(),Before);
+            TestTrue(TEXT("Rejected obstructed target adds no cooldown before another target"),P->NextAction<=FPlatformTime::Seconds());
             Obstacle->SetCollisionEnabled(ECollisionEnabled::NoCollision);Wall->Destroy();
-            P->NextAction=0; // advance past the rejected action's normal decision throttle
             H->Execute(*P,AttackIntent(971,Mode));TestEqual(TEXT("Visible next opponent attack is sent immediately after death"),AttackCount(),Before+1);
             auto State=H->Snapshot();bool DeadInSnapshot=false;for(const auto& V:State->GetArrayField(TEXT("targets")))DeadInSnapshot|=V->AsObject()->GetNumberField(TEXT("id"))==970;
             TestTrue(TEXT("Policy snapshot includes confirmed death for post-combat loot"),State->HasTypedField<EJson::Object>(TEXT("combat_death")));
@@ -1857,6 +1982,13 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         Session.WorldObjects.Add(970,Enemy);Session.OnObjectCreated.Broadcast(Enemy);
         TestFalse(TEXT("Newly created object with reused GUID does not inherit dead filter"),H->DefeatedTargets.Contains(970));
         TestFalse(TEXT("Reused GUID clears the old corpse-spawn handoff"),H->LastCombatDeath.IsValid());
+        P->NextDecision=FPlatformTime::Seconds()+.25;P->NextAction=0;
+        Session.OnObjectCreated.Broadcast(NextEnemy);
+        TestTrue(TEXT("New opponent bypasses idle polling and defers the normal policy to the next frame"),P->NextDecision==0&&H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds());
+        P->WaitAction=TEXT("equip");P->NextAction=FPlatformTime::Seconds()+2;
+        const double ArrivalGate=P->NextAction;Session.OnObjectCreated.Broadcast(NextEnemy);
+        TestTrue(TEXT("New opponent cannot acknowledge a pending equipment operation"),P->WaitAction==TEXT("equip")&&P->NextAction==ArrivalGate);
+        P->WaitAction.Empty();P->NextAction=0;
         H->CombatTarget=970;H->PendingSpell=Focus;H->PendingSpellOwner=P->Id;H->PendingSpellAt=FPlatformTime::Seconds();P->NextAction=H->PendingSpellAt+3.5;
         const double CastingGate=P->NextAction;Session.WorldObjects[970].bDying=true;FACEObjectMotionState Death;Death.ForwardCommand=ACEMotion::Dead;
         Session.OnMotionUpdate.Broadcast(970,Death);
@@ -1882,13 +2014,16 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             for(uint32 Id=1;Id<7000&&!Bolt;++Id){FString Name;uint32 Icon;if(Dat->TryGetSpellInfo(Id,Name,Icon)&&Name==TEXT("Acid Stream I"))Bolt=Id;}
             if(!TestTrue(TEXT("Retail offensive spell found for target handoff"),Bolt!=0))return false;
             auto DeliverWake=[&](){FTSTicker::GetCoreTicker().RemoveTicker(H->DecisionWakeTicker);H->RunDecisionWake(.016f);};
-            for(int32 Mode:{2,4,8})for(int32 AppraisalResult:{-1,0,1})for(bool Approach:{false,true})
+            for(int32 Mode:{2,4,8})for(int32 AppraisalResult:{-1,0,1})for(bool Approach:{false,true})for(bool LootEnabled:{false,true})
             {
                 BuffPC->EndUseApproach();
                 P->VM=MakeShared<FACEPluginVM>();TestTrue(TEXT("Load shipped UCM for network handoff"),P->VM->Load(Source,Error));
                 P->Profile=MakeShared<FJsonObject>();P->Profile->SetStringField(TEXT("combat"),Mode==2?TEXT("melee"):Mode==4?TEXT("missile"):TEXT("magic"));
                 P->Profile->SetBoolField(TEXT("manual_combat"),true);P->Profile->SetBoolField(TEXT("buffing"),false);
-                P->Profile->SetBoolField(TEXT("recovery"),false);P->Profile->SetBoolField(TEXT("looting"),false);
+                P->Profile->SetBoolField(TEXT("recovery"),false);P->Profile->SetBoolField(TEXT("looting"),LootEnabled);
+                P->Profile->SetBoolField(TEXT("idle_peace"),false);
+                auto LootRule=MakeShared<FJsonObject>();LootRule->SetStringField(TEXT("action"),TEXT("keep"));
+                P->Profile->SetArrayField(TEXT("loot_rules"),{MakeShared<FJsonValueObject>(LootRule)});
                 P->Permissions.Add(TEXT("inventory"));P->NextAction=0;P->NextDecision=0;P->WaitAction.Empty();P->Running=true;
                 Session.PendingCombatMode=0;Session.ApplyServerCombatMode(Mode);Session.bServerAttackInProgress=false;Session.LastAttackError=0x20;Session.PlayerVitals.QualityBools.Add(68,0);
                 Session.PlayerVitals.Health=Session.PlayerVitals.MaxHealth=100;Session.PlayerVitals.Stamina=Session.PlayerVitals.MaxStamina=100;
@@ -1903,7 +2038,14 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                 Info.ObjectGuid=972;Info.Damage=30;Info.DamageType=1;Info.bHasWeaponProfile=true;H->Appraisals.Add(972,Info);
                 H->InventoryRevision=MAX_uint64;H->CombatTarget=0;H->PhysicalAttackTarget=0;H->PhysicalAttackOwner.Empty();H->DefeatedTargets.Empty();
                 H->PendingSpell=0;Session.bUseBusy=false;Session.SelectedObject.Guid=0;
+                Session.WorldObjects.Remove(970);Session.WorldObjects.Remove(971);
                 H->NextMaintenanceAt=FPlatformTime::Seconds()+60;H->Tick(.016f);
+                TestEqual(TEXT("Empty area does not manufacture an attack target"),H->CombatTarget,0);
+                Session.WorldObjects.Add(970,FirstEnemy);Session.WorldObjects.Add(971,CloseEnemy);
+                Session.OnObjectCreated.Broadcast(FirstEnemy);Session.OnObjectCreated.Broadcast(CloseEnemy);
+                Info=FACEAppraisalInfo();Info.ObjectGuid=970;Info.bSuccess=true;H->ObserveAppraisal(Info);
+                TestTrue(TEXT("Enemy arrival schedules acquisition immediately in every attack mode"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds());
+                DeliverWake();
                 TestEqual(*FString::Printf(TEXT("Mode %d starts fighting through the real policy: %s"),Mode,*P->Status),H->CombatTarget,970);
                 // Use the same background request budget to prepare the next mob.
                 H->AppraisalRequests.Empty();H->AppraisalRequests.Add(970,FPlatformTime::Seconds());
@@ -1931,6 +2073,12 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                     Session.OnMotionUpdate.Broadcast(970,Dead);
                 }
                 else {Session.WorldObjects.Remove(970);Session.OnObjectDeleted.Broadcast(970);}
+                if(LootEnabled)
+                {
+                    FACEWorldObject Remains;Remains.Guid=973;Remains.Name=TEXT("Corpse of target one");
+                    Remains.bHasPosition=true;Remains.Position=FirstEnemy.Position;Remains.ObjectDescriptionFlags=ACEObjectDescFlag::Corpse;
+                    Session.WorldObjects.Add(973,Remains);Session.OnObjectCreated.Broadcast(Remains);
+                }
                 TestFalse(TEXT("Target death releases its server combat approach without waiting for object deletion"),BuffPC->IsUseApproachActive());
                 if(Mode==8)
                 {
@@ -2015,6 +2163,54 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             H->PhysicalAttackOwner.Empty();H->PhysicalAttackTarget=0;H->PendingSpell=0;
             H->ConfirmedBuffAckAt=0;H->DeferredBuffIntent.Reset();Session.bUseBusy=false;
             Session.bServerAttackInProgress=false;Session.PendingCombatMode=0;ModeReply(1);
+            {
+                FACEWorldObject Supply;Supply.Guid=978;Supply.ContainerId=Session.PlayerGuid;
+                FACEAppraisalInfo A;A.bSuccess=true;H->Appraisals.Add(Supply.Guid,A);
+                const auto OriginalPlayer=Session.WorldObjects[Session.PlayerGuid];
+                Session.WorldObjects[Session.PlayerGuid].bHasPosition=true;
+                Session.WorldObjects[Session.PlayerGuid].bIsPlayer=true;
+                ON_SCOPE_EXIT{Session.WorldObjects.Remove(Supply.Guid);H->Appraisals.Remove(Supply.Guid);Session.WorldObjects.Add(Session.PlayerGuid,OriginalPlayer);};
+                auto Use=MakeShared<FJsonObject>();Use->SetStringField(TEXT("activity"),TEXT("recovery2"));
+                Use->SetNumberField(TEXT("item"),Supply.Guid);Use->SetNumberField(TEXT("target"),Session.PlayerGuid);
+                for(bool GDLE:{false,true})for(int32 Mode:{1,2,4,8})for(int32 Kind=0;Kind<6;++Kind)
+                {
+                    TGuardValue<bool> ServerType(Session.Creds.bGDLE,GDLE);
+                    Supply.ItemType=Kind==0?ACEItemType::Food:Kind<=2?128:ACEItemType::ManaStone;
+                    Supply.ObjectDescriptionFlags=Kind==1||Kind==2?0x10000:0;
+                    Supply.ItemUseable=Kind==0||Kind==3?8:0x00100008;Supply.ItemCurrentMana=100;
+                    Session.WorldObjects.Add(Supply.Guid,Supply);
+                    H->Appraisals.Add(Supply.Guid,A); // Successful mana use invalidates the prior appraisal.
+                    const bool Apply=Kind==2||Kind==5;
+                    Use->SetStringField(TEXT("action"),Apply?TEXT("apply_item"):TEXT("use_item"));
+                    Session.PendingCombatMode=0;ModeReply(Mode);Session.bUseBusy=false;P->NextAction=0;P->WaitAction.Empty();
+                    const uint32 Opcode=Apply||Kind==1||Kind==4?ACEGameAction::UseWithTarget:ACEGameAction::Use;
+                    const int32 BeforeUse=Count(Opcode),Modes=Count(ACEGameAction::ChangeCombatMode),Cancels=Count(ACEGameAction::CancelAttack);
+                    H->Execute(*P,Use);
+                    const FString Label=FString::Printf(TEXT("Recovery supply kind=%d mode=%d GDLE=%d"),Kind,Mode,GDLE);
+                    TestEqual(*Label,Count(Opcode),BeforeUse+1);
+                    TestEqual(*(Label+TEXT(" preserves combat mode")),Count(ACEGameAction::ChangeCombatMode),Modes);
+                    TestEqual(*(Label+TEXT(" does not cancel an idle manual attack")),Count(ACEGameAction::CancelAttack),Cancels);
+                    TestFalse(*(Label+TEXT(" does not queue peace")),P->CombatTransitionIntent.IsValid());
+                    Ack(0);
+                }
+                // A recovery can interrupt repeats, but must still wait for the
+                // terminal swing acknowledgment without putting the player in peace.
+                Supply.ItemType=ACEItemType::Food;Supply.ItemUseable=8;Supply.ObjectDescriptionFlags=0;
+                Session.WorldObjects.Add(Supply.Guid,Supply);Use->SetStringField(TEXT("action"),TEXT("use_item"));
+                ModeReply(2);Session.bUseBusy=false;P->WaitAction.Empty();P->NextAction=0;
+                Session.bServerAttackInProgress=true;Session.LastAttackError=0;
+                const int32 Uses=Count(ACEGameAction::Use),Modes=Count(ACEGameAction::ChangeCombatMode);
+                H->Execute(*P,Use);TestTrue(TEXT("Recovery still waits for an active swing to end"),P->CombatTransitionIntent.IsValid());
+                AttackReply(0);H->UpdateCombatTransition(*P);
+                TestEqual(TEXT("Repeat-start acknowledgment cannot release recovery use"),Count(ACEGameAction::Use),Uses);
+                ModeReply(8); // Manual stance changes while healing is queued must win.
+                AttackReply(0x20);H->UpdateCombatTransition(*P);
+                TestEqual(TEXT("Recovery uses food after the terminal swing acknowledgment"),Count(ACEGameAction::Use),Uses+1);
+                TestEqual(TEXT("Recovery interruption never requests peace"),Count(ACEGameAction::ChangeCombatMode),Modes);
+                TestEqual(TEXT("Queued recovery respects the player's newer magic stance"),Session.PlayerVitals.CombatMode,8);
+                Ack(0);Session.bUseBusy=false;P->WaitAction.Empty();P->NextAction=0;
+                H->PendingManaRefresh=false;H->PendingResourceRefresh.Empty();ModeReply(1);
+            }
             const int32 BeforeCast=CastCount(),BeforeMode=Count(ACEGameAction::ChangeCombatMode);
             H->Execute(*P,Intent(Focus));
             TestEqual(TEXT("Stance request is sent before a peace-mode buff"),Count(ACEGameAction::ChangeCombatMode),BeforeMode+1);
@@ -2112,17 +2308,19 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                 Ack(0);P->NextAction=0;P->Running=false;
             }
             // ManaChargesWhenOff has its own restricted VM and session identity.
-            // It must retain the same transition safety without requiring Start.
+            // It preserves the player's combat stance without requiring Start.
             FACEWorldObject Stone;Stone.Guid=974;Stone.ContainerId=Session.PlayerGuid;
             Stone.ItemType=ACEItemType::ManaStone;Stone.ItemUseable=8;Session.WorldObjects.Add(974,Stone);
             ON_SCOPE_EXIT{Session.WorldObjects.Remove(974);H->IdleManaSession.Reset();H->IdleManaPlayer=0;H->IdleManaOwner.Empty();};
             P->Enabled=true;P->Profile->SetBoolField(TEXT("mana_charges_when_off"),true);
             H->IdleManaSession=C->GetSession();H->IdleManaPlayer=Session.PlayerGuid;H->IdleManaOwner=P->Id;
             auto Recharge=MakeShared<FJsonObject>();Recharge->SetStringField(TEXT("action"),TEXT("use_item"));Recharge->SetNumberField(TEXT("item"),974);
-            P->NextAction=0;H->Execute(*P,Recharge);const int32 BeforeUse=Count(ACEGameAction::Use);
-            TestTrue(TEXT("Idle recharge can wait for peace without starting UCM"),P->CombatTransitionIntent.IsValid()&&!P->Running);
-            ModeReply(1);H->UpdateCombatTransition(*P);
-            TestEqual(TEXT("Idle recharge uses its stone after confirmed stance"),Count(ACEGameAction::Use),BeforeUse+1);
+            Session.PendingCombatMode=0;ModeReply(8); // Leave the GDLE case with an authoritative ACE stance.
+            P->NextAction=0;const int32 BeforeUse=Count(ACEGameAction::Use),BeforeRechargeMode=Count(ACEGameAction::ChangeCombatMode);
+            H->Execute(*P,Recharge);
+            TestTrue(TEXT("Idle recharge does not queue peace or start UCM"),!P->CombatTransitionIntent.IsValid()&&!P->Running);
+            TestEqual(TEXT("Idle recharge uses its stone in the current stance"),Count(ACEGameAction::Use),BeforeUse+1);
+            TestEqual(TEXT("Idle recharge preserves the manual combat stance"),Count(ACEGameAction::ChangeCombatMode),BeforeRechargeMode);
             Ack(0);Session.bUseBusy=false;P->WaitAction.Empty();P->NextAction=0;
             Session.WorldObjects[974].ItemUseable=0x00100008;
             const int32 BeforeTargetedCharge=Count(ACEGameAction::UseWithTarget);
@@ -2139,6 +2337,7 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             Ack(0);Session.bUseBusy=false;P->WaitAction.Empty();P->NextAction=0;
             Session.WorldObjects[974].ItemUseable=8;
             ModeReply(8);Recharge->SetStringField(TEXT("activity"),TEXT("item_mana"));
+            Session.PendingCombatMode=8; // An existing, unconfirmed manual stance still gates use.
             H->Execute(*P,Recharge);P->CombatTransitionStarted=FPlatformTime::Seconds()-16;
             H->UpdateCombatTransition(*P);
             TestFalse(TEXT("Temporary stopped-service stance failure does not permanently disable mana recharge"),H->IdleManaFailed);

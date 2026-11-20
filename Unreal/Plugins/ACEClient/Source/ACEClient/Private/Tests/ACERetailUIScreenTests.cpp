@@ -5533,13 +5533,32 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
             FACEFellowshipMember Self;Self.Guid=Player.Guid;Self.Name=TEXT("Leader");Self.Level=100;Self.HealthCur=250;Self.HealthMax=500;Self.StaminaCur=300;Self.StaminaMax=400;Self.ManaCur=50;Self.ManaMax=200;
             FACEFellowshipMember Other=Self;Other.Guid=991122;Other.Name=TEXT("Fellow");
             auto& F=Session.Fellowship;F.bValid=true;F.Name=TEXT("Retail Test");F.LeaderGuid=Self.Guid;F.Members={Self,Other};
+            F.bEvenShare=true;
             Gameplay->SelectedFellowGuid=Other.Guid;Gameplay->RefreshFellowshipOverlays();Gameplay->RefreshSocialButtonLabels();
             TestEqual(TEXT("Fellowship member uses the retail two-line height"),Gameplay->FellowRowElements[0]->Height,32);
+            TestEqual(TEXT("Even split includes retail bonus beside the level"),Gameplay->FellowDetailLabels[0]->GetText().ToString(),FString(TEXT("Lv 100  XP 75%")));
+            F.bShareXP=false;Gameplay->RefreshFellowshipOverlays();
+            TestEqual(TEXT("Disabled sharing shows zero rather than the prior percentage"),Gameplay->FellowDetailLabels[0]->GetText().ToString(),FString(TEXT("Lv 100  XP 0%")));
+            F.bShareXP=true;F.bEvenShare=false;Gameplay->RefreshFellowshipOverlays();
+            TestEqual(TEXT("Equal level weighted share excludes even-share bonus"),Gameplay->FellowDetailLabels[0]->GetText().ToString(),FString(TEXT("Lv 100  XP 50%")));
+            F.Members[0].Level=10;F.Members[1].Level=15;Gameplay->RefreshFellowshipOverlays();
+            uint64 LowCost=0,HighCost=0;
+            TestTrue(TEXT("Retail level costs are available for proportional shares"),Dat->TryGetLevelExperienceCost(10,LowCost)&&Dat->TryGetLevelExperienceCost(15,HighCost)&&HighCost>LowCost);
+            TestEqual(TEXT("Level update refreshes lower-level XP share"),Gameplay->FellowDetailLabels[0]->GetText().ToString(),
+                FString::Printf(TEXT("Lv 10  XP %d%%"),int32(100.0*LowCost/(double(LowCost)+HighCost))));
+            TestEqual(TEXT("Each fellow receives their own next-level XP weight"),Gameplay->FellowDetailLabels[4]->GetText().ToString(),
+                FString::Printf(TEXT("Lv 15  XP %d%%"),int32(100.0*HighCost/(double(LowCost)+HighCost))));
+            F.Members[0]=Self;F.Members[1]=Other;F.bEvenShare=true;
+            F.Members[0].Name=TEXT("A very long fellowship character name");
+            Gameplay->RefreshFellowshipOverlays();
+            CaptureScreen(TEXT("GameplayFellowshipXPSplit"));
+            CaptureScreen(TEXT("GameplayFellowshipXPSplit135"),1.35f);
             const auto HealthMeter=Manager->FindElementUnder(TEXT("FellowsListBox"),TEXT("FellowHealth"));
             TestTrue(TEXT("Fellowship health is a live meter"),HealthMeter&&FMath::IsNearlyEqual(HealthMeter->MeterFillFraction,.5f));
             for(int32 I=2;I<9;++I){Other.Guid=991122+I;Other.Name=FString::Printf(TEXT("Fellow %d"),I+1);F.Members.Add(Other);}
             Gameplay->FellowScrollOffset=999;Gameplay->RefreshFellowshipOverlays();
             TestEqual(TEXT("Nine-member fellowship scrolls to its final member"),Gameplay->FellowRowGuids[Gameplay->FellowVisibleRows-1],F.Members.Last().Guid);
+            TestTrue(TEXT("Scrolled roster retains the retail nine-member XP percentage"),Gameplay->FellowDetailLabels[(Gameplay->FellowVisibleRows-1)*4]->GetText().ToString().EndsWith(TEXT("XP 31%")));
             Gameplay->FellowScrollOffset=0;Gameplay->RefreshFellowshipOverlays();
             TestTrue(TEXT("Leader can dismiss another member"),Gameplay->CanActivateFellowshipControl(TEXT("FellowDismissButton")));
             TestTrue(TEXT("Leader can transfer leadership"),Gameplay->CanActivateFellowshipControl(TEXT("FellowLeaderButton")));

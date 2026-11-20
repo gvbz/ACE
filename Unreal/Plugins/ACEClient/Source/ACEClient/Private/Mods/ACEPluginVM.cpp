@@ -108,7 +108,10 @@ namespace
             lua_getfield(L,Spell,"id");const int Id=lua_gettop(L);luaL_checktype(L,Id,LUA_TNUMBER);
             lua_pushvalue(L,Id);lua_pushvalue(L,Spell);lua_rawset(L,ById);
             bool HasSupply=!ComponentsRequired||NotFalse(L,Spell,"components_known");
-            lua_getfield(L,Spell,"scarabs");
+            lua_getfield(L,Spell,"components");
+            // New snapshots include the full personalized/focused formula.
+            // Keep scarab-only snapshots compatible with older policy fixtures.
+            if(lua_isnil(L,-1)){lua_pop(L,1);lua_getfield(L,Spell,"scarabs");}
             if(ComponentsRequired&&HasSupply&&lua_istable(L,-1))
             {
                 lua_pushnil(L);
@@ -274,7 +277,7 @@ namespace
 
     // Only explicit extension fields accept structured output. No metatables,
     // functions, sparse/mixed arrays, cycles or unbounded native traversal.
-    TSharedPtr<FJsonValue> ReadOutput(lua_State* L,int Index,int Depth,int& Nodes,int& Bytes,FString& Error,bool ProfileData=false)
+    TSharedPtr<FJsonValue> ReadOutput(lua_State* L,int Index,int Depth,int& Nodes,int& Bytes,FString& Error,bool ProfileData=false,bool Opaque=false)
     {
         if(Depth>12||++Nodes>(ProfileData?32768:4096)){Error=TEXT("Structured output exceeds depth/node limit");return nullptr;}
         Index=lua_absindex(L,Index);
@@ -303,11 +306,11 @@ namespace
                 else if(!Length&&lua_type(L,-2)==LUA_TSTRING)
                 {size_t Len=0;const char* K=lua_tolstring(L,-2,&Len);Bytes+=int(Len);if(Len>128||Bytes>(ProfileData?262144:65536)){Error=TEXT("Structured key/text exceeds limit");return nullptr;}Key=UTF8_TO_TCHAR(K);}
                 else {Error=TEXT("Structured tables must be objects or dense arrays");return nullptr;}
-                auto Value=ReadOutput(L,-1,Depth+1,Nodes,Bytes,Error,ProfileData);if(!Value)return nullptr;
+                auto Value=ReadOutput(L,-1,Depth+1,Nodes,Bytes,Error,ProfileData,Opaque);if(!Value)return nullptr;
                 // Empty Lua arrays are ambiguous. Normalize documented collection keys.
                 static const TSet<FString> Collections={TEXT("children"),TEXT("options"),TEXT("route"),TEXT("loot_rules"),TEXT("monsters"),TEXT("states"),TEXT("buffs"),TEXT("weapons"),TEXT("weapon_items"),TEXT("consumables"),TEXT("vendor_rules"),TEXT("buff_commands"),TEXT("conditions"),TEXT("excluded_buffs"),TEXT("excluded_buff_spells"),TEXT("restock"),TEXT("profile_rules"),TEXT("chest_rules"),TEXT("mule1_rules"),TEXT("mule2_rules"),TEXT("assist_items"),TEXT("buff_items"),TEXT("item_buff_targets"),TEXT("recharge_handlers"),TEXT("pea_recipes"),TEXT("transitions"),TEXT("rules"),TEXT("requirements"),TEXT("extras")};
                 if(Value->Type==EJson::Object&&Value->AsObject()->Values.IsEmpty()
-                    &&Collections.Contains(Key))
+                    &&!Opaque&&Collections.Contains(Key))
                     Value=MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{});
                 if(ArrayIndex>=0)Array[ArrayIndex]=Value;else Object->SetField(Key,Value);
                 lua_pop(L,1);
@@ -424,9 +427,9 @@ bool FACEPluginVM::Step(const TSharedPtr<FJsonObject>& Snapshot, const TSharedPt
             Intent->SetNumberField(Key, Value);
         }
         else if (lua_isboolean(State, -1)) Intent->SetBoolField(Key, lua_toboolean(State, -1) != 0);
-        else if((Key==TEXT("presentation")||Key==TEXT("state")||Key==TEXT("ui")||Key==TEXT("chat_filters")||Key==TEXT("chat_subscriptions")||Key==TEXT("markers")||Key==TEXT("world_plates")||Key==TEXT("terrain_overlay")||Key==TEXT("messages")||Key==TEXT("requests")||Key==TEXT("profile_patch"))&&lua_istable(State,-1))
+        else if((Key==TEXT("presentation")||Key==TEXT("state")||Key==TEXT("ui")||Key==TEXT("chat_filters")||Key==TEXT("chat_subscriptions")||Key==TEXT("markers")||Key==TEXT("world_plates")||Key==TEXT("terrain_overlay")||Key==TEXT("messages")||Key==TEXT("client_channels")||Key==TEXT("client_messages")||Key==TEXT("requests")||Key==TEXT("profile_patch"))&&lua_istable(State,-1))
         {
-            int Nodes=0,OutputBytes=0;auto Value=ReadOutput(State,-1,0,Nodes,OutputBytes,Error,Key==TEXT("profile_patch")||Key==TEXT("requests"));
+            int Nodes=0,OutputBytes=0;auto Value=ReadOutput(State,-1,0,Nodes,OutputBytes,Error,Key==TEXT("profile_patch")||Key==TEXT("requests"),Key==TEXT("client_messages"));
             if(!Value){lua_settop(State,0);return false;}
             // Lua's empty table has no array/object distinction.
             if(Key!=TEXT("terrain_overlay")&&Key!=TEXT("presentation")&&Key!=TEXT("state")&&Key!=TEXT("profile_patch")&&Value->Type==EJson::Object&&Value->AsObject()->Values.IsEmpty())Value=MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{});

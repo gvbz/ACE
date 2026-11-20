@@ -2,6 +2,8 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/ScopeExit.h"
 #include "ACEInputBindings.h"
 #include "ACEPlayerController.h"
@@ -317,6 +319,33 @@ bool FACEInputBindingsTest::RunTest(const FString&)
  Movement->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_LeftY,IE_Axis,-1.f));
  Movement->PlayerInput->ProcessInputStack({},.016f,false);
  TestTrue(TEXT("Stick directions can be rebound just like buttons"),ACEInputBindings::Down(Movement,EKeys::W));
+ // Replay a supplied report without changing the user's live bindings or file.
+ FString ReportedKeymap;
+ if(FParse::Value(FCommandLine::Get(),TEXT("RetailKeymapTestFile="),ReportedKeymap))
+ {
+  ACEInputBindings::BeginEdit();ACEInputBindings::Defaults();
+  const auto Report=ACEInputBindings::ImportRetailKeymapFile(ReportedKeymap);
+  if(!TestTrue(TEXT("Reported keymap imports"),Report.bSuccess)){AddError(Report.Error);return false;}
+  AddInfo(FString::Printf(TEXT("Reported keymap: %d bindings; %d unsupported records"),Report.BindingCount,Report.Skipped.Num()));
+  ACEInputBindings::Commit();
+  auto CheckReported=[&]()
+  {
+   for(int32 Mode:{1,2,4,8})
+   {
+    ACEInputBindings::SetCombatContext(Mode);Hold({EKeys::Semicolon});
+    TestTrue(TEXT("Reported semicolon selects next monster in every stance"),ACEInputBindings::Pressed(PC,EKeys::Apostrophe));
+    TestFalse(TEXT("Reported next-monster key cannot cast selected spell"),ACEInputBindings::Pressed(PC,ACEInputBindings::Action(TEXT("SpellCast"))));
+    Hold({EKeys::W});TestTrue(TEXT("Reported W moves forward in every stance"),ACEInputBindings::Down(PC,EKeys::W));
+    TestFalse(TEXT("Reported movement cannot cast selected spell"),ACEInputBindings::Pressed(PC,ACEInputBindings::Action(TEXT("SpellCast"))));
+    Hold({EKeys::Two});
+    for(int32 Slot=0;Slot<12;++Slot)TestEqual(TEXT("Reported key 2 activates only spell slot 2 in magic"),
+      ACEInputBindings::Pressed(PC,ACEInputBindings::SpellSlot(Slot)),Mode==8&&Slot==1);
+    TestEqual(TEXT("Reported key 2 uses the item shortcut only outside magic"),ACEInputBindings::Pressed(PC,ACEInputBindings::Shortcut(1)),Mode!=8);
+    TestFalse(TEXT("Reported key 2 cannot cast a different selected spell"),ACEInputBindings::Pressed(PC,ACEInputBindings::Action(TEXT("SpellCast"))));
+   }
+  };
+  CheckReported();ACEInputBindings::Reload();CheckReported();
+ }
  return !HasAnyErrors();
 }
 #endif

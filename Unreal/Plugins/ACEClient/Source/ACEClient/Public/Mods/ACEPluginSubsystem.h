@@ -115,12 +115,17 @@ struct FACEClientPlugin
     FString WaitAction;
     FString TargetingStatus;
     int32 WaitItem = 0, WaitValue = 0;
+    int32 WaitMergeTarget = 0, WaitMergeCount = 0;
     TArray<int32> WaitConsumedItems;
     uint32 WaitSerial = 0;
     double ActionSentAt = 0;
     int32 Player = 0;
     FString Server,MetaState,MetaStatus;
     FString LoggedActivity, LoggedRouteStatus;
+    TArray<FString> ClientChannels;
+    FString ClientChannelEpoch, ClientChannelError;
+    double ClientMessageWindow=0;
+    int32 ClientMessageCount=0;
 };
 
 /** Versioned, opt-in script plugins. No native injection or server protocol extensions. */
@@ -129,6 +134,7 @@ class ACECLIENT_API UACEPluginSubsystem : public UGameInstanceSubsystem
 {
     GENERATED_BODY()
     friend class FACEFoundryTest;
+    friend class FACEPluginClientMessagingTest;
     friend class FACEPluginHostTest;
     friend class FACEPluginWindowTest;
     friend class FACEPluginLimitTest;
@@ -415,6 +421,17 @@ private:
     void QueuePluginEvent(FACEClientPlugin& Plugin, const TSharedPtr<FJsonObject>& Event);
     TSharedPtr<FJsonObject> PublicSnapshot(FACEClientPlugin& Plugin);
     bool ApplyPublicOutput(FACEClientPlugin& Plugin, const TSharedPtr<FJsonObject>& Output, FString& Error);
+    bool ApplyClientMessaging(FACEClientPlugin& Plugin,const TSharedPtr<FJsonObject>& Output,FString& Error);
+    bool TickClientMessaging(float Delta);
+    void ResetClientMessaging(FACEClientPlugin& Plugin);
+    TSharedPtr<FJsonObject> ClientMessagingSnapshot(const FACEClientPlugin& Plugin) const;
+    TSharedPtr<class FACEPluginClientBus> ClientBus;
+    TWeakPtr<class FACESession> ClientBusSession;
+    int32 ClientBusPlayer=0;
+    FString ClientBusScope;
+    double ClientBusSendWindow=0;
+    int32 ClientBusSendCount=0;
+    FTSTicker::FDelegateHandle ClientBusTicker;
     bool StartCompanion(FACEClientPlugin& Plugin);
     void TickCompanions();
     int32 NextCompanionIndex = 0;
@@ -603,6 +620,7 @@ private:
     void ForgetTargetEffects(int32 Target);
     FDelegateHandle TellHandle, MetaChatHandle, CombatFeedbackHandle;
     FDelegateHandle TargetHealthHandle, TargetMotionHandle, TargetDeletedHandle, TargetCreatedHandle, CombatVitalsHandle, FollowPositionHandle;
+    FDelegateHandle AttackDoneHandle, InventoryStateHandle;
     int32 CombatTarget=0;
     TSet<int32> DefeatedTargets;
     TSharedPtr<FJsonObject> LastCombatDeath;
@@ -613,6 +631,8 @@ private:
     void ObserveTargetDeleted(int32 Guid);
     void ObserveTargetCreated(const FACEWorldObject& Object);
     void ObserveCombatVitals(const FACEPlayerVitals& Vitals);
+    void ObserveAttackDone(uint32 Error);
+    void ObserveInventoryStateChanged();
     void ReleaseCombatTarget(int32 Guid);
     void WakeCombatDecision();
     void UnbindCombatEvents();
@@ -630,7 +650,6 @@ private:
     TArray<FOffensiveCast> OffensiveCasts;
     int32 PhysicalAttackTarget=0;
     double PhysicalAttackUntil=0;
-    double PhysicalAttackNextSendAt=0;
     int32 PhysicalAttackMode=0,PhysicalAttackHeight=0;
     float PhysicalAttackPower=0;
     FString PhysicalAttackOwner;
@@ -679,6 +698,7 @@ private:
     TArray<TSharedPtr<FJsonValue>> CachedSpells;
     TArray<TSharedPtr<FJsonValue>> CachedKnownSpellValues;
     uint64 CachedSpellRevision = MAX_uint64;
+    uint32 CachedSpellFocusMask = MAX_uint32;
     TSharedPtr<class FACEPluginVM> IdleManaVM;
     FString IdleManaOwner;
     TWeakPtr<class FACESession> IdleManaSession;

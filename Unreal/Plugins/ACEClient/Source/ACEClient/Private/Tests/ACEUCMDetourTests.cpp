@@ -186,7 +186,7 @@ bool FACEUCMBlockedRouteTest::RunTest(const FString&)
     auto Door=Json(TEXT(R"({"id":77,"object_class":26,"door_open":false,"distance":1,"cell":30998795,"x":31,"y":-34,"z":0})"));
     S->SetArrayField(TEXT("route_objects"),{MakeShared<FJsonValueObject>(Door)});
     TestEqual(TEXT("Opens a closed route door"),Action(Doors),FString(TEXT("use_world")));
-    TestEqual(TEXT("Door retries respect cooldown"),Action(Doors),FString(TEXT("move")));
+    TestEqual(TEXT("Pending door use holds instead of running into the door"),Action(Doors),FString());
     Door->SetBoolField(TEXT("door_open"),true);S->SetNumberField(TEXT("time"),106);
     TestEqual(TEXT("Does not close an already open door"),Action(Doors),FString(TEXT("move")));
     Door->SetBoolField(TEXT("door_open"),false);
@@ -199,15 +199,19 @@ bool FACEUCMBlockedRouteTest::RunTest(const FString&)
         S->SetNumberField(TEXT("time"),150);Door->SetBoolField(TEXT("door_identified"),false);
         FACEPluginVM Lock;Lock.Load(Script,Error);
         TestEqual(TEXT("Closed route door is assessed before choosing key or use"),Action(Lock),FString(TEXT("identify")));
+        TestEqual(TEXT("Appraisal wait does not resume blocked movement"),Action(Lock),FString());
         Door->SetBoolField(TEXT("door_identified"),true);Door->SetBoolField(TEXT("door_locked"),true);Door->SetNumberField(TEXT("lock_difficulty"),200);
         S->SetObjectField(TEXT("skills"),Json(TEXT(R"({"23":{"training":2,"current":210}})")));P->SetNumberField(TEXT("door_lockpick_margin"),10);
         S->SetArrayField(TEXT("inventory"),Json(TEXT(R"({"v":[{"id":81,"name":"Pick","object_class":30,"usable":true,"structure":15},{"id":82,"name":"Pick","object_class":30,"usable":true,"structure":2},{"id":83,"name":"Other","object_class":30,"usable":true,"structure":1},{"id":84,"name":"Pick","object_class":30,"usable":true,"structure":0}]})"))->GetArrayField(TEXT("v")));
         P->SetArrayField(TEXT("assist_items"),Json(TEXT(R"({"v":[{"name":"Pick","type":10}]})"))->GetArrayField(TEXT("v")));
-        S->SetNumberField(TEXT("time"),156);auto Unlock=Step(Lock);
+        S->SetNumberField(TEXT("time"),150.01);auto Unlock=Step(Lock);
         TestEqual(TEXT("Uses a lockpick instead of repeatedly using a locked door"),Unlock->GetStringField(TEXT("action")),FString(TEXT("apply_item")));
         TestEqual(TEXT("Consumes configured pick with fewest remaining uses"),Unlock->GetNumberField(TEXT("item")),82.);
         TestEqual(TEXT("Pick targets the obstructing door"),Unlock->GetNumberField(TEXT("target")),77.);
-        S->SetNumberField(TEXT("time"),162);Door->SetBoolField(TEXT("door_locked"),false);
+        // The host invalidates the door appraisal when lockpick UseDone arrives.
+        S->SetNumberField(TEXT("time"),150.02);Door->SetBoolField(TEXT("door_identified"),false);Door->RemoveField(TEXT("door_locked"));
+        TestEqual(TEXT("Completed lockpick use immediately refreshes its invalidated door appraisal"),Action(Lock),FString(TEXT("identify")));
+        S->SetNumberField(TEXT("time"),150.03);Door->SetBoolField(TEXT("door_identified"),true);Door->SetBoolField(TEXT("door_locked"),false);
         TestEqual(TEXT("Confirmed unlock is followed by normal door use"),Action(Lock),FString(TEXT("use_world")));
         Door->SetBoolField(TEXT("door_locked"),true);S->GetObjectField(TEXT("skills"))->GetObjectField(TEXT("23"))->SetNumberField(TEXT("current"),209);
         FACEPluginVM TooHard;TooHard.Load(Script,Error);TestEqual(TEXT("Insufficient lockpick margin pauses only route"),Action(TooHard),FString(TEXT("pause_navigation")));
@@ -228,8 +232,12 @@ bool FACEUCMBlockedRouteTest::RunTest(const FString&)
     Door->SetNumberField(TEXT("x"),33);Door->SetNumberField(TEXT("y"),-31);Door->SetBoolField(TEXT("door_open"),false);
     S->SetArrayField(TEXT("route_objects"),{MakeShared<FJsonValueObject>(Door)});
     TestEqual(TEXT("Return from combat checks doors too"),Action(Return),FString(TEXT("use_world")));
-    TestEqual(TEXT("Return continues during the door retry cooldown"),Action(Return),FString(TEXT("move")));
+    TestEqual(TEXT("Return holds while its closed door is opening"),Action(Return),FString());
     S->SetNumberField(TEXT("movement_blocked_serial"),1);
+    TestEqual(TEXT("A delayed obstruction while opening does not restart movement"),Action(Return),FString());
+    Door->SetBoolField(TEXT("door_open"),true);
+    TestEqual(TEXT("An open door resumes the recorded return path"),Action(Return),FString(TEXT("move")));
+    S->SetNumberField(TEXT("movement_blocked_serial"),2);
     TestEqual(TEXT("Blocked combat return pauses navigation rather than UCM"),Action(Return),FString(TEXT("pause_navigation")));
     return true;
 }

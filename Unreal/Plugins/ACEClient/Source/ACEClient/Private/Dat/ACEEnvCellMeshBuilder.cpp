@@ -78,6 +78,79 @@ void FACEEnvCellMeshBuilder::BakeStaticLighting(const FACEDatEnvCell& Cell, floa
 	}
 }
 
+bool FACEEnvCellMeshBuilder::ResolvePlacementCell(uint32 HintCellId, uint32 NumCells,
+	const FVector& BlockPoint, uint32& OutCellId, bool& bComplete)
+{
+	OutCellId = HintCellId;
+	bComplete = true;
+	const uint32 Block = HintCellId & 0xFFFF0000u;
+	uint32 ContainingCell = 0, SupportedCell = 0;
+	double BestFloorDistance = MAX_dbl;
+	auto Inspect = [&](uint32 Id)
+	{
+		TArray<uint8> Blob;
+		FACEDatEnvCell Cell;
+		if (!CellDat || !CellDat->ReadFile(Id, Blob)) { bComplete = false; return; }
+		FACEDatCursor Cursor(Blob);
+		if (!ACEDatUnpack::UnpackEnvCell(Cursor, Cell)) { bComplete = false; return; }
+		const auto* Env = GetEnvironment(Cell.EnvironmentId);
+		const auto* Structure = Env ? Env->Cells.Find(Cell.CellStructure) : nullptr;
+		if (!Structure || Structure->CellBspNodes.IsEmpty()) { bComplete = false; return; }
+		const FTransform Frame(FQuat(Cell.Orientation), FVector(Cell.Origin));
+		const FVector Local = Frame.InverseTransformPosition(BlockPoint);
+		int32 NodeIndex = 0;
+		bool Inside = false;
+		for (int32 Step = 0; Step < 4096; ++Step)
+		{
+			if (!Structure->CellBspNodes.IsValidIndex(NodeIndex)) { bComplete = false; return; }
+			const auto& Node = Structure->CellBspNodes[NodeIndex];
+			if (Node.bLeaf) { Inside = true; break; }
+			const double Distance = Node.Plane.X * Local.X + Node.Plane.Y * Local.Y
+				+ Node.Plane.Z * Local.Z + Node.Plane.W;
+			if (Distance < -.0002) return;
+			if (Node.PosChild == INDEX_NONE) { Inside = true; break; }
+			NodeIndex = Node.PosChild;
+		}
+		if (!Inside) { bComplete = false; return; }
+		if (!ContainingCell) ContainingCell = Id;
+		// Room BSPs can share the exact arrival boundary. Prefer the room
+		// owning nearby support at this XYZ, not whichever ID sorted first.
+		// This selects a cell only: the normal body sweep still owns placement,
+		// step limits and intentional falls, with no height adjustment here.
+		for (const auto& Pair : Structure->PhysicsPolygons)
+		{
+			if (!Structure->PhysicsCollisionPolyIds.Contains(Pair.Key)) continue;
+			TArray<FVector,TInlineAllocator<8>> Vertices;
+			for (int16 Index : Pair.Value.VertexIds)
+				if (const auto* V = Structure->Vertices.Find(uint16(Index)))
+					Vertices.Add(Frame.TransformPosition(FVector(V->Origin)));
+			for (int32 I = 1; I + 1 < Vertices.Num(); ++I)
+			{
+				const FVector A = Vertices[0], B = Vertices[I], C = Vertices[I+1];
+				const FVector N = FVector::CrossProduct(B-A,C-A).GetSafeNormal();
+				if (N.Z < .5) continue; // Upward authored faces, never the ceiling's reverse side.
+				const double Z = A.Z - (N.X*(BlockPoint.X-A.X)+N.Y*(BlockPoint.Y-A.Y))/N.Z;
+				const double Drop = BlockPoint.Z - Z;
+				if (Drop < -.5 || Drop > 2. || FMath::Abs(Drop) >= BestFloorDistance - .0002) continue;
+				const FVector Weights = FMath::GetBaryCentric2D(FVector(BlockPoint.X,BlockPoint.Y,Z),A,B,C);
+				if (Weights.X < -.0002 || Weights.Y < -.0002 || Weights.Z < -.0002) continue;
+				BestFloorDistance = FMath::Abs(Drop); SupportedCell = Id;
+			}
+		}
+	};
+	Inspect(HintCellId);
+	if (SupportedCell && BestFloorDistance <= .01) { OutCellId = SupportedCell; return true; }
+	// Stale portal hints can refer to an unrelated part of this dungeon. Limit
+	// this broader search to arrival; normal movement still follows cell portals.
+	for (uint32 Index = 0; Index < NumCells; ++Index)
+	{
+		const uint32 Id = Block | (0x100u + Index);
+		if (Id != HintCellId) Inspect(Id);
+	}
+	if (SupportedCell || ContainingCell) { OutCellId = SupportedCell ? SupportedCell : ContainingCell; return true; }
+	return false;
+}
+
 bool FACEEnvCellMeshBuilder::LoadEnvironment(uint32 EnvironmentId, FACEDatEnvironment& Out)
 {
 	if (const FACEDatEnvironment* Cached = GetEnvironment(EnvironmentId))

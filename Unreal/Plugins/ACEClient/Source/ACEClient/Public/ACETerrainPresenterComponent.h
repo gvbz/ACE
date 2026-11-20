@@ -38,6 +38,7 @@ class ACECLIENT_API UACETerrainPresenterComponent : public UActorComponent
 	friend class FACERetailWorldEntryTest;
 	friend class FACEPortalPlacementTest;
 	friend class FACEPortalDropTest;
+	friend class FACEPortalReportedPlacementsTest;
 	friend class FACELoadingTransitionTest;
 	friend class FACEStreamingRetirementTest;
 	friend class FACEPortalRetirementTest;

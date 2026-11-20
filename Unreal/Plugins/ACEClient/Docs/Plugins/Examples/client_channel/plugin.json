@@ -1,0 +1,11 @@
+{
+  "api": 2,
+  "id": "client_channel",
+  "name": "Client Channel Example",
+  "version": "1.0",
+  "mode": "companion",
+  "description": "Exchange local messages with this plugin in other clients on the same server.",
+  "permissions": ["client_messaging", "ui"],
+  "snapshot_fields": ["client_bus"],
+  "update_interval": 0.5
+}

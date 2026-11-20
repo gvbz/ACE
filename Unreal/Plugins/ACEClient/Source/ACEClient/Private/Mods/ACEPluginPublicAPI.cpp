@@ -71,7 +71,7 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::PublicSnapshot(FACEClientPlugin& P)
         TEXT("inventory"),TEXT("inventory_revision"),TEXT("appraisal_revision"),TEXT("window_chrome_hidden"),TEXT("level"),TEXT("character_name"),TEXT("action_serial"),TEXT("action_error"),TEXT("last_spell"),TEXT("last_spell_confirmed"),
         TEXT("profile_name"),TEXT("waiting_action"),TEXT("log"),TEXT("panel"),TEXT("activity_failure"),TEXT("capabilities"),TEXT("automation_owner"),TEXT("action_events"),
         TEXT("inventory_failure_serial"),TEXT("inventory_failure_item"),TEXT("inventory_failure_error"),
-        TEXT("objects"),TEXT("objects_truncated"),TEXT("selection"),TEXT("tracked_targets"),TEXT("target_effects")};
+        TEXT("objects"),TEXT("objects_truncated"),TEXT("selection"),TEXT("tracked_targets"),TEXT("target_effects"),TEXT("client_bus")};
     bool FullData=!P.SelectiveSnapshot;
     if(P.SelectiveSnapshot)for(const auto& Field:P.SnapshotFields)if(!Common->HasField(Field)&&!Lightweight.Contains(Field)){FullData=true;break;}
     auto Result=(DataAllowed&&FullData)?ItemToolsSnapshot(&P):MakeShared<FJsonObject>();
@@ -119,6 +119,8 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::PublicSnapshot(FACEClientPlugin& P)
     if(P.ActivityFailure){Result->SetObjectField(TEXT("activity_failure"),P.ActivityFailure);P.ActivityFailure.Reset();}
     auto Capabilities=MakeShared<FJsonObject>();for(const auto& Permission:P.Permissions)Capabilities->SetBoolField(Permission,true);
     Result->SetObjectField(TEXT("capabilities"),Capabilities);
+    if(P.Permissions.Contains(TEXT("client_messaging"))&&P.WantsSnapshotField(TEXT("client_bus")))
+        Result->SetObjectField(TEXT("client_bus"),ClientMessagingSnapshot(P));
     auto Owner=PolicyPlugin();Result->SetStringField(TEXT("automation_owner"),Owner&&Owner->Running?Owner->Id:FString());
     if(P.SelectiveSnapshot)
     {
@@ -146,6 +148,7 @@ bool UACEPluginSubsystem::ApplyPublicOutput(FACEClientPlugin& P,const TSharedPtr
     if(!Permission.IsEmpty()&&!P.Permissions.Contains(Permission)){Error=TEXT("Missing permission: ")+Permission;return false;}
     if(!ApplyCompanionOutput(P,O,Error))return false;
     if(!P.Running)return true;
+    if(!ApplyClientMessaging(P,O,Error))return false;
     const TSharedPtr<FJsonObject>* Patch=nullptr;
     if(O->HasField(TEXT("profile_patch")))
     {

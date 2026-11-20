@@ -514,7 +514,12 @@ The optional sixth `components_required` argument defaults to true. Pass
 infer an exemption from missing component data. `unavailable_until` is a table
 keyed by numeric spell IDs with monotonic retry times. Indexing accepts at most
 16,384 spells and 4,096 inventory entries, with 131,072 combined native visits per
-callback. `supplied[id]` is a boolean, not an inventory count. Eligibility is not
+callback. `supplied[id]` is a boolean, not an inventory count. New spell snapshots
+provide `components`, a name-to-quantity map of the character's complete formula,
+including personalized tapers or the focused formula from carried foci/augmentations.
+The host updates this map when the focus changes. `components_known` reports whether
+the formula was resolved. `scarabs` remains available as the scarab-only subset;
+`spellindex` uses it only when an older snapshot has no `components` field. Eligibility is not
 a guarantee of line of sight, target validity, or server acceptance.
 
 ## Sandbox helper functions
@@ -564,6 +569,83 @@ loading, `pcall`/`xpcall`, metatable access, `collectgarbage`, or `print`. Stand
 Lua pattern functions `string.find`, `match`, `gmatch`, `gsub`, and `dump` are
 removed. Use the helpers above and the notice/log services for output.
 
+## Channels between local clients
+
+API 2 automation and companion plugins can declare `client_messaging` to exchange
+JSON messages with the same plugin in other Windows/Linux client processes,
+including desktop VR. This is separate from `messaging`, which remains inside
+one process. Players must enable the new permission through Manage Plugins.
+No external service, Lua sockets, or `require` is needed.
+
+```lua
+-- Join first; wait for snapshot.client_bus.connected before sending.
+return {client_channels={"team"}}
+
+-- In a later callback, broadcast to other subscribers (no self echo).
+return {client_messages={{channel="team", data={operation="ready"}}}}
+
+-- Or target a transient instance ID from snapshot.client_bus.peers.
+return {client_messages={{channel="team", to=peer.instance,
+                         data={operation="ready"}}}}
+```
+
+`client_channels` replaces this plugin's subscriptions; omission retains them and
+`{}` leaves all channels. Names are case-sensitive, 1–64 ASCII letters, digits,
+underscores, dots or dashes. A send must use a subscribed channel. `data` must be
+a JSON object. Receivers get a subsequent `events` entry:
+
+```lua
+{type="client_message", sender="instance-id", character="Example",
+ player=0x50000001, plugin="my_plugin", channel="team",
+ data={operation="ready"}, serial=123}
+```
+
+Native code supplies sender/character/player metadata. Include `client_bus` in
+selective `snapshot_fields` for `{available, connected, instance, channels,
+peers, error}`. Each peer has `{instance, character, player, channels}` and belongs
+to the same plugin and server; it may subscribe to different channels. Peer
+lists omit the current instance. Instances change on reconnecting a character
+or recreating the transport; do not save them as permanent character IDs.
+
+Channels are scoped to the same computer and OS-user namespace, configured
+server host/port plus reported server name, plugin ID, and channel. Use the same
+server address in both login profiles: different aliases are intentionally
+separate. This does not connect to LAN clients or retail UtilityBelt.Service.
+The first active client hosts a loopback-only relay on a stable per-user port
+in 37000–37999. Other clients elect a replacement if it closes; an unrelated
+application occupying that port is reported as a connection failure.
+
+Limits: 8 subscriptions per plugin, 64 per client, 32 clients, 8 messages per
+callback, 20 sends/second per plugin and 80 across the client. Each `data` object
+is at most 4,096 UTF-8 bytes and 10 nested levels. Socket queues are bounded to
+256 KiB; the transport inbox and the normal per-plugin event inbox each hold
+at most 64 events. Stop, disable, reload, logout, or a character/session change
+clears subscriptions and invalidates pending deliveries. Changing the channel
+subscription set also invalidates deliveries for the old subscriptions.
+
+Delivery is transient and best effort. Disconnected, rate-limited, or full-queue
+sends set `client_bus.error`; they are not saved for reconnect or replayed. A
+successful queue operation is not confirmation that a peer acted. Use request
+IDs, acknowledgements, deduplication and deliberate retries when needed; never
+automatically replay non-idempotent inventory or spell commands. The normal
+event inbox can also evict old events under overload.
+
+Receiving a message does not execute chat or game commands. The recipient must
+explicitly interpret its payload using its own permissions and normal action
+gates; the single automation-driver rule remains. Only enable plugins you trust.
+Loopback and namespace separation are not authentication against other local
+applications; this channel is unsuitable for credentials or secrets.
+
+The [Client Channel example](Examples/client_channel/main.lua) shows peer
+discovery and broadcasts. Copy the entire `Examples/client_channel` folder to
+`Saved/ClientPlugins/Installed/client_channel` in each client, refresh and enable
+it, and log characters into the same server. Click **Send greeting to other
+clients**, or enter `/acueplugin client_channel hello`. Its native themed panel
+lists peers and recent messages. It displays received text without executing it.
+Set the same `channel` in both copies' `default.json` before first installation
+to use another team name. Plugin authors can build tag groups or a broadcast
+command interface using channels and targeted messages.
+
 ## Permissions and snapshots
 
 Declare only the permissions you need. Enable in Manage Plugins grants that
@@ -580,6 +662,7 @@ manifest's permission set; adding permissions requires enabling it again.
   subscription, and responding to a current server confirmation respectively.
 - `chat`, `state`, `ui`, `markers`, `waypoint`, `messaging`, `commands`: the
   [companion capabilities](Companions.md). API 2 automation can use these too.
+- `client_messaging`: opt-in channels between local client processes; see below.
 - `admin_content`: explicit ACE content commands and local JSON/SQL workspace browsing; see [Dereth Foundry](Foundry.md). Server permissions still apply.
 - `profiles`: write your own configuration/profile library and import/export data.
 - `data`: opt a companion into the full gameplay snapshot. Ordinary automation
@@ -605,6 +688,27 @@ transfer eligibility, vendor room/price and inventory failure fields are include
 as well. `identified=false` means a property may be unknown; it is not evidence
 that the property is zero. Automation appraisal uses inventory permission;
 companions use the narrower identify permission above.
+
+Policy plugins may emit `{action="identify", item=guid, pipeline=true,
+continue_work=true}` for items directly inside the **currently open external
+container**. The host rechecks membership at dispatch and skips only that
+appraisal's action wait. Without `pipeline=true`, or outside that scope, ordinary
+appraisal gating is unchanged. Permissions, busy state and earlier action gates
+still apply; companion identify commands retain their existing rate limit.
+`continue_work` requests the next client frame after a nonblocking action,
+rather than waiting for each appraisal reply. Waiting polls use a 50 ms cadence;
+new appraisal and inventory receipts wake the policy immediately. These are
+scheduling rules, not guaranteed throughput or permission to bypass busy state.
+
+An opting-in policy must cap outstanding appraisals, track each item separately,
+retry timed-out requests, and wait for `identified=true` before deciding rules
+that need appraisal data. Replies can be delayed, unsuccessful, or out of order.
+Discard pending work when its container closes/changes or the policy stops.
+UCM pipelines at most eight pending corpse appraisals, retries after five
+seconds (three attempts total), and still evaluates each item's rules in order.
+It requests only appraisals needed by those rules or mana-source selection.
+Loot transfers remain serialized until server ownership/quantity confirmation;
+appraisal replies never confirm pickups or authorize salvage.
 
 Combat equipment also exposes `combat_identified` and `combat_appraisal_cached`.
 When `combat_appraisal_cached=true`, an owned weapon, shield or ammunition item

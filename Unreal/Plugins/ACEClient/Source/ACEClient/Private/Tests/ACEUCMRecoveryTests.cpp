@@ -107,6 +107,32 @@ bool FACEUCMRecoveryTest::RunTest(const FString&)
         for(const auto& Count:Counts)Scarabs->SetNumberField(Count.Key,Count.Value);
         Spell->SetObjectField(TEXT("scarabs"),Scarabs);Spells.Add(Name,Spell);
     }
+    // Recovery-only must leave manual combat alone whenever no vital needs work.
+    for(int32 Mode:{1,2,4,8})for(bool Nearby:{false,true})
+    {
+        auto S=Snapshot(),P=Profile();S->SetNumberField(TEXT("combat_mode"),Mode);
+        P->SetBoolField(TEXT("idle_peace"),false);P->SetBoolField(TEXT("item_mana"),false);
+        S->SetArrayField(TEXT("spells"),{MakeShared<FJsonValueObject>(Spells[TEXT("Heal Self IV")])});
+        if(Nearby)S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"id":500,"name":"Rat","distance":5,"identified":true,"line_of_sight":true})")))});
+        FACEPluginVM VM;TestTrue(TEXT("Recovery-only policy loads"),VM.Load(Source,Error));
+        TestFalse(TEXT("Healthy recovery-only policy never changes stance or attacks"),Step(VM,S,P)->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("health"),20);S->SetNumberField(TEXT("time"),101);
+        auto I=Step(VM,S,P);
+        TestEqual(TEXT("Recovery-only chooses Heal IV without a peace intent"),I->GetStringField(TEXT("action")),FString(TEXT("cast")));
+        TestEqual(TEXT("Recovery-only healing targets self"),I->GetNumberField(TEXT("target")),1.);
+        S->SetNumberField(TEXT("health"),100);S->SetNumberField(TEXT("time"),103);S->SetNumberField(TEXT("action_serial"),1);
+        S->SetNumberField(TEXT("last_spell"),I->GetNumberField(TEXT("spell")));S->SetBoolField(TEXT("last_spell_confirmed"),true);
+        TestFalse(TEXT("Completed healing does not request idle peace"),Step(VM,S,P)->HasField(TEXT("action")));
+    }
+    for(int32 Mode:{2,4,8})for(bool KitPeace:{false,true})
+    {
+        auto S=Snapshot(),P=Profile();S->SetNumberField(TEXT("combat_mode"),Mode);S->SetNumberField(TEXT("health"),20);
+        S->SetArrayField(TEXT("trained_skills"),{MakeShared<FJsonValueNumber>(21)});
+        S->SetArrayField(TEXT("inventory"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"id":42,"wcid":42,"name":"Healing kit","type":128,"healing_kit":true,"boost_vital":2,"boost":50,"structure":50,"usable":true,"identified":true})")))});
+        P->SetBoolField(TEXT("idle_peace"),false);P->SetBoolField(TEXT("kit_peace"),KitPeace);
+        FACEPluginVM VM;VM.Load(Source,Error);auto I=Step(VM,S,P);
+        TestEqual(TEXT("Kit peace is an explicit preference independent of idle peace"),I->GetStringField(TEXT("action")),FString(KitPeace?TEXT("combat_mode"):TEXT("use_item")));
+    }
     for(const auto& Case:TArray<TPair<FString,FString>>{
         {TEXT("health"),TEXT("Heal Self I")},{TEXT("health"),TEXT("Heal Self II")},{TEXT("health"),TEXT("Heal Self III")},{TEXT("health"),TEXT("Heal Self IV")},{TEXT("health"),TEXT("Heal Self V")},{TEXT("health"),TEXT("Heal Self VI")},{TEXT("health"),TEXT("Adja's Intervention")},{TEXT("health"),TEXT("Incantation of Heal Self")},
         {TEXT("stamina"),TEXT("Revitalize Self I")},{TEXT("stamina"),TEXT("Revitalize Self II")},{TEXT("stamina"),TEXT("Revitalize Self III")},{TEXT("stamina"),TEXT("Revitalize Self IV")},{TEXT("stamina"),TEXT("Revitalize Self V")},{TEXT("stamina"),TEXT("Revitalize Self VI")},{TEXT("stamina"),TEXT("Robustification")},{TEXT("stamina"),TEXT("Incantation of Revitalize Self")},

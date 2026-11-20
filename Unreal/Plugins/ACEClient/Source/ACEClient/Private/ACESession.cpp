@@ -20,6 +20,7 @@
 #include "AddressInfoTypes.h"
 #include "Common/UdpSocketBuilder.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/ScopeExit.h"
 
 static TAutoConsoleVariable<float> CVarNetworkPumpMs(TEXT("ace.Network.PumpBudgetMs"),.5f,
 	TEXT("Budget for each socket receive pass and the ordered gameplay pass, in milliseconds. A packet finishes atomically; 0 disables the time bound."));
@@ -1685,6 +1686,16 @@ void FACESession::SendEchoResponse(float ClientTime)
 
 void FACESession::HandleGameMessage(const TArray<uint8>& MessageBytes)
 {
+	const uint64 InventoryBefore = InventoryDataRevision;
+	const int32 ContainerBefore = OpenExternalContainerGuid;
+	const int32 TransfersBefore = PendingInventoryTransfers.Num();
+	ON_SCOPE_EXIT
+	{
+		// Notify after the whole packet is applied. Consumers may schedule work,
+		// but must never dispatch a new inventory action from this callback.
+		if (InventoryDataRevision != InventoryBefore || OpenExternalContainerGuid != ContainerBefore
+			|| PendingInventoryTransfers.Num() != TransfersBefore) OnInventoryStateChanged.Broadcast();
+	};
 	if (MessageBytes.Num() < 4)
 	{
 		return;
@@ -3165,6 +3176,7 @@ void FACESession::HandleGameEvent(FACEBinaryReader& Reader)
 		bServerAttackInProgress = false;
 		LastAttackError = Reader.ReadUInt32();
 		++CombatEventRevision;
+		OnAttackDone.Broadcast(LastAttackError);
 		break;
 	case ACEGameEvent::DefenderNotification:
 		HandleCombatDefenderNotification(Reader);

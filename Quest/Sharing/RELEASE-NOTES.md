@@ -1,32 +1,27 @@
-# AC:Unreal / AC:VR release 161
+# AC:Unreal / AC:VR release 162
 
-Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.18.161**.
+Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.19.162**.
 
-## Waypoint maps and atlas imports
+## Faster UCM combat and looting
 
-- Crowded map markers group into clickable counts. Select a result from the list instead of reading overlapping portal and dungeon labels.
-- Drag the minimap to pan and use the mouse wheel to zoom, including while the interface is locked. Use the crosshair button (**center player**) to resume following your character. Overworld maps support closer zoom levels.
-- **Browse locations** opens an XML file picker on Windows and Linux; **Import locations** loads the selected file. Expanded GoArrow and Crossroads of Dereth XML support covers the supplied atlas variants. Import buttons retain single-line labels and consistent padding.
-- Opening a plugin again brings its existing interface forward instead of creating another copy.
-- Third Eye directions correctly recognize targets in the same dungeon.
+- Switch targets and retry attacks as soon as the client receives completion, rejection, target death, or removal. Remove the extra physical-attack timer and post-cast pauses while retaining server-controlled action completion and active auto-repeat.
+- Appraise corpse items concurrently, with bounded outstanding requests and retries. Loot rules still wait for the required item properties; transfers remain confirmed before moving to the next item.
+- Wake looting immediately when inventory, corpse contents, or appraisal replies arrive, instead of waiting for a polling delay.
+- Recovery-only UCM preserves your combat stance when using food, healing kits, and mana supplies with **Peace when idle** disabled. The explicit healing-kit peace option remains available.
+- Check the complete spell formula before changing casting equipment, including tapers and foci/augmentation requirements. Missing components no longer make unusable spells compete with your available weapons.
+- Open route doors promptly after appraisal or unlocking, without an extra five-second wait. Hold position while a closed door is being opened instead of continuing to run into it.
 
-## Third Eye audio alerts
+## Portal arrivals and fellowship
 
-- Enable an optional chime when a new matching entity is found. Alerts are off by default and can be used independently of chat notifications.
-- The Audio tab includes a bundled chime, custom WAV selection, volume, sound preview, and restore-default controls. Settings save per character and server.
+- Resolve indoor portal and login destinations from their position when the supplied cell ID names the wrong room. Keep the server's coordinates and rotation, and load the resolved room before revealing the world.
+- Positions outside all rooms can request the existing one-time lifestone recovery after the arrival timeout. Intentional drops remain valid; missing DAT files still report a file error instead of recalling.
+- Show each fellowship member's nominal retail XP share alongside their level, with support for even and level-weighted splits. Server bonuses, distance, and custom rules can change actual awards.
 
-## Sky, fog, and distant scenery
+## Desktop and plugin improvements
 
-- Imported AC2 skies use authored fog colors separately from cloud tint. Fog coverage accounts for the terrain actually displayed, including camera offsets and delayed terrain loading.
-- Smooth terrain detail transitions and fade distant scenery near its range limit to reduce abrupt popping and foliage speckles while preserving cutout shapes.
-- Ground cloud shadows disappear when imported sky clouds are absent.
-- Correct the imported primary moon's orientation and apparent size relative to AC1. Rendered checks verify both moons remain behind opaque clouds and fog.
-- Thanks to **gvbz** for the far-distance rendering contribution.
+- Cap desktop login, character selection, and loading screens at 30 FPS. Gameplay retains its configured limit; active headset rendering keeps its own pacing.
+- Use the clean **AC:Unreal** desktop window title without development-build suffixes.
+- Add an opt-in local client messaging API for Lua plugins on Windows and Linux. Plugins can discover peers and exchange bounded messages across clients on the same computer and server. Includes API documentation and an example plugin; this is not the retail UtilityBelt protocol or automatic command execution.
+- Document the opt-in corpse-appraisal pipeline for policy plugins.
 
-## Inventory and verification
-
-- Restore visibility of NPC-returned stack remainders in GDLE-compatible inventory update sequences, and add bounded turn-in diagnostics. This does not establish that the reported Coldeve trinket exchange consumes or returns the correct quantities on the server.
-- Automated regression and package checks cover map input, atlas imports, plugin window reuse, audio settings, inventory updates, sky behavior, fog coverage, and runtime materials. Desktop packages are exercised on Windows and Linux; Android and Quest packages receive signing, content, and version checks.
-- Fog blending still differs from retail in some color transitions, and terrain popping is reduced rather than eliminated. Physical headset testing remains important for fine foliage and distant scenery. The additional terrain detail and retained scenery can use more memory.
-
-Players supply their own AC1 data and, for the optional imported sky, their own Legions data. No retail game data, saved profiles, or server credentials are included.
+Experimental water and item/model treatments are excluded from this release. Players supply their own retail data. No saved profiles, account credentials, or retail DAT files are included.

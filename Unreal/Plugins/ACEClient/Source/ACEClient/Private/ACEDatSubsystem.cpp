@@ -8031,6 +8031,17 @@ TSharedPtr<const TArray<ACEOutdoorPortalPlan::FAdmittedAperture>> UACEDatSubsyst
 	return Geometry;
 }
 
+bool UACEDatSubsystem::ResolveWorldEntryCell(const FACEPosition& Position, uint32& OutCellId, bool& bComplete)
+{
+	OutCellId = Position.CellId;
+	bComplete = false;
+	if (!Position.IsValid() || !EnsureLoaded() || !EnvCellBuilder) return false;
+	const auto Info = GetLandblockInfo(Position.CellId);
+	if (!Info || Info->NumCells == 0 || Info->NumCells > 0xFEFEu) return false;
+	return EnvCellBuilder->ResolvePlacementCell(Position.CellId, Info->NumCells,
+		Position.Location, OutCellId, bComplete);
+}
+
 bool UACEDatSubsystem::LoadEnvCell(uint32 EnvCellId, FACEDatEnvCell& OutCell)
 {
 	OutCell = FACEDatEnvCell();
@@ -9178,23 +9189,9 @@ bool UACEDatSubsystem::TryGetSpellExamination(uint32 SpellId, FString& OutDetail
 	if (Spell->Duration > 0.0) OutDetails += FString::Printf(TEXT("\nBase duration: %.0f seconds"), Spell->Duration);
 	OutDetails += TEXT("\n\n") + Spell->Description;
 	FString Account;
-	bool HasFocus=false;
+	const bool HasFocus = Spell->School < 32 && (GetPlayerSpellFocusMask() & (1u << Spell->School)) != 0;
 	if(auto* Client=GetGameInstance()->GetSubsystem<UACEClientSubsystem>())
-	{
 		if(const auto Session=Client->GetSession())Account=Session->GetAccountName();
-		static const uint32 FocusWcid[]={0,15271,15270,15269,15268,43173};
-		static const uint32 FocusAug[]={0,297,296,295,294,328};
-		if(Spell->School>0 && Spell->School<UE_ARRAY_COUNT(FocusWcid))
-		{
-			HasFocus=Client->GetPlayerVitals().StatQualityInts.FindRef(FocusAug[Spell->School])>0;
-			// Retail ClientMagicSystem::GetAppropriateSpellFormula calls
-			// ACCWeenieObject::MagicPackIsOwned, which searches the player's
-			// container slots. GetPackItems deliberately excludes those slots,
-			// including foci; a foci inside another container does not qualify.
-			if(!HasFocus)for(const auto& Item:Client->GetPlayerPacks())
-				if(uint32(Item.WeenieClassId)==FocusWcid[Spell->School]){HasFocus=true;break;}
-		}
-	}
 	const auto Formula=HasFocus?ACESpellFormula::WithFocus(Spell->Formula)
 		:ACESpellFormula::Customize(Spell->Formula,Spell->FormulaVersion,Account);
 	TArray<uint32> Order;TMap<uint32,int32> Counts;
@@ -9203,6 +9200,46 @@ bool UACEDatSubsystem::TryGetSpellExamination(uint32 SpellId, FString& OutDetail
 	for(uint32 Id:Order)if(const auto* Component=GetSpellComponents().FindByPredicate([&](const auto& C){return C.ComponentId==Id;}))
 		Names.Add(Counts[Id]>1?FString::Printf(TEXT("%s (%d)"),*Component->Name,Counts[Id]):Component->Name);
 	if(!Names.IsEmpty())OutDetails+=TEXT("\n\nIngredients: ")+FString::Join(Names,TEXT(", "));
+	return true;
+}
+
+uint32 UACEDatSubsystem::GetPlayerSpellFocusMask() const
+{
+	const auto* GI = GetGameInstance();
+	const auto* Client = GI ? GI->GetSubsystem<UACEClientSubsystem>() : nullptr;
+	if (!Client) return 0;
+	static const uint32 FocusWcid[] = {0,15271,15270,15269,15268,43173};
+	static const uint32 FocusAug[] = {0,297,296,295,294,328};
+	uint32 Mask = 0;
+	const auto& Vitals = Client->GetPlayerVitalsView();
+	const auto Packs = Client->GetPlayerPacks();
+	for (uint32 School = 1; School < UE_ARRAY_COUNT(FocusWcid); ++School)
+	{
+		bool Focus = Vitals.StatQualityInts.FindRef(FocusAug[School]) > 0;
+		// MagicPackIsOwned accepts the player's pack slots, not nested bags.
+		for (const auto& Pack : Packs) if (uint32(Pack.WeenieClassId) == FocusWcid[School]) Focus = true;
+		if (Focus) Mask |= 1u << School;
+	}
+	return Mask;
+}
+
+bool UACEDatSubsystem::TryGetPluginSpellComponents(uint32 SpellId, bool bHasFocus, TMap<FString, int32>& OutRequirements)
+{
+	OutRequirements.Reset(); EnsureSpellTableLoaded();
+	const auto* Spell = SpellInfoCache.Find(SpellId); if (!Spell) return false;
+	FString Account;
+	if (auto* GI = GetGameInstance()) if (auto* Client = GI->GetSubsystem<UACEClientSubsystem>())
+		if (const auto Session = Client->GetSession()) Account = Session->GetAccountName();
+	const auto Formula = bHasFocus ? ACESpellFormula::WithFocus(Spell->Formula)
+		: ACESpellFormula::Customize(Spell->Formula,Spell->FormulaVersion,Account);
+	const auto& Components = GetSpellComponents();
+	for (uint32 Id : Formula)
+	{
+		if (!Id) continue;
+		const auto* Component = Components.FindByPredicate([&](const auto& C){return C.ComponentId == Id;});
+		if (!Component) return false;
+		++OutRequirements.FindOrAdd(Component->Name);
+	}
 	return true;
 }
 
@@ -9836,6 +9873,16 @@ bool UACEDatSubsystem::TryGetSkillRankProgress(int32 AdvancementClass, int32 Ran
 	const int64 Start = List[Ranks], End = List[Ranks + 1];
 	if (End > Start)
 		OutProgress01 = FMath::Clamp(float((double(uint32(CurrentXpSpent)) - Start) / double(End - Start)), 0.f, 1.f);
+	return true;
+}
+
+bool UACEDatSubsystem::TryGetLevelExperienceCost(int32 Level, uint64& OutCost)
+{
+	OutCost = 0;
+	if (!EnsureXpTableLoaded() || Level < 1 || Level >= CharacterLevelXPList.Num() - 1) return false;
+	const uint64 Current = CharacterLevelXPList[Level], Next = CharacterLevelXPList[Level + 1];
+	if (Next <= Current) return false;
+	OutCost = Next - Current;
 	return true;
 }
 

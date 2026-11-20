@@ -43,6 +43,7 @@ class UACEWorldBakeEdEngine : public UUnrealEdEngine
 	void PumpImportQueueUntilIdle(double MaxSeconds);
 
 	virtual void Tick(float DeltaSeconds, bool bIdleMode) override;
+	virtual float GetMaxTickRate(float DeltaTime, bool bAllowFrameRateSmoothing = true) const override;
 
 private:
 	bool ProcessOneBlueprintImport();

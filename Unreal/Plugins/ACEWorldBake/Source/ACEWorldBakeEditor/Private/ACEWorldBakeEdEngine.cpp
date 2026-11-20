@@ -1,4 +1,5 @@
 #include "ACEWorldBakeEdEngine.h"
+#include "ACEGameEngine.h"
 #include "ACEWorldBakeEditor.h"
 #include "ACEWorldBakeEditorInternal.h"
 #include "ACEWorldBakeWorldBuilder.h"
@@ -765,6 +766,11 @@ void UACEWorldBakeEdEngine::ApplyPieLoginMapRedirect()
 				*CurrentMap, *ACEPlaySessionRedirect::WorldMapPath);
 		}
 	}
+}
+
+float UACEWorldBakeEdEngine::GetMaxTickRate(float DeltaTime, bool bAllowFrameRateSmoothing) const
+{
+	return ACEFrontendFrameRate::GetLimit(*this,Super::GetMaxTickRate(DeltaTime,bAllowFrameRateSmoothing),true);
 }
 
 void UACEWorldBakeEdEngine::Tick(float DeltaSeconds, bool bIdleMode)

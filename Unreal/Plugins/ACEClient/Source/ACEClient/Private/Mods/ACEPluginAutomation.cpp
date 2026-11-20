@@ -28,6 +28,15 @@ namespace
     double N(const TSharedPtr<FJsonObject>& O,const TCHAR* K,double Default=0){double V;return O&&O->TryGetNumberField(K,V)&&FMath::IsFinite(V)?V:Default;}
     FString S(const TSharedPtr<FJsonObject>& O,const TCHAR* K){FString V;if(O)O->TryGetStringField(K,V);return V;}
     bool B(const TSharedPtr<FJsonObject>& O,const TCHAR* K,bool Default=false){bool V;return O&&O->TryGetBoolField(K,V)?V:Default;}
+    int32 ItemUseCombatMode(const FACEWorldObject& Item)
+    {
+        // Healer and ManaStone accept armed use. Food temporarily animates in
+        // peace on the server, then restores its previous stance. Forcing peace
+        // here loses that stance and overrides UCM's optional kit-peace policy.
+        const bool CombatSupply=(Item.ItemType&(ACEItemType::Food|ACEItemType::ManaStone))!=0
+            ||(Item.ObjectDescriptionFlags&0x10000)!=0; // Retail Healer descriptor.
+        return CombatSupply?0:1; // Zero preserves the current/manual stance.
+    }
     FString CorpseOwnerName(FString Name)
     {
         // ACE strips administrator markers from Creature_Death's LongDesc to
@@ -109,9 +118,10 @@ void UACEPluginSubsystem::ObserveAppraisal(const FACEAppraisalInfo& Info)
     if(Client&&Client->GetWorldObject(Info.ObjectGuid,Item))RememberEquipmentAppraisal(Item,Info);
     for(const auto& P:Plugins)if(P->WaitAction==TEXT("identify")&&P->WaitItem==Info.ObjectGuid)
     {
-        P->NextAction=FMath::Min(P->NextAction,P->ActionSentAt+.25);
+        const bool CorpseAssessment=P->IsPolicy()&&Client&&Client->GetWorldObject(Info.ObjectGuid,Item)&&Item.IsCorpse();
+        P->NextAction=FMath::Min(P->NextAction,CorpseAssessment?FPlatformTime::Seconds():P->ActionSentAt+.25);
         P->NextDecision=0;P->WaitAction.Empty();
-        if(P->IsPolicy()&&P->Running&&Info.ObjectGuid==CombatTarget)
+        if(P->IsPolicy()&&P->Running&&(Info.ObjectGuid==CombatTarget||CorpseAssessment))
         {P->NextAction=0;ScheduleDecisionWake(FPlatformTime::Seconds());}
     }
     // A slow reply can arrive after RefreshActionWait expired the ID wait.
@@ -120,6 +130,15 @@ void UACEPluginSubsystem::ObserveAppraisal(const FACEAppraisalInfo& Info)
     if(auto P=PolicyPlugin();P&&P->Running&&Info.ObjectGuid==CombatTarget
         &&P->WaitAction.IsEmpty()&&!PendingSpell&&P->NextAction<=FPlatformTime::Seconds())
     {P->NextDecision=0;ScheduleDecisionWake(FPlatformTime::Seconds());}
+    // A pipelined appraisal has no WaitAction. New data can be used on the
+    // next frame; retain any newer cast or inventory action gate.
+    if(Client&&Client->GetOpenExternalContainerGuid()&&Client->GetWorldObject(Info.ObjectGuid,Item)
+        &&Item.ContainerId==Client->GetOpenExternalContainerGuid())
+        if(auto P=PolicyPlugin();P&&P->Running)
+        {
+            P->NextDecision=0;
+            ScheduleDecisionWake(FMath::Max(P->NextDecision,P->NextAction));
+        }
 }
 void UACEPluginSubsystem::UnbindCombatEvents()
 {
@@ -129,16 +148,41 @@ void UACEPluginSubsystem::UnbindCombatEvents()
         S->OnObjectDeleted.Remove(TargetDeletedHandle);S->OnObjectCreated.Remove(TargetCreatedHandle);
         S->OnVitalsUpdated.Remove(CombatVitalsHandle);
         S->OnPositionUpdate.Remove(FollowPositionHandle);
+        S->OnAttackDone.Remove(AttackDoneHandle);
+        S->OnInventoryStateChanged.Remove(InventoryStateHandle);
     }
 }
 void UACEPluginSubsystem::WakeCombatDecision()
 {
     auto P=PolicyPlugin();if(!P||!P->Running)return;
-    // Physical attack's retry throttle is not a server action lock. Release
-    // only that delay; casts, inventory transfers and equipment still wait.
+    // Events can reconsider the target immediately without acknowledging a
+    // pending cast, inventory transfer or equipment change.
     if(PhysicalAttackOwner==P->Id&&P->WaitAction.IsEmpty()&&!PendingSpell
-        &&(P->NextAction==PhysicalAttackNextSendAt||P->NextAction<=FPlatformTime::Seconds()))P->NextAction=0;
+        &&P->NextAction<=FPlatformTime::Seconds())P->NextAction=0;
     P->NextDecision=0;ScheduleDecisionWake(FPlatformTime::Seconds());
+}
+void UACEPluginSubsystem::ObserveAttackDone(uint32 Error)
+{
+    auto P=PolicyPlugin();if(!P||!P->Running)return;
+    auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
+    // AttackDone(0) with repeat enabled starts the next power/accuracy refill.
+    // A terminal result (or a single attack) is immediately eligible for retry.
+    // Never periodically resend an attack that the server is still repeating.
+    if(PhysicalAttackOwner==P->Id&&(Error||!C->IsCharacterOptionSet(0x00)))
+    {PhysicalAttackOwner.Empty();PhysicalAttackTarget=0;}
+    if(CombatTarget||P->CombatTransitionIntent)WakeCombatDecision();
+}
+void UACEPluginSubsystem::ObserveInventoryStateChanged()
+{
+    auto P=PolicyPlugin();if(!P||!P->Running)return;
+    const bool Waiting=!P->WaitAction.IsEmpty()||P->CombatTransitionIntent.IsValid();
+    RefreshActionWait(*P);
+    auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();FACEWorldObject Container;
+    if(Waiting||(C->GetWorldObject(C->GetOpenExternalContainerGuid(),Container)&&Container.IsCorpse()))
+    {
+        P->NextDecision=0;
+        ScheduleDecisionWake(FPlatformTime::Seconds());
+    }
 }
 void UACEPluginSubsystem::ReleaseCombatTarget(int32 Guid)
 {
@@ -160,7 +204,7 @@ void UACEPluginSubsystem::ReleaseCombatTarget(int32 Guid)
     WakeCombatDecision();if(CombatTarget==Guid)CombatTarget=0;
     if(P&&P->WaitAction==TEXT("identify")&&P->WaitItem==Guid)
     {P->WaitAction.Empty();P->NextAction=0;}
-    if(PhysicalAttackTarget==Guid){PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();PhysicalAttackNextSendAt=0;}
+    if(PhysicalAttackTarget==Guid){PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();}
     // Do not clear PendingSpell: its untagged UseDone still belongs to that
     // cast. A death event can arrive while a projectile or recoil is active.
 }
@@ -231,6 +275,14 @@ void UACEPluginSubsystem::ObserveTargetCreated(const FACEWorldObject& Object)
         CorpseFirstSeen.Add(Object.Guid,FPlatformTime::Seconds());
         if(LastCombatDeath&&FPlatformTime::Seconds()-N(LastCombatDeath,TEXT("time"))<8)WakeCombatDecision();
     }
+    else if(Object.IsAttackable()&&!Object.bIsPlayer&&!Object.PetOwnerId&&!Object.bDying
+        &&!Object.ContainerId&&!Object.WielderId&&!Object.bAppearanceOnlyUpdate&&!Object.bAttachmentOnlyUpdate)
+    {
+        // A newly visible opponent should not wait for the idle maintenance
+        // poll. The ordinary policy still checks LOS, range, rules and recovery;
+        // this wake cannot bypass a cast or an inventory transaction.
+        WakeCombatDecision();
+    }
     // VT fo retains opened corpse IDs across Stop and visibility releases,
     // but a new corpse at a different position can reuse an old ID.
     if(const auto* Record=LootedCorpses.Find(Object.Guid);Record&&Object.bHasPosition)
@@ -239,6 +291,9 @@ void UACEPluginSubsystem::ObserveTargetCreated(const FACEWorldObject& Object)
 }
 void UACEPluginSubsystem::ObserveCombatVitals(const FACEPlayerVitals& Vitals)
 {
+    // Combat-mode confirmations share this event even if HP/stamina/mana did
+    // not change. Resume the queued attack/equipment action on the next frame.
+    if(auto P=PolicyPlugin();P&&P->Running&&P->CombatTransitionIntent)WakeCombatDecision();
     const FIntVector Current(Vitals.Health,Vitals.Stamina,Vitals.Mana);
     if(Current==LastCombatVitals)return;
     LastCombatVitals=Current;
@@ -325,6 +380,15 @@ void UACEPluginSubsystem::ObserveUseDone(uint32 Error)
         ScheduleDecisionWake(BuffRetryAt);return;
     }
     CompletePendingAction(Error);
+    // Corpse UseDone can trail the contents/pickup update. Resume promptly
+    // once the real use lock clears; this does not acknowledge a transfer.
+    if(auto P=PolicyPlugin();P&&P->Running)
+    {
+        auto* Client=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();FACEWorldObject Container;
+        if(P->WaitAction==TEXT("loot")||P->WaitAction==TEXT("open_corpse")
+            ||(Client->GetWorldObject(Client->GetOpenExternalContainerGuid(),Container)&&Container.IsCorpse()))
+        {P->NextDecision=0;ScheduleDecisionWake(FPlatformTime::Seconds());}
+    }
 }
 void UACEPluginSubsystem::CompleteConfirmedBuff()
 {
@@ -342,11 +406,11 @@ void UACEPluginSubsystem::CompletePendingAction(uint32 Error)
     // UseDone releases the caster even while a launched projectile is still
     // travelling. Damage/enchantment confirmation is tracked separately.
     // Wake on the next frame like VT's SchedulePoke, rather than adding up to
-    // half a second from the idle ticker. Fizzles/rejections retain backoff.
+    // half a second from the idle ticker. Rejections also return control to
+    // policy immediately, where bounded failure/retry handling lives.
     if(PendingSpell)if(auto Owner=Find(PendingSpellOwner))
     {
-        const bool Completed=!PendingSpellFizzled&&!Error;
-        Owner->NextAction=FMath::Min(Owner->NextAction,Completed?FPlatformTime::Seconds():PendingSpellAt+.5);
+        Owner->NextAction=FMath::Min(Owner->NextAction,FPlatformTime::Seconds());
         Owner->NextDecision=0;
         if(Owner->Running)ScheduleDecisionWake(Owner->NextAction);
     }
@@ -561,6 +625,8 @@ void UACEPluginSubsystem::RefreshAutomationData()
         TargetDeletedHandle=Session->OnObjectDeleted.AddUObject(this,&UACEPluginSubsystem::ObserveTargetDeleted);
         TargetCreatedHandle=Session->OnObjectCreated.AddUObject(this,&UACEPluginSubsystem::ObserveTargetCreated);
         CombatVitalsHandle=Session->OnVitalsUpdated.AddUObject(this,&UACEPluginSubsystem::ObserveCombatVitals);
+        AttackDoneHandle=Session->OnAttackDone.AddUObject(this,&UACEPluginSubsystem::ObserveAttackDone);
+        InventoryStateHandle=Session->OnInventoryStateChanged.AddUObject(this,&UACEPluginSubsystem::ObserveInventoryStateChanged);
         PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();CombatOutcomes.Empty();OffensiveCasts.Empty();ActionOutcomes.Empty();
         TellHandle=Session->OnPlayerTell.AddUObject(this,&UACEPluginSubsystem::ObservePlayerTell);ClearBuffRequests();
         DataPlayer=C->GetPlayerGuid();DataServer=C->GetServerName();NextAppraisalScan=0;Appraisals.Empty();TargetAppraisalTimes.Empty();TargetHealthSamples.Empty();CachedSpeciesNames.Reset();CorpseFirstSeen.Empty();LootedCorpses.Empty();AppraisalRequests.Empty();ItemBuffs.Empty();
@@ -1289,13 +1355,13 @@ bool UACEPluginSubsystem::PrepareCombatAction(FACEClientPlugin& P,const TSharedP
     // queued. Keep both weapons equipped until the terminal AttackDone arrives.
     const bool SameAttack=S(I,TEXT("action"))==TEXT("attack")&&Session->IsCombatModeConfirmed(Mode);
     const bool Cancel=!SameAttack&&(Session->IsServerAttackInProgress()||(!PhysicalAttackOwner.IsEmpty()&&!Session->GetLastAttackError()));
-    if(!Cancel&&Session->IsCombatModeConfirmed(Mode))return true;
+    if(!Cancel&&Session->IsCombatModeConfirmed(Mode?Mode:C->GetPlayerVitalsView().CombatMode))return true;
     P.CombatTransitionIntent=MakeShared<FJsonObject>(*I);P.CombatTransitionMode=Mode;
     P.CombatTransitionStarted=FPlatformTime::Seconds();P.CombatTransitionRequested=false;
     P.WaitingAttackCancel=Cancel;P.AttackCancelRevision=Session->GetCombatEventRevision();
     if(Cancel)
     {
-        Session->SendCancelAttack();PhysicalAttackOwner.Empty();PhysicalAttackTarget=0;PhysicalAttackNextSendAt=0;
+        Session->SendCancelAttack();PhysicalAttackOwner.Empty();PhysicalAttackTarget=0;
         P.Status=TEXT("Waiting for the current attack to finish");
     }
     UpdateCombatTransition(P);
@@ -1331,13 +1397,16 @@ void UACEPluginSubsystem::UpdateCombatTransition(FACEClientPlugin& P)
         P.WaitingAttackCancel=false;
     }
     if(C->IsUseBusy()||PendingSpell||InventoryInteractionPending()){ScheduleDecisionWake(Now+.05);return;}
-    if(!P.CombatTransitionRequested&&!Session->IsCombatModeConfirmed(P.CombatTransitionMode))
+    // A supply can be used in any settled stance. Do not restore a captured
+    // stance if the player changed modes while its attack cancellation waited.
+    const int32 Mode=P.CombatTransitionMode?P.CombatTransitionMode:C->GetPlayerVitalsView().CombatMode;
+    if(P.CombatTransitionMode&&!P.CombatTransitionRequested&&!Session->IsCombatModeConfirmed(Mode))
     {
         P.CombatTransitionRevision=Session->GetCombatModeRevision();P.CombatTransitionRequested=true;
         C->SendChangeCombatMode(P.CombatTransitionMode);
         P.Status=TEXT("Waiting for the server combat stance");
     }
-    if((P.CombatTransitionRequested&&Session->GetCombatModeRevision()==P.CombatTransitionRevision)||!Session->IsCombatModeConfirmed(P.CombatTransitionMode))
+    if((P.CombatTransitionRequested&&Session->GetCombatModeRevision()==P.CombatTransitionRevision)||!Session->IsCombatModeConfirmed(Mode))
     {ScheduleDecisionWake(Now+.05);return;}
     auto I=P.CombatTransitionIntent;P.CombatTransitionIntent.Reset();P.NextAction=0;P.NextDecision=0;
     Execute(P,I); // Revalidate the target, ownership and permissions after the wait.
@@ -1347,8 +1416,10 @@ void UACEPluginSubsystem::UpdateCombatTransition(FACEClientPlugin& P)
 void UACEPluginSubsystem::TrackActionWait(FACEClientPlugin& P,const FString& Action,int32 Item,int32 Value)
 {
     P.WaitAction=Action;P.WaitItem=Item;P.WaitValue=Value;
+    P.WaitMergeTarget=0;P.WaitMergeCount=0;
     P.WaitConsumedItems.Reset();
     P.WaitSerial=ActionSerial;P.ActionSentAt=FPlatformTime::Seconds();
+    if(P.Running&&(Action==TEXT("loot")||Action==TEXT("open_corpse")||Action==TEXT("equip")))ScheduleDecisionWake(P.ActionSentAt+.05);
 }
 void UACEPluginSubsystem::RefreshActionWait(FACEClientPlugin& P)
 {
@@ -1365,7 +1436,17 @@ void UACEPluginSubsystem::RefreshActionWait(FACEClientPlugin& P)
         if(Complete)for(int32 Id:P.WaitConsumedItems)if(Session->GetWorldObjects().Contains(Id)){Complete=false;break;}
     }
     else if(P.WaitAction==TEXT("loot"))
+    {
         Complete=Item&&(C->IsOwnedInventoryItem(*Item)||Item->StackSize<P.WaitValue);
+        if(P.WaitMergeTarget)
+        {
+            const auto* Target=Session?Session->GetWorldObjects().Find(P.WaitMergeTarget):nullptr;
+            // Full auto-merges delete the source GUID instead of moving it.
+            // Both sides must arrive; disappearance alone is not a receipt.
+            Complete=(!Item||Item->StackSize<P.WaitValue)&&Target
+                &&C->IsOwnedInventoryItem(*Target)&&Target->StackSize>=P.WaitMergeCount;
+        }
+    }
     else if(P.WaitAction==TEXT("equip"))
         Complete=Item&&(P.WaitValue?Item->WielderId==C->GetPlayerGuid()&&(Item->CurrentWieldedLocation&P.WaitValue)!=0:
             C->IsOwnedInventoryItem(*Item)&&!Item->CurrentWieldedLocation);
@@ -1375,11 +1456,13 @@ void UACEPluginSubsystem::RefreshActionWait(FACEClientPlugin& P)
     {
         // Resume on the relevant server update, not the worst-case timeout.
         // Lua still confirms quantities/ownership, and the host retains busy gates.
-        P.NextAction=FMath::Min(P.NextAction,Consuming?FPlatformTime::Seconds():P.ActionSentAt+.25);
+        const bool CorpseAction=P.WaitAction==TEXT("loot")||P.WaitAction==TEXT("open_corpse");
+        const bool EquipmentAction=P.WaitAction==TEXT("equip");
+        P.NextAction=FMath::Min(P.NextAction,(Consuming||CorpseAction||EquipmentAction)?FPlatformTime::Seconds():P.ActionSentAt+.25);
         P.NextDecision=0;P.WaitAction.Empty();P.WaitConsumedItems.Reset();
         // Defer policy execution until after network dispatch; never issue a
         // new destructive action from inside an inventory-removal callback.
-        if(Consuming&&P.Running)ScheduleDecisionWake(P.NextAction);
+        if((Consuming||CorpseAction||EquipmentAction)&&P.Running)ScheduleDecisionWake(P.NextAction);
     }
     else if(FPlatformTime::Seconds()>=P.NextAction)
     {
@@ -1451,10 +1534,15 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
         if(Found)
         {
             // Resistance appraisal is optional; combat has a neutral fallback.
-            // Inventory/corpse appraisal still gates rules and destructive uses.
+            // Other inventory appraisal still gates rules and destructive uses.
             const bool CombatAssessment=P.IsPolicy()&&S(I,TEXT("activity"))==TEXT("combat")
                 &&Item.IsAttackable()&&!Item.bIsPlayer&&!Item.PetOwnerId;
-            if(CombatAssessment)P.NextAction=Now;
+            // Opt-in policies own their pending limit/retries and must wait for
+            // identified data before matching dependent rules. Validate the
+            // current container at dispatch, not the policy's earlier snapshot.
+            const bool PipelinedItem=B(I,TEXT("pipeline"))&&P.IsPolicy()
+                &&C->GetOpenExternalContainerGuid()&&Item.ContainerId==C->GetOpenExternalContainerGuid();
+            if(CombatAssessment||PipelinedItem)P.NextAction=Now;
             else TrackActionWait(P,Action,Id);
             // Share the request ledger with the background inventory scanner so
             // it cannot immediately duplicate a policy-requested appraisal.
@@ -1561,7 +1649,8 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
                 PendingManaRefresh=true;
             }
             PendingResourceRefresh.Add(Id);PendingResourceRefresh.Add(Target.Guid);
-            if(!PrepareCombatAction(P,I,1))return true;TrackActionWait(P,TEXT("use"));C->SendUseWithTarget(Id,Target.Guid);P.NextAction=Now+3;
+            if(!PrepareCombatAction(P,I,ItemUseCombatMode(Item)))return true;
+            TrackActionWait(P,TEXT("use"));C->SendUseWithTarget(Id,Target.Guid);P.NextAction=Now+3;
         }
         else ReportActivityFailure(P,I,TEXT("Item or target is unavailable for use"));
         return true;
@@ -1601,7 +1690,7 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
             const auto* Appraisal=Appraisals.Find(Id);
             const bool SummoningDevice=ACEPetDevice::IsSummoningDevice(Appraisal);
             if(SummoningDevice)PendingResourceRefresh.Add(Id);
-            if(!SummoningDevice&&!PrepareCombatAction(P,I,1))return true;
+            if(!SummoningDevice&&!PrepareCombatAction(P,I,ItemUseCombatMode(Item)))return true;
             TrackActionWait(P,TEXT("use"));
             if(ACEItemUseable::IsTargeted(Item.ItemUseable))C->SendUseWithTarget(Id,C->GetPlayerGuid());else C->SendUseItem(Id);
             P.NextAction=Now+3;
@@ -1660,17 +1749,24 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
                 return true;
             }
             TrackActionWait(P,Action,Id,Item.StackSize);
+            int32 MergeTo=0;
             if(Amount<Item.StackSize)
             {
                 // A partial pickup into a full pack must merge directly. Split
                 // creates a new stack and requires a free slot on the server.
-                int32 MergeTo=0;const auto Offered=C->GetTradeSelfItems();
+                const auto Offered=C->GetTradeSelfItems();
                 for(const auto& Target:C->GetPackItems(Destination))
                     if(C->IsOwnedInventoryItem(Target)&&!Offered.Contains(Target.Guid)
                         &&ACEInventoryRules::MergeAmount(Item,Target)>=Amount){MergeTo=Target.Guid;break;}
-                if(MergeTo)C->SendStackableMerge(Id,MergeTo,Amount);
-                else C->SendStackableSplitToContainer(Id,Destination,0,Amount);
             }
+            else if(auto Session=C->GetSession())MergeTo=Session->FindContainerMergeTarget(Id,Destination,Amount);
+            if(MergeTo)
+            {
+                FACEWorldObject Target;
+                if(C->GetWorldObject(MergeTo,Target)){P.WaitMergeTarget=MergeTo;P.WaitMergeCount=Target.StackSize+Amount;}
+                C->SendStackableMerge(Id,MergeTo,Amount);
+            }
+            else if(Amount<Item.StackSize)C->SendStackableSplitToContainer(Id,Destination,0,Amount);
             else C->SendPutItemInContainer(Id,Destination,0);
         }
         P.NextAction=Now+1;return true;

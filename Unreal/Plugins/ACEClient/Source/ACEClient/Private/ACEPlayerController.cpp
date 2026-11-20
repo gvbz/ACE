@@ -5532,6 +5532,8 @@ void AACEPlayerController::BeginWorldTransition(const TCHAR* Reason, bool bPlayE
 	PortalWorldRevealElapsed = -1.f;
 	if (PlayerCameraManager) PlayerCameraManager->UnlockFOV();
 	bWorldEntryRecoveryAttempted = false;
+	bWorldEntryPositionChecked = false;
+	bWorldEntryPositionOutsideCells = false;
 	bAwaitingRecoveryDestination = false;
 	WorldEntryRecoveryElapsed = 0.f;
 	WorldEntryFailureReason.Reset();
@@ -5861,6 +5863,8 @@ bool AACEPlayerController::FindWorldEntryPlacement(FVector& OutCapsuleCenter, EW
 
 void AACEPlayerController::ResetWorldEntryDestination()
 {
+	bWorldEntryPositionChecked = false;
+	bWorldEntryPositionOutsideCells = false;
 	// F751 precedes the position. A recall can replace the destination while the
 	// tunnel is already visible; the old LoginComplete must not acknowledge it.
 	bEnterWorldLoading = true;
@@ -5923,7 +5927,7 @@ bool AACEPlayerController::TickWorldEntryRecovery(float DeltaTime, const FString
 	FVector Placement;
 	EWorldEntryPlacement PlacementState;
 	if (FindWorldEntryPlacement(Placement, &PlacementState) && IsWorldEntryGeometryReady()) return false;
-	if (PlacementState != EWorldEntryPlacement::Blocked)
+	if (PlacementState != EWorldEntryPlacement::Blocked && !bWorldEntryPositionOutsideCells)
 	{
 		FailWorldEntry(TEXT("The destination geometry could not finish loading. Please reconnect and check the client DAT files. No lifestone recall was requested."));
 		return true;
@@ -6174,6 +6178,34 @@ bool AACEPlayerController::RetirePortalScene()
 	return PortalRetirement == EPortalRetirement::Complete;
 }
 
+void AACEPlayerController::ResolveWorldEntryDestinationCell()
+{
+	if (!Client || !Client->GetSession()) return;
+	FACEPosition Pose = Client->GetPlayerPosition();
+	if (bWorldEntryPositionChecked && Pose.CellId == CheckedWorldEntryPosition.CellId
+		&& Pose.Location.Equals(CheckedWorldEntryPosition.Location, .00001)) return;
+	bWorldEntryPositionOutsideCells = false;
+	auto* Dat = GetGameInstance() ? GetGameInstance()->GetSubsystem<UACEDatSubsystem>() : nullptr;
+	if (!Pose.IsValid() || !ACECellTransit::IsIndoorCell(Pose.CellId) || !Dat || !Dat->IsDatReady() || !Dat->IsCellReady()) return;
+	uint32 ResolvedCell = Pose.CellId;
+	bool Complete = false;
+	const bool Found = Dat->ResolveWorldEntryCell(Pose, ResolvedCell, Complete);
+	if (Found && ResolvedCell != uint32(Pose.CellId))
+	{
+		UE_LOG(LogTemp, Log, TEXT("ACE: resolved arrival cell 0x%08X -> 0x%08X at %s"),
+			Pose.CellId, ResolvedCell, *Pose.Location.ToString());
+		Pose.CellId = ResolvedCell;
+		// Correct occupancy before streaming, preserving the server's exact XYZ
+		// and rotation. Position reporting stays suspended until safe placement.
+		Client->GetSession()->SetLocalPosition(Pose);
+	}
+	CheckedWorldEntryPosition = Pose;
+	bWorldEntryPositionChecked = true;
+	// A complete DAT search with no containing room is invalid placement, not
+	// a slow collision cook. Allow the existing one-shot server recall at timeout.
+	bWorldEntryPositionOutsideCells = Complete && !Found;
+}
+
 void AACEPlayerController::TickWorldTransition()
 {
 	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.016f;
@@ -6217,6 +6249,7 @@ void AACEPlayerController::TickWorldTransition()
 		{
 			if (UACEDatSubsystem* Dat = GI->GetSubsystem<UACEDatSubsystem>())
 			{
+				ResolveWorldEntryDestinationCell();
 				if (!bDestinationStreamingStarted)
 				{
 					// Keep submitting tracked portal frames while cooked parents load.

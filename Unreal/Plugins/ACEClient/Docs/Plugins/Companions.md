@@ -195,6 +195,9 @@ This API does not load arbitrary textures or execute custom Slate/widget code.
 return {messages={{to="other_tracker",topic="quest_changed",text="red_rats"}}}
 ```
 
+For messages between separate client processes, API 2 companions can instead
+use [`client_messaging`](PublicAPI.md#channels-between-local-clients).
+
 Both sender and receiver must have `messaging`; the receiver must be a running
 companion. Up to eight messages per callback, topic up to 64 characters, text up
 to 1,024. The recipient receives `{type="message",sender="my_tracker",topic=...,text=...}`

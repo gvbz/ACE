@@ -32,6 +32,7 @@ class ACECLIENT_API AACEPlayerController : public APlayerController
 {
 	GENERATED_BODY()
 	friend class FACEPerformanceScene;
+	friend class FACEFrontendFrameLimitTest;
 	friend class FACERemoteTurnTargetsTest;
 	friend class FACEWaspNetworkLagTest;
 	friend class FACEDungeonInterfacesTest;
@@ -56,6 +57,7 @@ class ACECLIENT_API AACEPlayerController : public APlayerController
 	friend class FACERetailWorldEntryTest;
 	friend class FACEPortalPlacementTest;
 	friend class FACEPortalDropTest;
+	friend class FACEPortalReportedPlacementsTest;
 	friend class FACEPortalMotionTest;
 	friend class FACELoadingTransitionTest;
 	friend class FACEPortalInterfaceTest;
@@ -601,6 +603,7 @@ protected:
 	bool TickLogOffTransition();
 	void PreparePortalScreen();
 	void TickWorldTransition();
+	void ResolveWorldEntryDestinationCell();
 	void BeginWorldReveal();
 	void FinishWorldTransition();
 	bool IsWorldTransitionReady(FString* OutBlockingGate = nullptr, bool bIgnoreServerUnhide = false) const;
@@ -658,6 +661,9 @@ protected:
 	/** True after LoginComplete was sent for the current portal/enter-world transition. */
 	bool bPortalExitNotified = false;
 	bool bWorldEntryRecoveryAttempted = false;
+	FACEPosition CheckedWorldEntryPosition;
+	bool bWorldEntryPositionChecked = false;
+	bool bWorldEntryPositionOutsideCells = false;
 	bool bAwaitingRecoveryDestination = false;
 	float WorldEntryRecoveryElapsed = 0.f;
 	FString WorldEntryFailureReason;

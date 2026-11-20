@@ -7,6 +7,7 @@
 #include "ACEDatSubsystem.h"
 #include "ACEClientSubsystem.h"
 #include "ACESession.h"
+#include "Mods/ACEPluginSubsystem.h"
 #include "UI/ACEUICanvasWidget.h"
 #include "UI/ACEUIElementManager.h"
 #include "UI/ACEUILayoutResolver.h"
@@ -32,6 +33,13 @@ bool FACERetailSpellComponentsTest::RunTest(const FString&)
     Session.PlayerGuid = 100;
     Session.AccountName = TEXT("spell-component-regression");
     Session.ContainerContents.Add(Session.PlayerGuid);
+    auto* Plugins=GI->GetSubsystem<UACEPluginSubsystem>();
+    auto SnapshotComponents=[&]()
+    {
+        const auto Book=Plugins->Snapshot()->GetArrayField(TEXT("spells"));
+        TestEqual(TEXT("Native automation snapshot contains the selected known spell"),Book.Num(),1);
+        return Book.Num()?Book[0]->AsObject()->GetObjectField(TEXT("components")):MakeShared<FJsonObject>();
+    };
 
     auto* Resources = NewObject<UACEUIResourceResolver>(); Resources->Initialize(Dat);
     auto* Manager = NewObject<UACEUIElementManager>(); Manager->Initialize();
@@ -75,9 +83,16 @@ bool FACERetailSpellComponentsTest::RunTest(const FString&)
             { Spell = Pair.Key; break; }
         if (!TestTrue(FString::Printf(TEXT("Retail level-six spell exists for school %u"), School), Spell != 0)) continue;
         if (School == 2) SelfSpell = Spell;
+        Session.KnownSpells={int32(Spell)};
         const FString Original = Inspect(Spell);
         TestTrue(TEXT("Ordinary formula has ingredients"), Original.Contains(TEXT("Ingredients:")));
         TestFalse(TEXT("Ordinary formula uses colored rather than prismatic tapers"), Original.Contains(TEXT("Prismatic Taper")));
+        TMap<FString,int32> Ordinary,Focused;
+        TestTrue(TEXT("Automation resolves the full ordinary formula"),Dat->TryGetPluginSpellComponents(Spell,false,Ordinary));
+        TestTrue(TEXT("Ordinary automation checks more than its scarab"),Ordinary.Num()>1);
+        for(const auto& Part:Ordinary)TestTrue(TEXT("Automation and inspection agree on ordinary ingredients"),Original.Contains(Part.Key));
+        TestFalse(TEXT("No focus before ownership"),(Dat->GetPlayerSpellFocusMask()&(1u<<School))!=0);
+        TestFalse(TEXT("Cached automation initially uses ordinary components"),SnapshotComponents()->HasField(TEXT("Prismatic Taper")));
 
         FACEWorldObject Focus; Focus.Guid = 200; Focus.WeenieClassId = FocusWCIDs[School];
         Focus.ObjectDescriptionFlags = ACEObjectDescFlag::RequiresPackSlot;
@@ -89,6 +104,11 @@ bool FACERetailSpellComponentsTest::RunTest(const FString&)
             Client->GetPlayerPacks().ContainsByPredicate([](const auto& Item) { return Item.Guid == 200; }));
         const FString FocusDetails = RefreshOpenInspection();
         TestTrue(TEXT("Open inspection immediately switches to four prismatic tapers"), FocusDetails.Contains(TEXT("Prismatic Taper (4)")));
+        TestTrue(TEXT("Automation recognizes the same equipped focus"),(Dat->GetPlayerSpellFocusMask()&(1u<<School))!=0);
+        TestTrue(TEXT("Automation resolves the full focused formula"),Dat->TryGetPluginSpellComponents(Spell,true,Focused));
+        TestEqual(TEXT("Level-six casting needs all four prismatic tapers"),Focused.FindRef(TEXT("Prismatic Taper")),4);
+        TestEqual(TEXT("Focus receipt invalidates cached spell component requirements"),SnapshotComponents()->GetNumberField(TEXT("Prismatic Taper")),4.);
+        for(const auto& Part:Focused)TestTrue(TEXT("Automation and inspection agree on focused ingredients"),FocusDetails.Contains(Part.Key));
         TestNotEqual(TEXT("Foci changes the actual displayed requirements"), FocusDetails, Original);
 
         Session.WorldObjects[200].WeenieClassId = FocusWCIDs[School % 5 + 1];
@@ -98,9 +118,13 @@ bool FACERetailSpellComponentsTest::RunTest(const FString&)
         TestEqual(TEXT("Moving the foci out restores the ordinary formula without reopening"), RefreshOpenInspection(), Original);
         auto& Bag = Session.WorldObjects.FindOrAdd(900); Bag.Guid = 900; Bag.ContainerId = Session.PlayerGuid;
         TestEqual(TEXT("A foci nested in an owned bag is not an equipped magic pack"), RefreshOpenInspection(), Original);
+        TestFalse(TEXT("Nested foci cannot bypass ordinary component checks"),(Dat->GetPlayerSpellFocusMask()&(1u<<School))!=0);
+        TestFalse(TEXT("Removing focus invalidates cached focused requirements"),SnapshotComponents()->HasField(TEXT("Prismatic Taper")));
         Session.WorldObjects.Remove(900);
         Session.PlayerVitals.StatQualityInts.Add(InfusedQualities[School], 1);
         TestEqual(TEXT("Infused school augmentation supplies the same formula without an item"), RefreshOpenInspection(), FocusDetails);
+        TestTrue(TEXT("Automation uses augmented focus without an item"),(Dat->GetPlayerSpellFocusMask()&(1u<<School))!=0);
+        TestEqual(TEXT("Augmentation invalidates cached ordinary requirements"),SnapshotComponents()->GetNumberField(TEXT("Prismatic Taper")),4.);
         Session.PlayerVitals.StatQualityInts[InfusedQualities[School]] = 0;
         TestEqual(TEXT("Removing the augmentation immediately restores ordinary requirements"), RefreshOpenInspection(), Original);
         MoveFocus(Session.PlayerGuid);

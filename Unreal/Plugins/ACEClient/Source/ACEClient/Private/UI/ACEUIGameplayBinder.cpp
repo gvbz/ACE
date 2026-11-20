@@ -8168,6 +8168,20 @@ bool UACEUIGameplayBinder::GetStatTooltipAt(FVector2D Absolute, FString& OutText
 		OutText = CastSpellLabel->GetToolTipText().ToString();
 		return !OutText.IsEmpty();
 	}
+	if (Canvas && ActivePanelPage==TEXT("SocialPanel_Field") && ActiveSocialTab==TEXT("FellowshipPage"))
+	{
+		// Retail labels do not receive Slate pointer events; use the shared
+		// themed tooltip hit test so clipped names and XP details work in VR too.
+		for (int32 I=0; I<FellowRows.Num(); ++I)
+		{
+			const UTextBlock* Name=FellowRows[I];
+			const UTextBlock* Stats=FellowDetailLabels.IsValidIndex(I*4)?FellowDetailLabels[I*4].Get():nullptr;
+			if (Name && Name->GetVisibility()!=ESlateVisibility::Collapsed && Canvas->IsWidgetExposedAt(Name,Absolute))
+			{OutText=Name->GetToolTipText().ToString();return !OutText.IsEmpty();}
+			if (Stats && Stats->GetVisibility()!=ESlateVisibility::Collapsed && Canvas->IsWidgetExposedAt(Stats,Absolute))
+			{OutText=Stats->GetToolTipText().ToString();return !OutText.IsEmpty();}
+		}
+	}
 	if (!Canvas || ActivePanelPage != TEXT("SkillManagementPanel_Field")) return false;
 	const bool Attributes = ActiveSkillTab == TEXT("AttributePage");
 	if (!Attributes && ActiveSkillTab != TEXT("SkillPage")) return false;
