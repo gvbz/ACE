@@ -264,6 +264,22 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             auto Refresh=[&](){auto Out=MakeShared<FJsonObject>();H->ExtendSnapshot(Out);return Out;};
             auto Money=Refresh();TestEqual(TEXT("Live restock purse counts carried pyreals"),Money->GetNumberField(TEXT("pyreals")),100.);
             TestEqual(TEXT("Trade note redemption uses face value per unit"),Money->GetArrayField(TEXT("vendor_trade_notes"))[0]->AsObject()->GetNumberField(TEXT("unit_value")),1000.);
+            {
+                const auto SavedQualities=Session.PlayerVitals.StatQualityInts;
+                ON_SCOPE_EXIT {Session.PlayerVitals.StatQualityInts=SavedQualities;};
+                Session.ApplyPlayerIntQuality(20,430112809);
+                Money=Refresh();
+                TestEqual(TEXT("Restock funds match the vendor UI's bank-enabled CoinValue"),Money->GetNumberField(TEXT("vendor_purchase_funds")),double(Session.GetVendorPurchaseFunds()));
+                TestEqual(TEXT("Bank balance is not replaced by or added to carried stacks"),Money->GetNumberField(TEXT("vendor_purchase_funds")),430112809.);
+                TestEqual(TEXT("Physical coin snapshot keeps its existing meaning"),Money->GetNumberField(TEXT("pyreals")),100.);
+                Session.ApplyPlayerIntQuality(20,0);
+                TestEqual(TEXT("Spent bank funds update on the next decision"),Refresh()->GetNumberField(TEXT("vendor_purchase_funds")),0.);
+                Session.PlayerVitals.StatQualityInts.Remove(20);
+                TestEqual(TEXT("Missing CoinValue cannot infer spendable bank funds"),Refresh()->GetNumberField(TEXT("vendor_purchase_funds")),0.);
+                Session.ApplyPlayerIntQuality(20,430112809);Session.OpenVendorGuid=0;
+                TestEqual(TEXT("Closing the vendor removes its spendable balance"),Refresh()->GetNumberField(TEXT("vendor_purchase_funds")),0.);
+                Session.OpenVendorGuid=Vendor.Guid;
+            }
             auto CountSales=[&](){int32 Count=0;for(const auto& Packet:Session.CachedC2SPackets){FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);if(R.CanRead(4)&&R.ReadUInt32()==ACEGameAction::Sell)++Count;}return Count;};
             auto Redeem=MakeShared<FJsonObject>();Redeem->SetNumberField(TEXT("vendor"),500);Redeem->SetNumberField(TEXT("item"),600);Redeem->SetNumberField(TEXT("count"),4);
             Session.CachedC2SPackets.Reset();H->ExecuteInventory(*P,Redeem,TEXT("split_note"));
@@ -2014,8 +2030,11 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             for(uint32 Id=1;Id<7000&&!Bolt;++Id){FString Name;uint32 Icon;if(Dat->TryGetSpellInfo(Id,Name,Icon)&&Name==TEXT("Acid Stream I"))Bolt=Id;}
             if(!TestTrue(TEXT("Retail offensive spell found for target handoff"),Bolt!=0))return false;
             auto DeliverWake=[&](){FTSTicker::GetCoreTicker().RemoveTicker(H->DecisionWakeTicker);H->RunDecisionWake(.016f);};
-            for(int32 Mode:{2,4,8})for(int32 AppraisalResult:{-1,0,1})for(bool Approach:{false,true})for(bool LootEnabled:{false,true})
+            for(int32 Mode:{2,4,8})for(int32 AppraisalResult:{-1,0,1})for(bool Approach:{false,true})for(bool LootEnabled:{false,true})for(int32 SpawnPhase:{0,1,2})
             {
+                // Packet counts are per scenario; the live retransmit cache is
+                // bounded and must not evict earlier assertions in this matrix.
+                Session.CachedC2SPackets.Reset();
                 BuffPC->EndUseApproach();
                 P->VM=MakeShared<FACEPluginVM>();TestTrue(TEXT("Load shipped UCM for network handoff"),P->VM->Load(Source,Error));
                 P->Profile=MakeShared<FJsonObject>();P->Profile->SetStringField(TEXT("combat"),Mode==2?TEXT("melee"):Mode==4?TEXT("missile"):TEXT("magic"));
@@ -2041,8 +2060,8 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                 Session.WorldObjects.Remove(970);Session.WorldObjects.Remove(971);
                 H->NextMaintenanceAt=FPlatformTime::Seconds()+60;H->Tick(.016f);
                 TestEqual(TEXT("Empty area does not manufacture an attack target"),H->CombatTarget,0);
-                Session.WorldObjects.Add(970,FirstEnemy);Session.WorldObjects.Add(971,CloseEnemy);
-                Session.OnObjectCreated.Broadcast(FirstEnemy);Session.OnObjectCreated.Broadcast(CloseEnemy);
+                Session.WorldObjects.Add(970,FirstEnemy);Session.OnObjectCreated.Broadcast(FirstEnemy);
+                if(SpawnPhase==0){Session.WorldObjects.Add(971,CloseEnemy);Session.OnObjectCreated.Broadcast(CloseEnemy);}
                 Info=FACEAppraisalInfo();Info.ObjectGuid=970;Info.bSuccess=true;H->ObserveAppraisal(Info);
                 TestTrue(TEXT("Enemy arrival schedules acquisition immediately in every attack mode"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds());
                 DeliverWake();
@@ -2051,11 +2070,12 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                 H->AppraisalRequests.Empty();H->AppraisalRequests.Add(970,FPlatformTime::Seconds());
                 H->NextAppraisalScan=0;H->LastAppraisalRequest=FPlatformTime::Seconds()-2;
                 H->RefreshAutomationData();
-                TestTrue(TEXT("Next opponent is assessed while current fight continues"),H->AppraisalRequests.Contains(971)&&H->CombatTarget==970);
+                TestEqual(TEXT("Lookahead assesses only opponents already present"),H->AppraisalRequests.Contains(971),SpawnPhase==0);
+                TestEqual(TEXT("Lookahead keeps current fight"),H->CombatTarget,970);
                 const double RequestedAt=H->AppraisalRequests.FindRef(971);H->RefreshAutomationData();
                 TestEqual(TEXT("Lookahead preserves the existing appraisal request budget"),H->AppraisalRequests.FindRef(971),RequestedAt);
                 Info=FACEAppraisalInfo();Info.ObjectGuid=971;Info.bSuccess=AppraisalResult==1;
-                if(AppraisalResult>=0)H->ObserveAppraisal(Info);
+                if(SpawnPhase==0&&AppraisalResult>=0)H->ObserveAppraisal(Info);
                 const int32 Before=Mode==8?CastCount():AttackCount();
                 if(Approach)
                 {
@@ -2073,6 +2093,8 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                     Session.OnMotionUpdate.Broadcast(970,Dead);
                 }
                 else {Session.WorldObjects.Remove(970);Session.OnObjectDeleted.Broadcast(970);}
+                if(SpawnPhase==1)
+                {Session.WorldObjects.Add(971,CloseEnemy);Session.OnObjectCreated.Broadcast(CloseEnemy);}
                 if(LootEnabled)
                 {
                     FACEWorldObject Remains;Remains.Guid=973;Remains.Name=TEXT("Corpse of target one");
@@ -2085,14 +2107,33 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                     DeliverWake();TestEqual(TEXT("Death does not send a second spell before UseDone"),CastCount(),Before);
                     Ack(0);
                 }
+                if(SpawnPhase==2)
+                {
+                    DeliverWake(); // Let the no-target/death handoff run before the new arrival.
+                    if(!LootEnabled)
+                    {
+                        P->NextDecision=0;DeliverWake();
+                        TestTrue(TEXT("No-target policy reaches Ready before a late spawn"),P->Status.StartsWith(TEXT("Ready -")));
+                    }
+                    if(Approach)
+                    {
+                        // Movement and death notifications can arrive on different
+                        // queues. A late charge must not re-arm the dead target gate.
+                        FACEObjectMotionState LateCharge;LateCharge.MovementType=6;LateCharge.MoveToTargetGuid=970;LateCharge.MoveToDistance=.6f;
+                        BuffPC->BeginServerMoveTo(LateCharge);
+                    }
+                    Session.WorldObjects.Add(971,CloseEnemy);Session.OnObjectCreated.Broadcast(CloseEnemy);
+                }
                 DeliverWake();
-                if(AppraisalResult<0)
+                TestFalse(TEXT("A late charge toward the finished target cannot gate a new spawn"),BuffPC->IsUseApproachActive());
+                if(AppraisalResult<0||SpawnPhase>0)
                 {
                     TestTrue(TEXT("Unanswered monster appraisal does not hold the action gate"),P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds());
                     TestTrue(TEXT("Assessment schedules a short continuation instead of the idle poll"),H->DecisionWakeTicker.IsValid()&&H->DecisionWakeAt<=FPlatformTime::Seconds()+.06);
+                    if(SpawnPhase>0&&AppraisalResult>=0)H->ObserveAppraisal(Info);
                     P->NextDecision=0;DeliverWake();
                 }
-                TestEqual(*FString::Printf(TEXT("Mode %d sends next attack on death/completion wake: %s"),Mode,*P->Status),Mode==8?CastCount():AttackCount(),Before+1);
+                TestEqual(*FString::Printf(TEXT("Mode %d spawn phase %d appraisal %d approach %d loot %d sends next attack on death/completion wake: %s"),Mode,SpawnPhase,AppraisalResult,int32(Approach),int32(LootEnabled),*P->Status),Mode==8?CastCount():AttackCount(),Before+1);
                 TestEqual(TEXT("Real policy selects the next living enemy"),H->CombatTarget,971);
                 if(Mode==8)Ack(0);
             }
@@ -2101,11 +2142,17 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             auto Charge=[&](int32 Target){BuffPC->EndUseApproach();FACEObjectMotionState M;M.MovementType=6;M.MoveToTargetGuid=Target;M.MoveToDistance=.6f;BuffPC->BeginServerMoveTo(M);};
             Charge(971);BuffPC->EndCombatApproachTo(970);
             TestTrue(TEXT("Old target death leaves a different approach intact"),BuffPC->IsUseApproachActive());
+            TestEqual(TEXT("Living movement-only approach exposes its own target"),BuffPC->GetCombatApproachTarget(),971);
+            P->NextDecision=0;DeliverWake();
+            TestTrue(TEXT("Policy keeps a living target approach intact"),BuffPC->IsUseApproachActive());
             Charge(970);Session.bUseBusy=true;BuffPC->EndCombatApproachTo(970);
+            TestEqual(TEXT("Pending Use/Give is not an interruptible combat approach"),BuffPC->GetCombatApproachTarget(),0);
             TestTrue(TEXT("Target death cannot acknowledge a pending world use"),BuffPC->IsUseApproachActive());Session.bUseBusy=false;
             Charge(970);BuffPC->bApproachPickupIntoInventory=true;BuffPC->EndCombatApproachTo(970);
+            TestEqual(TEXT("Pending pickup is not an interruptible combat approach"),BuffPC->GetCombatApproachTarget(),0);
             TestTrue(TEXT("Target death leaves inventory pickup synchronization intact"),BuffPC->IsUseApproachActive());
             Charge(970);BuffPC->bAwaitingUseDone=true;BuffPC->EndCombatApproachTo(970);
+            TestEqual(TEXT("Outstanding controller receipt preserves its action gate"),BuffPC->GetCombatApproachTarget(),0);
             TestTrue(TEXT("Target death leaves controller UseDone wait intact"),BuffPC->IsUseApproachActive());BuffPC->EndUseApproach();
             for(int32 Mode:{2,4,8})
             {

@@ -187,6 +187,8 @@ public:
 	void EndUseApproach();
 	/** Release only the movement-only approach to a defeated combat target. */
 	void EndCombatApproachTo(int32 TargetGuid);
+	/** Movement-only target, excluding any pending Use/Give/pickup acknowledgment. */
+	int32 GetCombatApproachTarget() const;
 	bool IsUseApproachActive() const { return bServerMoveToActive; }
 	bool IsInventoryInteractionActive() const;
 	/** GameEvent UseDone — release local approach so idle StopMovement cannot cancel the chain. */

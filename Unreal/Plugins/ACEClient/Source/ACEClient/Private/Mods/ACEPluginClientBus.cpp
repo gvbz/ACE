@@ -14,8 +14,6 @@
 
 namespace
 {
-namespace ACEPluginClientBusPrivate // personal: unity-build
-{ // personal: unity-build
 #if PLATFORM_LINUX
     int32 LockRelayPort(uint16 Port)
     {
@@ -32,9 +30,9 @@ namespace ACEPluginClientBusPrivate // personal: unity-build
         return -1;
     }
 #endif
-    FString S(const TSharedPtr<FJsonObject>& O, const TCHAR* K)
+    FString BusString(const TSharedPtr<FJsonObject>& O, const TCHAR* K)
     { FString V; if(O)O->TryGetStringField(K,V); return V; }
-    FString Encode(const TSharedPtr<FJsonObject>& O)
+    FString EncodeBusMessage(const TSharedPtr<FJsonObject>& O)
     { FString V; FJsonSerializer::Serialize(O.ToSharedRef(),TJsonWriterFactory<TCHAR,TCondensedJsonPrintPolicy<TCHAR>>::Create(&V)); return V; }
     TSharedPtr<FJsonObject> Packet(const TCHAR* Type)
     { auto O=MakeShared<FJsonObject>();O->SetStringField(TEXT("type"),Type);return O; }
@@ -42,7 +40,7 @@ namespace ACEPluginClientBusPrivate // personal: unity-build
     {
         const TArray<TSharedPtr<FJsonValue>>* A=nullptr;
         if(H&&H->TryGetArrayField(TEXT("subscriptions"),A))for(const auto& V:*A)
-        {const auto O=V->AsObject();if(O&&S(O,TEXT("plugin"))==Plugin&&S(O,TEXT("channel"))==Channel)return S(O,TEXT("epoch"));}
+        {const auto O=V->AsObject();if(O&&BusString(O,TEXT("plugin"))==Plugin&&BusString(O,TEXT("channel"))==Channel)return BusString(O,TEXT("epoch"));}
         return {};
     }
     bool SafeName(const FString& V,int32 Max)
@@ -66,7 +64,6 @@ namespace ACEPluginClientBusPrivate // personal: unity-build
         }
         return Depth==0&&!Quoted;
     }
-} // personal: unity-build
 }
 
 FACEPluginClientBus::FACEPluginClientBus(const FString& Namespace,uint16 InPort)
@@ -86,15 +83,13 @@ void FACEPluginClientBus::Close(FConnection& C)
 }
 bool FACEPluginClientBus::Queue(FConnection& C,const TSharedPtr<FJsonObject>& O)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
-    const FTCHARToUTF8 Bytes(*Encode(O));const int32 N=Bytes.Length();
+    const FTCHARToUTF8 Bytes(*EncodeBusMessage(O));const int32 N=Bytes.Length();
     if(!C.Socket||N>MaxFrame||C.Out.Num()+N+4>MaxQueue)return false;
     for(int32 Shift=24;Shift>=0;Shift-=8)C.Out.Add(uint8(uint32(N)>>Shift));
     C.Out.Append(reinterpret_cast<const uint8*>(Bytes.Get()),N);return true;
 }
 bool FACEPluginClientBus::Pump(FConnection& C,double Now,TArray<TSharedPtr<FJsonObject>>& Frames)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     if(!C.Socket)return false;
     if(!C.Out.IsEmpty())
     {
@@ -129,29 +124,27 @@ bool FACEPluginClientBus::Pump(FConnection& C,double Now,TArray<TSharedPtr<FJson
 }
 void FACEPluginClientBus::Configure(const FString& Scope,const FString& Character,uint32 Player,const TArray<TSharedPtr<FJsonValue>>& Subscriptions)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     auto O=Packet(TEXT("hello"));O->SetNumberField(TEXT("version"),1);O->SetStringField(TEXT("namespace"),Space);
     O->SetStringField(TEXT("instance"),Id);O->SetStringField(TEXT("scope"),Scope);O->SetStringField(TEXT("character"),Character.Left(128));
     O->SetNumberField(TEXT("player"),Player);O->SetArrayField(TEXT("subscriptions"),Subscriptions);
-    if(Hello&&Encode(Hello)==Encode(O))return;
+    if(Hello&&EncodeBusMessage(Hello)==EncodeBusMessage(O))return;
     Hello=O;
     if(Client.Socket&&!Queue(Client,Hello))Disconnect(TEXT("Client channel queue full"),FPlatformTime::Seconds());
 }
 bool FACEPluginClientBus::AcceptHello(FConnection& C,const TSharedPtr<FJsonObject>& O)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     double Version=0,Player=0;const TArray<TSharedPtr<FJsonValue>>* A=nullptr;
-    if(!O->TryGetNumberField(TEXT("version"),Version)||Version!=1||S(O,TEXT("namespace"))!=Space
-        ||!SafeName(S(O,TEXT("instance")),64)||S(O,TEXT("scope")).IsEmpty()||S(O,TEXT("scope")).Len()>128
-        ||S(O,TEXT("character")).Len()>128||!O->TryGetNumberField(TEXT("player"),Player)||!FMath::IsFinite(Player)
+    if(!O->TryGetNumberField(TEXT("version"),Version)||Version!=1||BusString(O,TEXT("namespace"))!=Space
+        ||!SafeName(BusString(O,TEXT("instance")),64)||BusString(O,TEXT("scope")).IsEmpty()||BusString(O,TEXT("scope")).Len()>128
+        ||BusString(O,TEXT("character")).Len()>128||!O->TryGetNumberField(TEXT("player"),Player)||!FMath::IsFinite(Player)
         ||!O->TryGetArrayField(TEXT("subscriptions"),A)||A->Num()>64)return false;
     for(const auto& V:*A)
-    {const auto P=V->AsObject();if(!P||!SafeName(S(P,TEXT("plugin")),64)||!SafeName(S(P,TEXT("channel")),64)||!SafeName(S(P,TEXT("epoch")),64))return false;}
-    if(C.Hello&&(S(C.Hello,TEXT("instance"))!=S(O,TEXT("instance"))||S(C.Hello,TEXT("scope"))!=S(O,TEXT("scope"))))return false;
-    for(const auto& Other:Clients)if(Other.Get()!=&C&&Other->Hello&&S(Other->Hello,TEXT("instance"))==S(O,TEXT("instance")))return false;
+    {const auto P=V->AsObject();if(!P||!SafeName(BusString(P,TEXT("plugin")),64)||!SafeName(BusString(P,TEXT("channel")),64)||!SafeName(BusString(P,TEXT("epoch")),64))return false;}
+    if(C.Hello&&(BusString(C.Hello,TEXT("instance"))!=BusString(O,TEXT("instance"))||BusString(C.Hello,TEXT("scope"))!=BusString(O,TEXT("scope"))))return false;
+    for(const auto& Other:Clients)if(Other.Get()!=&C&&Other->Hello&&BusString(Other->Hello,TEXT("instance"))==BusString(O,TEXT("instance")))return false;
     C.Hello=O;
     if(!Queue(C,Packet(TEXT("ready"))))return false;
-    for(const auto& Other:Clients)if(Other->Hello&&S(Other->Hello,TEXT("scope"))==S(O,TEXT("scope")))
+    for(const auto& Other:Clients)if(Other->Hello&&BusString(Other->Hello,TEXT("scope"))==BusString(O,TEXT("scope")))
     {
         auto P=Packet(TEXT("peer"));P->SetObjectField(TEXT("peer"),O);
         if(!Queue(*Other,P))Other->LastRead=-1e30;
@@ -161,25 +154,24 @@ bool FACEPluginClientBus::AcceptHello(FConnection& C,const TSharedPtr<FJsonObjec
 }
 bool FACEPluginClientBus::Relay(FConnection& C,const TSharedPtr<FJsonObject>& O,double Now)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
-    const FString Type=S(O,TEXT("type"));
+    const FString Type=BusString(O,TEXT("type"));
     if(Now-C.RateStart>=1){C.RateStart=Now;C.RateCount=0;}
     if(++C.RateCount>256)return false;
     if(Type==TEXT("hello"))return AcceptHello(C,O);
     if(!C.Hello)return false;
     if(Type==TEXT("ping"))return Queue(C,Packet(TEXT("pong")));
     if(Type!=TEXT("send"))return false;
-    const FString Plugin=S(O,TEXT("plugin")),Channel=S(O,TEXT("channel")),To=S(O,TEXT("to"));
+    const FString Plugin=BusString(O,TEXT("plugin")),Channel=BusString(O,TEXT("channel")),To=BusString(O,TEXT("to"));
     const TSharedPtr<FJsonObject>* Data=nullptr;
-    if(Subscription(C.Hello,Plugin,Channel).IsEmpty()||S(O,TEXT("epoch"))!=Subscription(C.Hello,Plugin,Channel)
-        ||(!To.IsEmpty()&&!SafeName(To,64))||!O->TryGetObjectField(TEXT("data"),Data)||FTCHARToUTF8(*Encode(*Data)).Length()>4096)return false;
+    if(Subscription(C.Hello,Plugin,Channel).IsEmpty()||BusString(O,TEXT("epoch"))!=Subscription(C.Hello,Plugin,Channel)
+        ||(!To.IsEmpty()&&!SafeName(To,64))||!O->TryGetObjectField(TEXT("data"),Data)||FTCHARToUTF8(*EncodeBusMessage(*Data)).Length()>4096)return false;
     for(auto& Peer:Clients)
     {
-        if(Peer.Get()==&C||!Peer->Hello||S(Peer->Hello,TEXT("scope"))!=S(C.Hello,TEXT("scope")))continue;
-        if(!To.IsEmpty()&&To!=S(Peer->Hello,TEXT("instance")))continue;
+        if(Peer.Get()==&C||!Peer->Hello||BusString(Peer->Hello,TEXT("scope"))!=BusString(C.Hello,TEXT("scope")))continue;
+        if(!To.IsEmpty()&&To!=BusString(Peer->Hello,TEXT("instance")))continue;
         const FString Epoch=Subscription(Peer->Hello,Plugin,Channel);if(Epoch.IsEmpty())continue;
-        auto E=Packet(TEXT("client_message"));E->SetStringField(TEXT("sender"),S(C.Hello,TEXT("instance")));
-        E->SetStringField(TEXT("character"),S(C.Hello,TEXT("character")));E->SetField(TEXT("player"),C.Hello->TryGetField(TEXT("player")));
+        auto E=Packet(TEXT("client_message"));E->SetStringField(TEXT("sender"),BusString(C.Hello,TEXT("instance")));
+        E->SetStringField(TEXT("character"),BusString(C.Hello,TEXT("character")));E->SetField(TEXT("player"),C.Hello->TryGetField(TEXT("player")));
         E->SetStringField(TEXT("plugin"),Plugin);E->SetStringField(TEXT("channel"),Channel);E->SetStringField(TEXT("epoch"),Epoch);E->SetObjectField(TEXT("data"),*Data);
         if(!Queue(*Peer,E))Peer->LastRead=-1e30;
     }
@@ -187,16 +179,14 @@ bool FACEPluginClientBus::Relay(FConnection& C,const TSharedPtr<FJsonObject>& O,
 }
 void FACEPluginClientBus::Drop(int32 Index)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     const auto H=Clients[Index]->Hello;Close(*Clients[Index]);Clients.RemoveAt(Index);
-    if(H)for(auto& Other:Clients)if(Other->Hello&&S(Other->Hello,TEXT("scope"))==S(H,TEXT("scope")))
-    {auto O=Packet(TEXT("leave"));O->SetStringField(TEXT("instance"),S(H,TEXT("instance")));if(!Queue(*Other,O))Other->LastRead=-1e30;}
+    if(H)for(auto& Other:Clients)if(Other->Hello&&BusString(Other->Hello,TEXT("scope"))==BusString(H,TEXT("scope")))
+    {auto O=Packet(TEXT("leave"));O->SetStringField(TEXT("instance"),BusString(H,TEXT("instance")));if(!Queue(*Other,O))Other->LastRead=-1e30;}
 }
 void FACEPluginClientBus::Disconnect(const FString& Reason,double Now)
 {Close(Client);Ready=false;KnownPeers.Reset();Inbox.Reset();LastError=Reason;RetryAt=Now+1;}
 void FACEPluginClientBus::Tick(double Now)
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     if(!Hello)return;
     auto* SS=ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     auto Address=SS->CreateInternetAddr();bool Valid=false;Address->SetIp(TEXT("127.0.0.1"),Valid);Address->SetPort(Port);
@@ -260,11 +250,11 @@ void FACEPluginClientBus::Tick(double Now)
         if(!Pump(Client,Now,Frames)){Disconnect(TEXT("Reconnecting local client channels"),Now);return;}
         for(const auto& O:Frames)
         {
-            const FString Type=S(O,TEXT("type"));
+            const FString Type=BusString(O,TEXT("type"));
             if(Type==TEXT("ready")){Ready=true;LastError.Empty();}
             else if(Type==TEXT("peer"))
-            {const TSharedPtr<FJsonObject>* P=nullptr;if(O->TryGetObjectField(TEXT("peer"),P)&&(KnownPeers.Contains(S(*P,TEXT("instance")))||KnownPeers.Num()<32))KnownPeers.Add(S(*P,TEXT("instance")),*P);}
-            else if(Type==TEXT("leave"))KnownPeers.Remove(S(O,TEXT("instance")));
+            {const TSharedPtr<FJsonObject>* P=nullptr;if(O->TryGetObjectField(TEXT("peer"),P)&&(KnownPeers.Contains(BusString(*P,TEXT("instance")))||KnownPeers.Num()<32))KnownPeers.Add(BusString(*P,TEXT("instance")),*P);}
+            else if(Type==TEXT("leave"))KnownPeers.Remove(BusString(O,TEXT("instance")));
             else if(Type==TEXT("client_message"))
             {if(Inbox.Num()<64)Inbox.Add(O);else LastError=TEXT("Client channel inbox full; message dropped");}
         }
@@ -281,16 +271,15 @@ TArray<TSharedPtr<FJsonObject>> FACEPluginClientBus::Drain()
 {TArray<TSharedPtr<FJsonObject>> Result=MoveTemp(Inbox);Inbox.Reset();return Result;}
 TArray<TSharedPtr<FJsonValue>> FACEPluginClientBus::Peers(const FString& Plugin) const
 {
-    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     TArray<TSharedPtr<FJsonValue>> Result;TArray<FString> Keys;KnownPeers.GetKeys(Keys);Keys.Sort();
     for(const auto& Key:Keys)
     {
         if(Key==Id)continue;const auto& H=KnownPeers[Key];const TArray<TSharedPtr<FJsonValue>>* A=nullptr;
         TArray<TSharedPtr<FJsonValue>> Channels;
-        if(H->TryGetArrayField(TEXT("subscriptions"),A))for(const auto& V:*A)if(S(V->AsObject(),TEXT("plugin"))==Plugin)
-            Channels.Add(MakeShared<FJsonValueString>(S(V->AsObject(),TEXT("channel"))));
+        if(H->TryGetArrayField(TEXT("subscriptions"),A))for(const auto& V:*A)if(BusString(V->AsObject(),TEXT("plugin"))==Plugin)
+            Channels.Add(MakeShared<FJsonValueString>(BusString(V->AsObject(),TEXT("channel"))));
         if(Channels.IsEmpty())continue;
-        auto P=MakeShared<FJsonObject>();P->SetStringField(TEXT("instance"),Key);P->SetStringField(TEXT("character"),S(H,TEXT("character")));
+        auto P=MakeShared<FJsonObject>();P->SetStringField(TEXT("instance"),Key);P->SetStringField(TEXT("character"),BusString(H,TEXT("character")));
         P->SetField(TEXT("player"),H->TryGetField(TEXT("player")));P->SetArrayField(TEXT("channels"),Channels);Result.Add(MakeShared<FJsonValueObject>(P));
     }
     return Result;

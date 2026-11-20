@@ -9,7 +9,7 @@ namespace
 {
 TSharedPtr<FJsonObject> RestockJSON(const TCHAR* Text){TSharedPtr<FJsonObject> O;FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text),O);return O;}
 }
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEUCMRestockTest,"ACE.Plugins.VendorRestock",EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEUCMRestockTest,"ACE.Plugins.VendorRestock",EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
 bool FACEUCMRestockTest::RunTest(const FString&)
 {
     FString Script,Error;FFileHelper::LoadFileToString(Script,*(IPluginManager::Get().FindPlugin(TEXT("ACEClient"))->GetBaseDir()/TEXT("ClientMods/ucm/main.lua")));
@@ -52,6 +52,51 @@ bool FACEUCMRestockTest::RunTest(const FString&)
         S->SetBoolField(TEXT("vendor_uses_pyreals"),true);FACEPluginVM Timeout;Timeout.Load(Script,Error);Step(Timeout);S->SetNumberField(TEXT("time"),120);Step(Timeout);TestEqual(TEXT("No confirmation pauses its activity instead of repeatedly selling notes"),I->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
         auto Rules=P->GetArrayField(TEXT("vendor_rules"));Rules.Add(MakeShared<FJsonValueObject>(RestockJSON(TEXT(R"({"server":"Test","vendor_name":"Arcanist","vendor_wcid":200,"item_name":"Trade Note","item_wcid":400,"quantity":10})"))));P->SetArrayField(TEXT("vendor_rules"),Rules);
         FACEPluginVM Reserved;Reserved.Load(Script,Error);Step(Reserved);TestEqual(TEXT("Notes configured for restocking cannot be sold in a buy/sell loop"),I->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
+        S=SavedS;P=SavedP;
+    }
+    {
+        const auto SavedS=S,SavedP=P;
+        auto Setup=[&]()
+        {
+            S=RestockJSON(TEXT(R"({"time":100,"player":1,"health":100,"max_health":100,"stamina":100,"max_stamina":100,"mana":100,"max_mana":100,"world_name":"Test","vendor":2,"vendor_name":"Arcanist","vendor_wcid":200,"vendor_uses_pyreals":true,"pyreals":0,"vendor_purchase_funds":430112809,"action_serial":0,"inventory":[{"id":9,"wcid":300,"name":"Silver Scarab","count":7}],"vendor_stock":[{"id":3,"wcid":300,"name":"Silver Scarab","limit":100,"unit_value":1000,"sell_rate":1.2}],"vendor_trade_notes":[]})"));
+            P=RestockJSON(TEXT(R"({"buffing":false,"recovery":false,"combat":"off","vendor_restock":true,"vendor_rules":[{"server":"Test","vendor_name":"Arcanist","vendor_wcid":200,"item_name":"Silver Scarab","item_wcid":300,"quantity":10}]})"));
+        };
+        for(bool PyrealVendor:{true,false})for(int32 Funds:{0,3599,3600,430112809})
+        {
+            Setup();S->SetBoolField(TEXT("vendor_uses_pyreals"),PyrealVendor);S->SetNumberField(TEXT("vendor_purchase_funds"),Funds);
+            // A zero authoritative balance must not fall back to physical coins.
+            S->SetNumberField(TEXT("pyreals"),Funds<3600?100000:0);
+            FACEPluginVM Banked;TestTrue(TEXT("Banked restock policy loads"),Banked.Load(Script,Error));Step(Banked);
+            TestEqual(TEXT("Restock uses the open vendor's balance for either currency type"),I->GetStringField(TEXT("action")),FString(Funds>=3600?TEXT("buy"):TEXT("activity_failed")));
+            if(Funds>=3600)
+            {
+                TestEqual(TEXT("Bank funds buy only the missing quantity"),I->GetNumberField(TEXT("count")),3.);
+                Step(Banked);TestFalse(TEXT("Bank-backed purchase still waits for inventory confirmation"),I->HasField(TEXT("action")));
+                S->GetArrayField(TEXT("inventory"))[0]->AsObject()->SetNumberField(TEXT("count"),10);
+                P->GetArrayField(TEXT("vendor_rules"))[0]->AsObject()->SetNumberField(TEXT("quantity"),11);
+                S->SetNumberField(TEXT("vendor_purchase_funds"),0);S->SetNumberField(TEXT("pyreals"),100000);
+                Step(Banked);TestEqual(TEXT("Next purchase rechecks depleted vendor funds"),I->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
+            }
+        }
+        for(bool MoneyFirst:{false,true})
+        {
+            Setup();
+            auto Note=RestockJSON(TEXT(R"({"id":40,"wcid":400,"name":"Trade Note","count":4,"unit_value":1000})"));
+            auto Inventory=S->GetArrayField(TEXT("inventory"));Inventory.Add(MakeShared<FJsonValueObject>(Note));
+            S->SetArrayField(TEXT("inventory"),Inventory);S->SetArrayField(TEXT("vendor_trade_notes"),{MakeShared<FJsonValueObject>(Note)});
+            FACEPluginVM Funded;Funded.Load(Script,Error);Step(Funded);
+            TestEqual(TEXT("An affordable bank-backed purchase does not liquidate trade notes"),I->GetStringField(TEXT("action")),FString(TEXT("buy")));
+            S->SetNumberField(TEXT("vendor_purchase_funds"),500);
+            FACEPluginVM Shortfall;Shortfall.Load(Script,Error);Step(Shortfall);
+            TestEqual(TEXT("A real shortfall can redeem notes into the bank-backed purse"),I->GetStringField(TEXT("action")),FString(TEXT("sell_note")));
+            TestEqual(TEXT("Only enough notes to cover the vendor shortfall are sold"),I->GetNumberField(TEXT("count")),4.);
+            auto RemoveNotes=[&](){auto Items=S->GetArrayField(TEXT("inventory"));Items.SetNum(1);S->SetArrayField(TEXT("inventory"),Items);S->SetArrayField(TEXT("vendor_trade_notes"),{});};
+            if(MoneyFirst)S->SetNumberField(TEXT("vendor_purchase_funds"),4500);else RemoveNotes();
+            Step(Shortfall);TestFalse(TEXT("Bank note redemption waits for both money and note removal"),I->HasField(TEXT("action")));
+            if(MoneyFirst)RemoveNotes();else S->SetNumberField(TEXT("vendor_purchase_funds"),4500);
+            Step(Shortfall);TestEqual(TEXT("Bank credited without physical coins resumes restocking"),I->GetStringField(TEXT("action")),FString(TEXT("buy")));
+            TestEqual(TEXT("Redemption does not require a physical coin stack"),S->GetNumberField(TEXT("pyreals")),0.);
+        }
         S=SavedS;P=SavedP;
     }
     // Exemption bypasses supplies, not skill/known checks or server failures.

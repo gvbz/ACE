@@ -1087,6 +1087,10 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
     Out->SetArrayField(TEXT("vendor_trade_notes"),Notes);
     Out->SetBoolField(TEXT("vendor_uses_pyreals"),Session->VendorUsesPyreals());
     Out->SetNumberField(TEXT("pyreals"),double(Pyreals));
+    // Match the retail vendor UI, including custom-server balances advertised
+    // through CoinValue or a virtual alternate-currency purse. Physical stacks
+    // alone cannot tell the policy what this vendor will accept.
+    Out->SetNumberField(TEXT("vendor_purchase_funds"),C->GetOpenVendorGuid()?Session->GetVendorPurchaseFunds():0);
     int32 Encumbrance=0;Session->TryGetPlayerEncumbrance(Encumbrance);
     Out->SetNumberField(TEXT("burden_percent"),100.*FMath::Max(0,Encumbrance)/(FMath::Max(1,V.GetBuffedStrength())*(150.+30.*FMath::Clamp(V.CarryingCapacityAugs,0,5))));Out->SetNumberField(TEXT("level"),V.Level);
     auto CharStrings=MakeShared<FJsonObject>();for(const auto& Pair:V.QualityStrings)CharStrings->SetStringField(FString::FromInt(Pair.Key),Pair.Value);FACEWorldObject PlayerObject;

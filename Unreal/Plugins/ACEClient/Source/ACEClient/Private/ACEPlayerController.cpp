@@ -7610,14 +7610,20 @@ bool AACEPlayerController::IsInventoryInteractionActive() const
 {
     return DatGameplayBinder&&DatGameplayBinder->IsInventoryInteractionActive();
 }
-void AACEPlayerController::EndCombatApproachTo(int32 TargetGuid)
+int32 AACEPlayerController::GetCombatApproachTarget() const
 {
 	// Server combat MoveTo shares the use-approach controller. A dying target
 	// can remain in awareness until its death animation finishes; it is no
 	// longer a destination. Do not cancel a real Use/Give/pickup acknowledgment.
-	if (TargetGuid && bServerMoveToActive && ServerMoveToTargetGuid == TargetGuid
+	return bServerMoveToActive
 		&& bApproachMoveOnly && !bResendUseWhenInRange && !bApproachPickupIntoInventory
-		&& !bAwaitingUseDone && ApproachUseSendCount == 0 && Client && !Client->IsUseBusy())
+		&& !bAwaitingUseDone && ApproachUseSendCount == 0 && Client && !Client->IsUseBusy()
+		? ServerMoveToTargetGuid : 0;
+}
+
+void AACEPlayerController::EndCombatApproachTo(int32 TargetGuid)
+{
+	if (TargetGuid && GetCombatApproachTarget() == TargetGuid)
 		ClearServerMoveTo();
 }
 

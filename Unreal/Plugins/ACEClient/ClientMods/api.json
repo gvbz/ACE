@@ -924,6 +924,7 @@
       "usable_skills",
       "vendor",
       "vendor_name",
+      "vendor_purchase_funds",
       "vendor_stock",
       "vendor_trade_notes",
       "vendor_uses_pyreals",

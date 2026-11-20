@@ -1339,6 +1339,10 @@ local function vendor_work(s,p,inventory,option)
  -- across logins. Wait for server inventory replication before buying again.
  -- Recovery may run while waiting. Its untagged UseDone/errors cannot confirm
  -- or reject a vendor transaction; quantities and deadlines are authoritative.
+ -- Use the same spendable balance as the vendor window. Keep the physical-coin
+ -- fallback only for older hosts that do not expose the vendor purse yet.
+ local funds=s.vendor_purchase_funds
+ if funds==nil then funds=s.pyreals or 0 end
  local stock_counts
  local function stock_count(wcid,name)
   if not stock_counts then
@@ -1370,14 +1374,14 @@ local function vendor_work(s,p,inventory,option)
    end
    if source and source.count==q.before-q.count and candidate then
     q.phase='sell';q.id=candidate.id;q.deadline=s.time+15;q.serial=s.action_serial or 0;q.known=nil
-    q.money=s.pyreals or 0
+    q.money=funds
     return {action='sell_note',vendor=q.vendor,item=q.id,count=q.count,status='Redeeming '..q.count..' '..q.name..' for supplies'}
    end
    return result(nil,'Waiting for trade note split')
   end
   -- Require both sides of the transaction. Replication may deliver the money
   -- before the sold object disappears, or vice versa.
-  if not source and (s.pyreals or 0)>=q.money+q.count*q.unit_value then note_pending=nil
+  if not source and funds>=q.money+q.count*q.unit_value then note_pending=nil
   else return result(nil,'Waiting for trade note proceeds') end
  end
  if purchase_pending then
@@ -1401,8 +1405,9 @@ local function vendor_work(s,p,inventory,option)
      if v then
       local count=math.min(r.quantity-have,v.limit)
       local cost=v.unit_value and math.max(1,math.ceil(v.unit_value*(v.sell_rate or 1)*count-.1))
-      if cost and s.vendor_uses_pyreals and (s.pyreals or 0)<cost then
-       local deficit=cost-(s.pyreals or 0);local candidates,total={},0;local reserved={}
+      if cost and (s.vendor_uses_pyreals or s.vendor_purchase_funds~=nil) and funds<cost then
+       if not s.vendor_uses_pyreals then return failed('Not enough vendor currency for '..r.item_name) end
+       local deficit=cost-funds;local candidates,total={},0;local reserved={}
        for _,rule in ipairs(p.vendor_rules or {}) do
         if rule.enabled~=false and rule.server==s.world_name and rule.vendor_wcid==s.vendor_wcid and rule.vendor_name==s.vendor_name then reserved[rule.item_wcid]=true end
        end
@@ -1423,7 +1428,7 @@ local function vendor_work(s,p,inventory,option)
        end)
        local note=candidates[1];local amount=math.min(note.count,math.ceil(deficit/note.unit_value))
        note_pending={phase=amount<note.count and 'split' or 'sell',id=note.id,wcid=note.wcid,name=note.name,
-        unit_value=note.unit_value,count=amount,before=note.count,money=s.pyreals or 0,vendor=s.vendor,deadline=s.time+15,serial=s.action_serial or 0}
+        unit_value=note.unit_value,count=amount,before=note.count,money=funds,vendor=s.vendor,deadline=s.time+15,serial=s.action_serial or 0}
        if amount<note.count then
         note_pending.known={};for _,item in ipairs(inventory) do note_pending.known[item.id]=true end
         for _,item in ipairs(s.vendor_trade_notes or {}) do note_pending.known[item.id]=true end

@@ -1371,16 +1371,20 @@ walk and Use points as usual. Lists match server, vendor name/class, and item
 name/class rather than temporary object IDs. They are saved in the selected
 Vendors profile, independently of Loot and the other profiles.
 Purchases use the regular client Buy protocol and wait for inventory confirmation.
-When pyreals are insufficient, UCM redeems accepted trade notes for the shortfall.
+Restocking checks the same spendable balance shown in the vendor window, including
+banked funds advertised by custom servers. When that balance is insufficient at a
+pyreal vendor, UCM redeems accepted trade notes for the shortfall.
 Partial stacks are split first; only the confirmed new stack is sold. UCM waits
 for both removal of the notes and receipt of their pyreals before buying.
 Retained notes, notes offered in trade, and note types in this vendor's saved
 restock list are excluded. Alternate-currency purchases do not redeem notes.
-The snapshot supplies `pyreals`, `vendor_uses_pyreals`, eligible
+The snapshot supplies `vendor_purchase_funds` (the vendor window's balance),
+`pyreals` (carried coin stacks), `vendor_uses_pyreals`, eligible
 `vendor_trade_notes` (identity, count and unit face value), and each stock item's
 `unit_value` and `sell_rate`. These fields use the open vendor's server data.
-Failure or timeout stops restocking; inspect currency, stock and pack space
-before restarting. Inventory and stock are indexed once per decision.
+Failure or timeout pauses restocking before retrying; other enabled activities
+remain active. Inspect currency, stock and pack space if it keeps failing.
+Inventory and stock are indexed once per decision.
 
 The server's `SpellComponentsRequired=false` exemption bypasses component and
 pea checks. Missing/true uses the existing component checks. Changing characters

@@ -1620,6 +1620,21 @@ bool UACEPluginSubsystem::Tick(float)
         // UCM cannot issue a second action while the first is pending. Avoid
         // copying a large spellbook/inventory into Lua just to return "waiting".
         RefreshActionWait(*P);
+        auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());
+        if(P->IsPolicy()&&PC)
+        {
+            // MoveTo and target death/deletion can arrive in either order. The
+            // death callback alone cannot release a charge that arrives later;
+            // a deleted target also never reaches the controller's arrival or
+            // stalled-movement checks. Reconcile before the approach gate so
+            // a new spawn can be selected without stopping/restarting UCM.
+            const int32 ApproachTarget=PC->GetCombatApproachTarget();FACEWorldObject Target;
+            if(ApproachTarget&&(!C->GetWorldObject(ApproachTarget,Target)||Target.bDying||DefeatedTargets.Contains(ApproachTarget)))
+            {
+                PC->EndCombatApproachTo(ApproachTarget);ReleaseCombatTarget(ApproachTarget);P->NextDecision=0;
+                LogUCMEvent(*P,FString::Printf(TEXT("Released obsolete combat approach to 0x%08X; selecting next activity"),uint32(ApproachTarget)));
+            }
+        }
         // Check authoritative corpse/equipment receipts cheaply at the work cadence.
         // The action/busy gates below still prevent Lua snapshot construction
         // and dispatch until the operation finishes (or its timeout expires).
@@ -1632,10 +1647,17 @@ bool UACEPluginSubsystem::Tick(float)
             ScheduleDecisionWake(FMath::Max(P->NextDecision,P->NextAction));
             continue;
         }
-        auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());
         if(PC&&!PC->IsUseApproachActive())UseApproachOwner.Empty();
         if(P->IsPolicy() && !(UCMCraft&&UCMCraft->Selected!=INDEX_NONE) && !P->Profile->HasField(TEXT("vt_meta")) && !CanPauseLootApproach(*P) && (C->IsUseBusy() || PendingSpell || FPlatformTime::Seconds()<P->NextAction || (PC&&PC->IsUseApproachActive())))
         {
+            // Do not leave a stale idle label on screen while a real action
+            // owns the gate; this also makes stalled-session reports useful.
+            if(P->Status.StartsWith(TEXT("Ready -")))
+            {
+                if(PendingSpell)P->Status=TEXT("Waiting for spell completion");
+                else if(C->IsUseBusy())P->Status=TEXT("Waiting for game action");
+                else if(PC&&PC->IsUseApproachActive())P->Status=TEXT("Waiting for approach to finish");
+            }
             if(FPlatformTime::Seconds()<P->NextAction)ScheduleDecisionWake(P->NextAction);
             continue;
         }

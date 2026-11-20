@@ -100,6 +100,15 @@ derived `components_required` field for that policy. `char_strings["1"]` may
 still fall back to the player's public object name when the name quality is
 absent. These maps describe the current character, not arbitrary nearby objects.
 
+`vendor_purchase_funds` is the open vendor's spendable balance, identical to the
+vendor window's "you have" amount (zero when no vendor is open). Ordinary vendors
+use the server's `CoinValue`; this includes bank funds on custom servers that
+advertise them there. Alternate currencies use their live physical or
+server-managed balance, including pending-purchase reservations. Do not add
+`pyreals` to this value: `pyreals` counts carried coin stacks separately. Use the
+vendor balance for affordability and trade-note shortfalls; confirm purchases
+from inventory receipts, not a balance change alone.
+
 ## Plugin title and toolbar icon
 
 Every plugin can set a default display title and its own artwork in `plugin.json`:
