@@ -10,6 +10,8 @@
 
 namespace
 {
+namespace ACEPluginClientMessagingPrivate // personal: unity-build
+{ // personal: unity-build
     constexpr bool Available=PLATFORM_WINDOWS||PLATFORM_LINUX;
     FString S(const TSharedPtr<FJsonObject>& O,const TCHAR* K)
     {FString V;if(O)O->TryGetStringField(K,V);return V;}
@@ -27,15 +29,18 @@ namespace
         else if(V->Type==EJson::Number&&!FMath::IsFinite(V->AsNumber()))return false;
         return true;
     }
+} // personal: unity-build
 }
 void UACEPluginSubsystem::ResetClientMessaging(FACEClientPlugin& P)
 {
+    using namespace ACEPluginClientMessagingPrivate; using ACEPluginClientMessagingPrivate::S; using ACEPluginClientMessagingPrivate::Name; using ACEPluginClientMessagingPrivate::Available; // personal: unity-build
     P.ClientChannels.Reset();P.ClientChannelEpoch.Empty();P.ClientChannelError.Empty();
     P.ClientMessageWindow=0;P.ClientMessageCount=0;
     P.PluginEvents.RemoveAll([](const auto& V){return S(V->AsObject(),TEXT("type"))==TEXT("client_message");});
 }
 bool UACEPluginSubsystem::TickClientMessaging(float)
 {
+    using namespace ACEPluginClientMessagingPrivate; using ACEPluginClientMessagingPrivate::S; using ACEPluginClientMessagingPrivate::Name; using ACEPluginClientMessagingPrivate::Available; // personal: unity-build
     if(!Available)return true;
     auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto Session=C->GetSession();
     const bool InWorld=Session&&C->GetSessionState()==EACESessionState::InWorld&&C->GetPlayerGuid()!=0;
@@ -82,6 +87,7 @@ bool UACEPluginSubsystem::TickClientMessaging(float)
 }
 TSharedPtr<FJsonObject> UACEPluginSubsystem::ClientMessagingSnapshot(const FACEClientPlugin& P) const
 {
+    using namespace ACEPluginClientMessagingPrivate; using ACEPluginClientMessagingPrivate::S; using ACEPluginClientMessagingPrivate::Name; using ACEPluginClientMessagingPrivate::Available; // personal: unity-build
     auto O=MakeShared<FJsonObject>();O->SetBoolField(TEXT("available"),Available);
     O->SetBoolField(TEXT("connected"),ClientBus&&ClientBus->Connected());
     O->SetStringField(TEXT("instance"),ClientBus?ClientBus->Instance():FString());
@@ -92,6 +98,7 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::ClientMessagingSnapshot(const FACEC
 }
 bool UACEPluginSubsystem::ApplyClientMessaging(FACEClientPlugin& P,const TSharedPtr<FJsonObject>& O,FString& Error)
 {
+    using namespace ACEPluginClientMessagingPrivate; using ACEPluginClientMessagingPrivate::S; using ACEPluginClientMessagingPrivate::Name; using ACEPluginClientMessagingPrivate::Available; // personal: unity-build
     if(!O->HasField(TEXT("client_channels"))&&!O->HasField(TEXT("client_messages")))return true;
     if(P.Api<2||!P.Permissions.Contains(TEXT("client_messaging")))
     {Error=TEXT("client_channels/client_messages require API 2 and client_messaging permission");return false;}

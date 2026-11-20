@@ -14,6 +14,8 @@
 
 namespace
 {
+namespace ACEPluginClientBusPrivate // personal: unity-build
+{ // personal: unity-build
 #if PLATFORM_LINUX
     int32 LockRelayPort(uint16 Port)
     {
@@ -64,6 +66,7 @@ namespace
         }
         return Depth==0&&!Quoted;
     }
+} // personal: unity-build
 }
 
 FACEPluginClientBus::FACEPluginClientBus(const FString& Namespace,uint16 InPort)
@@ -83,6 +86,7 @@ void FACEPluginClientBus::Close(FConnection& C)
 }
 bool FACEPluginClientBus::Queue(FConnection& C,const TSharedPtr<FJsonObject>& O)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     const FTCHARToUTF8 Bytes(*Encode(O));const int32 N=Bytes.Length();
     if(!C.Socket||N>MaxFrame||C.Out.Num()+N+4>MaxQueue)return false;
     for(int32 Shift=24;Shift>=0;Shift-=8)C.Out.Add(uint8(uint32(N)>>Shift));
@@ -90,6 +94,7 @@ bool FACEPluginClientBus::Queue(FConnection& C,const TSharedPtr<FJsonObject>& O)
 }
 bool FACEPluginClientBus::Pump(FConnection& C,double Now,TArray<TSharedPtr<FJsonObject>>& Frames)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     if(!C.Socket)return false;
     if(!C.Out.IsEmpty())
     {
@@ -124,6 +129,7 @@ bool FACEPluginClientBus::Pump(FConnection& C,double Now,TArray<TSharedPtr<FJson
 }
 void FACEPluginClientBus::Configure(const FString& Scope,const FString& Character,uint32 Player,const TArray<TSharedPtr<FJsonValue>>& Subscriptions)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     auto O=Packet(TEXT("hello"));O->SetNumberField(TEXT("version"),1);O->SetStringField(TEXT("namespace"),Space);
     O->SetStringField(TEXT("instance"),Id);O->SetStringField(TEXT("scope"),Scope);O->SetStringField(TEXT("character"),Character.Left(128));
     O->SetNumberField(TEXT("player"),Player);O->SetArrayField(TEXT("subscriptions"),Subscriptions);
@@ -133,6 +139,7 @@ void FACEPluginClientBus::Configure(const FString& Scope,const FString& Characte
 }
 bool FACEPluginClientBus::AcceptHello(FConnection& C,const TSharedPtr<FJsonObject>& O)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     double Version=0,Player=0;const TArray<TSharedPtr<FJsonValue>>* A=nullptr;
     if(!O->TryGetNumberField(TEXT("version"),Version)||Version!=1||S(O,TEXT("namespace"))!=Space
         ||!SafeName(S(O,TEXT("instance")),64)||S(O,TEXT("scope")).IsEmpty()||S(O,TEXT("scope")).Len()>128
@@ -154,6 +161,7 @@ bool FACEPluginClientBus::AcceptHello(FConnection& C,const TSharedPtr<FJsonObjec
 }
 bool FACEPluginClientBus::Relay(FConnection& C,const TSharedPtr<FJsonObject>& O,double Now)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     const FString Type=S(O,TEXT("type"));
     if(Now-C.RateStart>=1){C.RateStart=Now;C.RateCount=0;}
     if(++C.RateCount>256)return false;
@@ -179,6 +187,7 @@ bool FACEPluginClientBus::Relay(FConnection& C,const TSharedPtr<FJsonObject>& O,
 }
 void FACEPluginClientBus::Drop(int32 Index)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     const auto H=Clients[Index]->Hello;Close(*Clients[Index]);Clients.RemoveAt(Index);
     if(H)for(auto& Other:Clients)if(Other->Hello&&S(Other->Hello,TEXT("scope"))==S(H,TEXT("scope")))
     {auto O=Packet(TEXT("leave"));O->SetStringField(TEXT("instance"),S(H,TEXT("instance")));if(!Queue(*Other,O))Other->LastRead=-1e30;}
@@ -187,6 +196,7 @@ void FACEPluginClientBus::Disconnect(const FString& Reason,double Now)
 {Close(Client);Ready=false;KnownPeers.Reset();Inbox.Reset();LastError=Reason;RetryAt=Now+1;}
 void FACEPluginClientBus::Tick(double Now)
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     if(!Hello)return;
     auto* SS=ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
     auto Address=SS->CreateInternetAddr();bool Valid=false;Address->SetIp(TEXT("127.0.0.1"),Valid);Address->SetPort(Port);
@@ -271,6 +281,7 @@ TArray<TSharedPtr<FJsonObject>> FACEPluginClientBus::Drain()
 {TArray<TSharedPtr<FJsonObject>> Result=MoveTemp(Inbox);Inbox.Reset();return Result;}
 TArray<TSharedPtr<FJsonValue>> FACEPluginClientBus::Peers(const FString& Plugin) const
 {
+    using namespace ACEPluginClientBusPrivate; using ACEPluginClientBusPrivate::S; using ACEPluginClientBusPrivate::Encode; // personal: unity-build
     TArray<TSharedPtr<FJsonValue>> Result;TArray<FString> Keys;KnownPeers.GetKeys(Keys);Keys.Sort();
     for(const auto& Key:Keys)
     {
