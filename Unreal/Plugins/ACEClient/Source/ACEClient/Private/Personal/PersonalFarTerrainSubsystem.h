@@ -76,6 +76,7 @@ private:
 	FIntRect BuiltCoverageCells;
 	float BuiltWorldScale = 0.f;
 	int32 RequestedSceneryRadius = 0;
+	int32 RequestedFogRings = 0; // personal: fog-distance
 	TSet<FIntPoint> BuiltHoles;
 	/** A worker is building a mesh. */
 	bool bBuilding = false;

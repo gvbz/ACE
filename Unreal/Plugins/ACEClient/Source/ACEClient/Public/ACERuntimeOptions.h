@@ -34,6 +34,7 @@ inline constexpr FOption Values[] = {
  {TEXT("PersonalFarTerrainRadius"),TEXT("Far Terrain Radius"),43,43,96}, // personal: far-terrain
  {TEXT("PersonalFarScenery"),TEXT("Far Terrain Objects"),0,0,1}, // personal: far-scenery
  {TEXT("PersonalFarSceneryRadius"),TEXT("Far Terrain Objects Radius"),6,3,24}, // personal: far-scenery
+ {TEXT("PersonalMaxFogDistance"),TEXT("Max Fog Distance"),11,5,43}, // personal: fog-distance
  {TEXT("PersonalFarTerrainTextures"),TEXT("Far Terrain Textures"),0,0,1}, // personal: far-textures
  {TEXT("PersonalSkyHorizon"),TEXT("Far Terrain Horizon"),0,0,1}, // personal: sky-horizon
  {TEXT("PersonalFarSceneryFog"),TEXT("Hide Far Terrain with Fog"),0,0,1}, // personal: far-scenery

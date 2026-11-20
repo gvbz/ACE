@@ -32,6 +32,7 @@
 #include "SceneInterface.h"
 #include "UObject/UObjectIterator.h"
 #include "Personal/PersonalSkyHorizon.h" // personal: sky-horizon
+#include "Personal/PersonalFog.h" // personal: fog-distance
 
 namespace
 {
@@ -1383,12 +1384,13 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 	}
 	else if (Terrain && Terrain->LoadRadius > 0)
 		End = FMath::Min(End,Terrain->LoadRadius * 192.f);
+	End = PersonalFog::LimitFogEnd(End, FarRadius, Shell, GetActorLocation(), WorldScale); // personal: fog-distance
 	if (FogClampLandblocks > 0.f) End = FMath::Min(End,FogClampLandblocks * 192.f);
 	const float MaxCm = FMath::Max(1.f,End * WorldScale);
-	const float MinCm = FMath::Clamp(MinFog * WorldScale,0.f,MaxCm - 1.f);
+	const float MinCm = PersonalFog::FogStartCm(FMath::Clamp(MinFog * WorldScale,0.f,MaxCm - 1.f), MaxCm, FarRadius, ActiveGroup.DayName, Shell, WorldScale); // personal: fog-distance
 	if (Dat)
 	{
-		Dat->SetWorldDistanceFog(MinCm, MaxCm, FogColor, 1.f);
+		Dat->SetWorldDistanceFog(MinCm, MaxCm, FogColor, PersonalFog::FogAmount(FarRadius)); // personal: fog-distance
 	}
 	UpdateColorFill(bImportedVisible ? ImportedSky->SkyFogColor : FogColor);
 	if (HorizonMid)
@@ -1397,6 +1399,7 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 		const float Height = FMath::Lerp(HorizonFadeHeight, ClearHorizonFadeHeight,
 			bImportedVisible ? ImportedSky->ClearDaylight : 0.f);
 		HorizonMid->SetScalarParameterValue(TEXT("HorizonFalloff"), 1.f / Height);
+		HorizonMid->SetScalarParameterValue(TEXT("OpacityMul"), PersonalFog::HorizonOpacity()); // personal: fog-distance
 	}
 
 	static double LastFogLog = 0.0;

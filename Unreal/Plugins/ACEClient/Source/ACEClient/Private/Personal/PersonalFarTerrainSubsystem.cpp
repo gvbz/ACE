@@ -2,6 +2,7 @@
 #include "Personal/PersonalFarTerrain.h"
 #include "Personal/PersonalFarScenery.h"
 #include "Personal/PersonalFarTerrainMesh.h"
+#include "Personal/PersonalFog.h" // personal: fog-distance
 #include "ACEClientSubsystem.h"
 #include "ACEDatSubsystem.h"
 #include "ACETerrainPresenterComponent.h"
@@ -388,22 +389,24 @@ void UPersonalFarTerrainSubsystem::Update()
 	// recentering. Keep its ground native too, rather than starting the morph at R.
 	const int32 SceneryRadius = PersonalFarScenery::IsOn()
 		? PersonalFarScenery::NativeTerrainRing(PersonalFarScenery::Radius(), Radius) : 0;
+	const int32 FogRings = PersonalFog::TextureRings(); // personal: fog-distance
 	const bool bChanged = SceneryRadius != RequestedSceneryRadius || Center != BuiltCenter || Radius != BuiltRadius || Holes.Num() != BuiltHoles.Num() || !Holes.Includes(BuiltHoles)
-		|| WantDetail != BuiltDetailCenter;
+		|| WantDetail != BuiltDetailCenter || FogRings != RequestedFogRings; // personal: fog-distance
 	if (bChanged && !bBuilding)
 	{
 		// The mesh has about 100,000 triangles: build it on a worker, apply it here.
 		bBuilding = true;
 		RequestedSceneryRadius = SceneryRadius;
+		RequestedFogRings = FogRings; // personal: fog-distance
 		const float WorldScale = Terrain->WorldScale;
 		Async(EAsyncExecution::ThreadPool,
-			[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), Data = Bake, Center, Radius, HoleRadius, SceneryRadius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable
+			[Weak = TWeakObjectPtr<UPersonalFarTerrainSubsystem>(this), Data = Bake, Center, Radius, HoleRadius, SceneryRadius, WorldScale, WantDetail, FogRings, Holes = MoveTemp(Holes)]() mutable // personal: fog-distance
 		{
 			auto Mesh = MakeShared<FPersonalFarTerrainMesh, ESPMode::ThreadSafe>();
 			FIntRect DetailCells;
 			if (WantDetail.IsSet())
 			{
-				DetailCells = PersonalFarTerrainDetail::MeshCells(*WantDetail);
+				DetailCells = PersonalFog::TextureCells(*WantDetail, FogRings); // personal: fog-distance
 			}
 			PersonalFarTerrainMesh::Build(*Data, Center, Radius, Holes, HoleRadius, WorldScale, *Mesh, WantDetail.IsSet() ? &DetailCells : nullptr, SceneryRadius);
 			AsyncTask(ENamedThreads::GameThread, [Weak, Mesh, Radius, WorldScale, WantDetail, Holes = MoveTemp(Holes)]() mutable

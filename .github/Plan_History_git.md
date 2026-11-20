@@ -1,4 +1,4 @@
-# Plan history (gvbz at 44e788eb5 plus the Development Dashboard, client v161, 2026.11.18.161)
+# Plan history (gvbz at 44e788eb5 plus the Development Dashboard and Max Fog Distance, client v161, 2026.11.18.161)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -598,6 +598,71 @@ The Lua plugin host (companion plugins, `ApplyPluginServices`, the `chat` servic
 ### For later features
 
 - Each later feature adds its controls to its own tab (`Fog`, `Lighting`, `Shadows`, `Performance`) in `main.lua`; the service needs no change for new `personal.` variables.
+
+## 8. Max Fog Distance
+
+| | |
+|---|---|
+| Merged | 2026-11-19, client v161, in the commit that added this section |
+| Setting | Slider `Max Fog Distance` (`PersonalMaxFogDistance`), 5 to 43 landblocks, default 11, with its number under it, below `Far Terrain Objects Radius`. 43 is no limit. Applied with Apply; Defaults and Reset include it |
+| Needs | `Far Terrain` on. With the far terrain off, the fog is as the client sets it |
+
+### What it does
+
+With the far terrain on, the client's fog reaches much further in clear weather (up to 4 times the DAT distance, out to the far terrain's edge), so the land past the far terrain objects is visible and empty. `Max Fog Distance` caps the fog end at that many landblocks (x 192 m) in every weather and at every time of day. Below 43 it also:
+
+- starts the fog at 3 landblocks in Clear and Sunny weather by day, blending to the client's own start through dusk and back through dawn;
+- draws the fog at 73 % strength (the shared fog amount is 0.73), so some of the distant land shows through instead of one flat fog color;
+- stops the far terrain textures at the limit, with flat colors past it, where the ground is fully fogged.
+
+With `Far Terrain Horizon` on, the horizon band (the fog color below and just above eye level) is drawn at 73 % opacity, so the horizon line shows through the haze. At 43 with `Far Terrain Horizon` off, everything is as in v161.
+
+### Files
+
+- `Private/Personal/PersonalFog.h/.cpp`, namespace `PersonalFog`:
+  - Constants: `NoLimit` 43, `LimitedStartClearLandblocks` 3, `LimitedFogAmount` 0.73, `HorizonOpacityWithFarHorizon` 0.73.
+  - `MaxLandblocks()` (the option, rounded), `IsLimited()` (below 43).
+  - `LimitEnd(End, Coverage, Max)`: the fog end, at most the far terrain's coverage from the camera, and below 43 at most `Max x 192 m`.
+  - `StartCm(ClientStart, End, bClearForecast, NightAmount, StartClear, WorldScale)`: the clear-weather start by day, the client's start at night, blended by the night amount, always below the end.
+  - Wrappers used by the sky: `LimitFogEnd`, `FogStartCm`, `FogAmount`, `HorizonOpacity`.
+  - `TextureRings(Max)` and `TextureCells(Center, Rings)` for the far terrain textures.
+- Test `Private/Tests/Personal/PersonalFogTests.cpp` (`ACE.Personal.Fog.Limit`).
+- T edits, marked `// personal: fog-distance` (line numbers at the merge):
+  - `Public/ACERuntimeOptions.h` line 37: the option row `{PersonalMaxFogDistance, "Max Fog Distance", 11, 5, 43}`.
+  - `Private/UI/ACEVideoSettingsWidget.cpp` lines 221 and 222: the slider (step 1) and its number in landblocks.
+  - `Private/ACESkyDomeActor.cpp` line 35 (include); in `UpdateFog`: 1387 `End = PersonalFog::LimitFogEnd(...)` just before the editor fog clamp, 1390 the fog start (`MinCm`, Thwargle's expression passed through `FogStartCm`), 1393 the fog amount passed to `SetWorldDistanceFog` (was 1), 1402 the horizon band's `OpacityMul`.
+  - `Private/Personal/PersonalFarTerrainSubsystem.cpp` lines 5 (include), 392 (`FogRings`), 394 (rebuild when the rings change), 400 (`RequestedFogRings`), 403 (the rings passed to the worker), 409 (`DetailCells = PersonalFog::TextureCells(...)`); `.h` line 79 (`RequestedFogRings`).
+  - `Private/Tests/ACELegionsSkyTests.cpp` lines 46 and 47: the test runs with `Max Fog Distance` 43 and `Far Terrain Horizon` off, and puts the saved values back.
+
+### How it works
+
+- `UpdateFog` runs at 10 Hz. The fog rules act only when the far terrain is drawn (`FarRadius > 0`); the band opacity follows `PersonalSkyHorizon::IsEnabled()` (the check box and the far terrain on).
+- The forecast test is the client's own (`Clear` or `Sunny`). The night amount is the one the far terrain rooms use (`PersonalFarWindows::NightAmount` of the client's day fraction: 0 by day, rising from 0.84 to 0.96 of the day, falling from 0.16 to 0.27).
+- The fog amount goes to the shared fog parameter collection. Every material with world fog multiplies its own `FogAmount` by it: the loaded terrain, the far terrain, scenery and objects, buildings, far scenery and the far rooms. Materials without fog (rooms indoors, particles, the sky) keep their own 0.
+- The band opacity uses the band material's existing `OpacityMul` parameter (default 1); no material changed.
+- Texture rings: `Clamp(Max + 1, 1, 14)`, so 6 at 5, 12 at the default 11, and 14 (the whole texture area) from 13 up. The texture itself (4096 x 4096) is unchanged. The subsystem builds the shell again when the rings change.
+
+### Tests
+
+`ACE.Personal.Fog.Limit` uses a settings file of its own, so the developer's options are never read or written: the option row (default 11, 5 to 43, values raised or limited to the range); the constants; the fog end (unchanged at 43, also at a far terrain radius of 96; capped at 11, 5 and 42; unchanged when the limit is above it; never past the coverage; unchanged with the far terrain off); the fog start (clear weather by day only, not in Rainy, not at night, half at dusk, always below the end); the wrappers at 43 and at 11 and with the far terrain off; the band opacity without and with `Far Terrain Horizon`; the texture rings and cells. The sky tests (`ACE.RetailParity.Weather`, `.NetworkWeather`, `ACE.Graphics.LegionsSkyImport`, `ACE.RetailParity.FogColorProbe`) pass unchanged.
+
+### Checked
+
+In game on a local ACE server (2026-11-19): clear, sunny, rainy and stormy weather by day, at dusk, at night and through a dusk timelapse; the fog limit with the far objects radius at 8 and 10; no line where the far terrain textures stop.
+
+### Baseline
+
+Not measured. Frame rate was fine in game at the limit and at 43.
+
+### What differs from the first design
+
+- The range is 5 to 43 with the default 11 (first 3 to 43, default 43), after testing.
+- 43 is no limit, so the look at 43 is v161's at every far terrain radius.
+- The fog start, strength and band opacity were found in game with test controls, which were removed after the values were chosen.
+
+### Depends on (Thwargle's code)
+
+`AACESkyDomeActor::UpdateFog` (its fog end, start, the `SetWorldDistanceFog` amount and the horizon band material), the shared fog collection and the fog graph of the client's materials (`WireRetailDistanceFog`), `UPersonalFarTerrainSubsystem::FogCoverageDistanceCm` and `VisibleRadius`, `GetGameDayFraction`, and the far terrain textures (`PersonalFarTerrainDetail::MeshCells`).
 
 ## Abandoned
 

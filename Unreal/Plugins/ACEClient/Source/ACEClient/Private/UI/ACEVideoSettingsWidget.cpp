@@ -218,6 +218,8 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  AddFarTerrainCheck(TEXT("PersonalFarScenery"), TEXT("Far Terrain Objects"), TEXT("Draw trees, rocks, buildings and other objects past the landblocks where they are drawn today, out to Far Terrain Objects Radius. Needs Far Terrain."));
  AddValue(TEXT("PersonalFarSceneryRadius")); ValueSliders[TEXT("PersonalFarSceneryRadius")]->SetStepSize(1.f); // personal: far-scenery
  Box->AddChild(Fixed(UPersonalSliderLabel::Make(WidgetTree,ValueSliders[TEXT("PersonalFarSceneryRadius")],Label(TEXT(""),7),TEXT("landblocks")),250,14)); // personal: far-scenery
+ AddValue(TEXT("PersonalMaxFogDistance")); ValueSliders[TEXT("PersonalMaxFogDistance")]->SetStepSize(1.f); // personal: fog-distance
+ Box->AddChild(Fixed(UPersonalSliderLabel::Make(WidgetTree,ValueSliders[TEXT("PersonalMaxFogDistance")],Label(TEXT(""),7),TEXT("landblocks")),250,14)); // personal: fog-distance
  AddFarTerrainCheck(TEXT("PersonalFarSceneryFog"), TEXT("Hide Far Terrain with Fog"), TEXT("Draw no far terrain objects past the fog end. Off keeps them as a skyline in fog and at night."));
  AddFarTerrainCheck(TEXT("PersonalFarWindows"), TEXT("Far Terrain Rooms"), TEXT("Show the rooms behind the windows and other openings of far buildings, with their lights at night, and close far doors with dark panels. Needs Far Terrain Objects."));
  AddFarTerrainCheck(TEXT("PersonalFarTerrainTextures"), TEXT("Far Terrain Textures"), TEXT("Draw the far terrain within about 2.7 km with the terrain textures. Off leaves it at flat colors. Needs Far Terrain."));

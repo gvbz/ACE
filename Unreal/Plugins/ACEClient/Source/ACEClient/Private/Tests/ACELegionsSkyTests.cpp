@@ -43,6 +43,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACELegionsSkyTest, "ACE.Graphics.LegionsSkyImp
                                      EAutomationTestFlags::EngineFilter)
 bool FACELegionsSkyTest::RunTest(const FString&)
 {
+	const float FogLimitSaved=ACERuntimeOptions::Get(TEXT("PersonalMaxFogDistance")); ACERuntimeOptions::Set(TEXT("PersonalMaxFogDistance"),43.f); ON_SCOPE_EXIT { ACERuntimeOptions::Set(TEXT("PersonalMaxFogDistance"),FogLimitSaved); }; // personal: fog-distance
+	const float SkyHorizonSaved=ACERuntimeOptions::Get(TEXT("PersonalSkyHorizon")); ACERuntimeOptions::Set(TEXT("PersonalSkyHorizon"),0.f); ON_SCOPE_EXIT { ACERuntimeOptions::Set(TEXT("PersonalSkyHorizon"),SkyHorizonSaved); }; // personal: fog-distance
 	const FString Output = FPaths::ProjectSavedDir() / TEXT("Automation/LegionsSky");
 	IFileManager::Get().MakeDirectory(*Output, true);
 	const FString Cache = Output / TEXT("Test.sky");
