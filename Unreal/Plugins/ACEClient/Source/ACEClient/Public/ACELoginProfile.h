@@ -29,7 +29,7 @@ struct FACELoginSettings
 	FString SelectedServerId, SelectedAccountId, DatDirectory;
 	bool bProfileFormat = false;
 	bool bAutoUpdate = false;
-	/** Linux opt-in: local passwords are readable by this OS user, not encrypted. */
+	/** Linux/macOS password saving is opt-in. The local file is readable by this OS user. */
 	bool bSavePasswordsLocally = false;
 	void MigrateLegacy();
 	const FACELoginServer* SelectedServer() const;

@@ -6,6 +6,8 @@
 #include "Modules/ModuleInterface.h"
 #include "ACEWorldBakeDatTools.generated.h"
 
+class UTexture2D;
+
 ACEWORLDBAKEDATTOOLS_API DECLARE_LOG_CATEGORY_EXTERN(LogACEWorldBakeDatTools, All, All);
 
 #define ACEWORLDBAKEDATTOOLS_LOG_PREFIX TEXT("ACEWorldBakeDatTools: ")

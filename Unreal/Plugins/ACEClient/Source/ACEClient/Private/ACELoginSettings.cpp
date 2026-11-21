@@ -12,7 +12,7 @@
 #elif PLATFORM_ANDROID
 #include "Android/AndroidApplication.h"
 #include "Android/AndroidJNI.h"
-#elif PLATFORM_LINUX
+#elif PLATFORM_LINUX || PLATFORM_MAC
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -54,7 +54,7 @@ namespace ACELoginSettings
 		Json->SetStringField(TEXT("host"), Settings.Host);
 		Json->SetStringField(TEXT("port"), Settings.Port);
 		Json->SetStringField(TEXT("account"), Settings.Account);
-		const bool SavePasswords = !PLATFORM_LINUX || Settings.bSavePasswordsLocally;
+		const bool SavePasswords = !(PLATFORM_LINUX || PLATFORM_MAC) || Settings.bSavePasswordsLocally;
 		Json->SetBoolField(TEXT("savePasswordsLocally"), Settings.bSavePasswordsLocally);
 		Json->SetStringField(TEXT("password"), SavePasswords ? Settings.Password : FString());
 		if (Settings.bProfileFormat)
@@ -97,7 +97,7 @@ namespace ACELoginSettings
 		LocalFree(Protected.pbData);
 #elif PLATFORM_ANDROID
 		if (!AndroidCrypt(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), true, Bytes)) return false;
-#elif PLATFORM_LINUX
+#elif PLATFORM_LINUX || PLATFORM_MAC
         // Password persistence is opt-in; the local file is owner-readable only.
         Bytes.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
 #else
@@ -106,7 +106,7 @@ namespace ACELoginSettings
 		const FString Directory = FPaths::GetPath(Path);
 		if (!IFileManager::Get().MakeDirectory(*Directory, true)) return false;
 		const FString TemporaryPath = Path + TEXT(".tmp-") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
-#if PLATFORM_LINUX
+#if PLATFORM_LINUX || PLATFORM_MAC
 		// Restrict access when creating the file, before any plaintext is written.
 		const int Fd = open(TCHAR_TO_UTF8(*FPaths::ConvertRelativePathToFull(TemporaryPath)),
 			O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
@@ -155,7 +155,7 @@ namespace ACELoginSettings
 			Text = FString(Utf8.Length(), Utf8.Get());
 		}
 		FMemory::Memzero(Plain.GetData(), Plain.Num());
-#elif PLATFORM_LINUX
+#elif PLATFORM_LINUX || PLATFORM_MAC
         if (Bytes.Num() > 524288) return false;
         const FUTF8ToTCHAR Utf8(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
         Text = FString(Utf8.Length(), Utf8.Get());
@@ -170,7 +170,7 @@ namespace ACELoginSettings
 			|| !Json->TryGetStringField(TEXT("port"), Loaded.Port)
 			|| !Json->TryGetStringField(TEXT("account"), Loaded.Account)
 			|| !Json->TryGetStringField(TEXT("password"), Loaded.Password)) return false;
-#if PLATFORM_LINUX
+#if PLATFORM_LINUX || PLATFORM_MAC
         if (!Loaded.bSavePasswordsLocally) Loaded.Password.Reset();
 #endif
 		double Version = 0;
@@ -205,7 +205,7 @@ namespace ACELoginSettings
 					|| !(*J)->TryGetStringField(TEXT("username"), A.Username) || !(*J)->TryGetStringField(TEXT("password"), A.Password)) return false;
 				// Optional for existing saved logins; identity remains the entry ID.
 				(*J)->TryGetStringField(TEXT("alias"), A.Alias);
-#if PLATFORM_LINUX
+#if PLATFORM_LINUX || PLATFORM_MAC
                 if (!Loaded.bSavePasswordsLocally) A.Password.Reset();
 #endif
 				AccountIds.Add(A.Id);

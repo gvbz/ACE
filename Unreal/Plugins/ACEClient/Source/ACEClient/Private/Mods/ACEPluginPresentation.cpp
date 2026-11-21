@@ -13,7 +13,7 @@
 
 namespace
 {
-    FString Value(const FACEClientPlugin& P,const TCHAR* Key)
+    FString PresentationValue(const FACEClientPlugin& P,const TCHAR* Key)
     {
         FString Text;
         if(P.Presentation&&P.Presentation->TryGetStringField(Key,Text))return Text;
@@ -31,11 +31,11 @@ namespace
     }
 }
 FString FACEClientPlugin::DisplayTitle() const
-{const FString Title=Value(*this,TEXT("title"));return Title.IsEmpty()?Name:Title;}
-FString FACEClientPlugin::DisplayIcon() const {return Value(*this,TEXT("icon"));}
-FString FACEClientPlugin::DisplayControls() const {const auto V=Value(*this,TEXT("controls"));return V.IsEmpty()?TEXT("start_stop"):V;}
-FString FACEClientPlugin::DisplayStartLabel() const {const auto V=Value(*this,TEXT("start_label"));return V.IsEmpty()?TEXT("Start"):V;}
-FString FACEClientPlugin::DisplayStopLabel() const {const auto V=Value(*this,TEXT("stop_label"));return V.IsEmpty()?TEXT("Stop"):V;}
+{const FString Title=PresentationValue(*this,TEXT("title"));return Title.IsEmpty()?Name:Title;}
+FString FACEClientPlugin::DisplayIcon() const {return PresentationValue(*this,TEXT("icon"));}
+FString FACEClientPlugin::DisplayControls() const {const auto V=PresentationValue(*this,TEXT("controls"));return V.IsEmpty()?TEXT("start_stop"):V;}
+FString FACEClientPlugin::DisplayStartLabel() const {const auto V=PresentationValue(*this,TEXT("start_label"));return V.IsEmpty()?TEXT("Start"):V;}
+FString FACEClientPlugin::DisplayStopLabel() const {const auto V=PresentationValue(*this,TEXT("stop_label"));return V.IsEmpty()?TEXT("Stop"):V;}
 bool FACEClientPlugin::ShowSettings() const {return Flag(*this,TEXT("settings"));}
 bool FACEClientPlugin::ShowStatus() const {return Flag(*this,TEXT("status"));}
 bool FACEClientPlugin::ScrollPanel() const {return Flag(*this,TEXT("scroll"));}

@@ -628,7 +628,6 @@ public:
 
 				return true;
 			}
-			break;
 
 			case EACEWorldBakeResource::ImageColor:
 			{
@@ -652,7 +651,6 @@ public:
 				}
 				return  SurfaceOk;
 			}
-			break;
 
 			//case EACEWorldBakeResource::MotionTable:
 

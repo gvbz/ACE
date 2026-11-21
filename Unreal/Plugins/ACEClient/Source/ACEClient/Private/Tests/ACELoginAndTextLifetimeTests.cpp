@@ -14,7 +14,7 @@
 #include "Slate/WidgetRenderer.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "RenderingThread.h"
-#if PLATFORM_LINUX
+#if PLATFORM_LINUX || PLATFORM_MAC
 #include <sys/stat.h>
 #endif
 
@@ -36,8 +36,8 @@ bool FACELocalLoginSettingsTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Address round trips"),Loaded.Host,Entered.Host);
     TestEqual(TEXT("Port round trips"),Loaded.Port,Entered.Port);
     TestEqual(TEXT("Account round trips"),Loaded.Account,Entered.Account);
-#if PLATFORM_LINUX
-    TestTrue(TEXT("Linux restores account metadata without a saved password"),Loaded.Password.IsEmpty());
+#if PLATFORM_LINUX || PLATFORM_MAC
+    TestTrue(TEXT("Local restores account metadata without a saved password"),Loaded.Password.IsEmpty());
 #else
     TestTrue(TEXT("Unicode password round trips without printing it"),Loaded.Password==Entered.Password);
 #endif
@@ -50,8 +50,8 @@ bool FACELocalLoginSettingsTest::RunTest(const FString& Parameters)
     TArray<uint8> Tampered = Bytes; Tampered.Last() ^= 1;
     FFileHelper::SaveArrayToFile(Tampered,*Path);
     TestFalse(TEXT("Damaged profile data is rejected"),ACELoginSettings::Load(Loaded,Path));
-#if PLATFORM_LINUX
-    TestTrue(TEXT("Damaged Linux profile leaves account metadata unchanged"),Loaded.Account==Entered.Account && Loaded.Password.IsEmpty());
+#if PLATFORM_LINUX || PLATFORM_MAC
+    TestTrue(TEXT("Damaged Local profile leaves account metadata unchanged"),Loaded.Account==Entered.Account && Loaded.Password.IsEmpty());
 #else
     TestTrue(TEXT("Invalid ciphertext cannot replace previously loaded credentials"),Loaded.Password==Entered.Password);
 #endif
@@ -63,12 +63,12 @@ bool FACELocalLoginSettingsTest::RunTest(const FString& Parameters)
     FFileHelper::SaveArrayToFile(TArray<uint8>{1,2,3,4},*Path);
     TestFalse(TEXT("Damaged settings are rejected without crashing"),ACELoginSettings::Load(Loaded,Path));
     TestTrue(TEXT("Damaged settings leave empty defaults untouched"),Loaded.Host.IsEmpty() && Loaded.Password.IsEmpty());
-#if PLATFORM_LINUX
+#if PLATFORM_LINUX || PLATFORM_MAC
     Entered.Host=TEXT("test.example.invalid");Entered.Port=TEXT("9001");Entered.Account=TEXT("Saved login fixture");Entered.Password=TEXT("Local-only test secret \u2603");
     Entered.MigrateLegacy();Entered.bSavePasswordsLocally=true;
-    TestTrue(TEXT("Linux password opt-in saves"),ACELoginSettings::Save(Entered,Path));
+    TestTrue(TEXT("Local password opt-in saves"),ACELoginSettings::Save(Entered,Path));
     FACELoginSettings Restarted;
-    TestTrue(TEXT("Linux password preference restores on restart"),ACELoginSettings::Load(Restarted,Path)&&Restarted.bSavePasswordsLocally);
+    TestTrue(TEXT("Local password preference restores on restart"),ACELoginSettings::Load(Restarted,Path)&&Restarted.bSavePasswordsLocally);
     TestTrue(TEXT("Legacy and account password fields both round trip"),Restarted.Password==Entered.Password&&Restarted.Accounts.Num()==1&&Restarted.Accounts[0].Password==Entered.Password);
     struct stat Info{};
     TestTrue(TEXT("Local profile is private from the moment it is created"),stat(TCHAR_TO_UTF8(*FPaths::ConvertRelativePathToFull(Path)),&Info)==0&&(Info.st_mode&0777)==0600);
