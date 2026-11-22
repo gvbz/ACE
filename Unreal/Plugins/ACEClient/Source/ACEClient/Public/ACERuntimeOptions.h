@@ -26,6 +26,8 @@ inline constexpr FOption Values[] = {
  {TEXT("ObjectGlow"),TEXT("Custom object highlighting"),1,0,1},
  {TEXT("UniformDungeonLighting"),TEXT("Uniform dungeon lighting"),0,0,1},
  {TEXT("LegionsSky"),TEXT("Use imported AC2 sky"),0,0,1},
+ {TEXT("PersonalFogColor"),TEXT("Fog Colors by Weather"),0,0,1}, // personal: fog-color
+ {TEXT("PersonalFogColorSaturation"),TEXT("Fog Color Saturation"),.35f,0,1.5f}, // personal: fog-color
  {TEXT("ConstrainUIWindows"),TEXT("Keep UI windows on screen"),1,0,1},
  {TEXT("DynamicLightingQuality"),TEXT("Dynamic lights"),2,0,2},
  {TEXT("CameraAlignToSlope"),TEXT("Align camera to slope"),1,0,1},

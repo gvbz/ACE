@@ -45,6 +45,7 @@ bool FACELegionsSkyTest::RunTest(const FString&)
 {
 	const float FogLimitSaved=ACERuntimeOptions::Get(TEXT("PersonalMaxFogDistance")); ACERuntimeOptions::Set(TEXT("PersonalMaxFogDistance"),43.f); ON_SCOPE_EXIT { ACERuntimeOptions::Set(TEXT("PersonalMaxFogDistance"),FogLimitSaved); }; // personal: fog-distance
 	const float SkyHorizonSaved=ACERuntimeOptions::Get(TEXT("PersonalSkyHorizon")); ACERuntimeOptions::Set(TEXT("PersonalSkyHorizon"),0.f); ON_SCOPE_EXIT { ACERuntimeOptions::Set(TEXT("PersonalSkyHorizon"),SkyHorizonSaved); }; // personal: fog-distance
+	const float FogColorSaved=ACERuntimeOptions::Get(TEXT("PersonalFogColor")); ACERuntimeOptions::Set(TEXT("PersonalFogColor"),0.f); ON_SCOPE_EXIT { ACERuntimeOptions::Set(TEXT("PersonalFogColor"),FogColorSaved); }; // personal: fog-color
 	const FString Output = FPaths::ProjectSavedDir() / TEXT("Automation/LegionsSky");
 	IFileManager::Get().MakeDirectory(*Output, true);
 	const FString Cache = Output / TEXT("Test.sky");

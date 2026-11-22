@@ -201,6 +201,8 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  LegionsImport->OnClicked.AddDynamic(this,&UACEVideoSettingsWidget::ImportLegionsSky);
  Box->AddChild(Fixed(ImportRow,272,22));
  LegionsStatus=Label(TEXT("")); LegionsStatus->SetAutoWrapText(true); Box->AddChild(LegionsStatus);
+ { auto* Check=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("PersonalFogColor")); Check->SetWidgetStyle(RoundToggle); Check->SetContent(Label(TEXT("Fog Colors by Weather"))); UACEHoverTooltipWidget::SetWidgetTooltip(Check,FText::FromString(TEXT("Changes the sunrise and sunset fog colors with the weather. Needs the imported AC2 sky."))); Box->AddChild(Fixed(Check,272,20)); FarTerrainChecks.Add(TEXT("PersonalFogColor"),Check); } // personal: fog-color
+ { AddValue(TEXT("PersonalFogColorSaturation")); auto* V=ValueSliders[TEXT("PersonalFogColorSaturation")].Get(); V->SetStepSize(.05f); UACEHoverTooltipWidget::SetWidgetTooltip(V,FText::FromString(TEXT("How strong the sunrise and sunset fog colors are. Needs Fog Colors by Weather."))); Box->AddChild(Fixed(UPersonalSliderLabel::Make(WidgetTree,V,Label(TEXT(""),7),TEXT(""),2),250,14)); } // personal: fog-color
  ShowFrameRate=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("ShowFrameRate"));
  ShowFrameRate->SetWidgetStyle(RoundToggle);ShowFrameRate->SetContent(Label(TEXT("Show FPS overlay")));Box->AddChild(Fixed(ShowFrameRate,272,20));
  auto AddFarTerrainCheck = [&](const TCHAR* Key, const TCHAR* Caption, const TCHAR* Tooltip)

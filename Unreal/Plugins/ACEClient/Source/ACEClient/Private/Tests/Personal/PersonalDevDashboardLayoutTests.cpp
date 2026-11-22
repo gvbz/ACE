@@ -109,7 +109,8 @@ bool FPersonalDevDashboardLayoutTest::RunTest(const FString& Parameters)
 		}
 	};
 
-	// The dashboard's UI after start: the client's values, one saved location, and "ar" typed in Place with the place list known.
+	// The dashboard's UI after start: the client's values, one saved location, "ar" typed in Place with the place list known,
+	// and the Fog tab on the atmospheric tables with Separate horizon band on.
 	FACEPluginVM VM;
 	if (!TestTrue(TEXT("Dashboard Lua loads"), VM.Load(Source, Error)))
 	{
@@ -195,7 +196,17 @@ bool FPersonalDevDashboardLayoutTest::RunTest(const FString& Parameters)
 		Change->SetStringField(TEXT("type"), TEXT("change"));
 		Change->SetStringField(TEXT("id"), PlaceId);
 		Change->SetStringField(TEXT("value"), TEXT("ar"));
-		if (!Step({MakeShared<FJsonValueObject>(Change)}))
+		// The Fog tab with the atmospheric tables and Separate horizon band on, so Band column is drawn too.
+		// Only the dashboard's own values change: the set request is never answered.
+		TSharedPtr<FJsonObject> Tables = MakeShared<FJsonObject>();
+		Tables->SetStringField(TEXT("type"), TEXT("change"));
+		Tables->SetStringField(TEXT("id"), TEXT("fc_set"));
+		Tables->SetStringField(TEXT("value"), TEXT("Atmospheric tables"));
+		TSharedPtr<FJsonObject> Split = MakeShared<FJsonObject>();
+		Split->SetStringField(TEXT("type"), TEXT("change"));
+		Split->SetStringField(TEXT("id"), TEXT("fc_split_haze"));
+		Split->SetBoolField(TEXT("value"), true);
+		if (!Step({MakeShared<FJsonValueObject>(Change), MakeShared<FJsonValueObject>(Tables), MakeShared<FJsonValueObject>(Split)}))
 		{
 			return false;
 		}
@@ -219,6 +230,17 @@ bool FPersonalDevDashboardLayoutTest::RunTest(const FString& Parameters)
 		}
 	};
 	Index(UI);
+	// The Fog tab's band controls and day sliders with their labels.
+	TestTrue(TEXT("Separate horizon band label"), Json.Contains(TEXT("fc_split_haze")) && Json[TEXT("fc_split_haze")]->GetStringField(TEXT("text")) == TEXT("Separate horizon band"));
+	TestTrue(TEXT("Band column label"), Json.Contains(TEXT("fc_haze_column")) && Json[TEXT("fc_haze_column")]->GetStringField(TEXT("text")) == TEXT("Band column"));
+	TestTrue(TEXT("Day variation slider"), Json.Contains(TEXT("fc_variation")) && Json[TEXT("fc_variation")]->GetStringField(TEXT("text")) == TEXT("Day variation"));
+	TestTrue(TEXT("Preview day slider"), Json.Contains(TEXT("fc_day_offset")) && Json[TEXT("fc_day_offset")]->GetStringField(TEXT("text")) == TEXT("Preview day"));
+	// The Lighting tab's status line, three controls and Reset tab.
+	TestTrue(TEXT("Lighting status line"), Json.Contains(TEXT("ld_current")) && Json[TEXT("ld_current")]->GetStringField(TEXT("text")).StartsWith(TEXT("Now: ")));
+	TestTrue(TEXT("Smooth light direction check box"), Json.Contains(TEXT("ld_smooth")) && Json[TEXT("ld_smooth")]->GetStringField(TEXT("text")) == TEXT("Smooth light direction"));
+	TestTrue(TEXT("Horizon fade slider"), Json.Contains(TEXT("ld_horizon_fade")) && Json[TEXT("ld_horizon_fade")]->GetStringField(TEXT("text")) == TEXT("Horizon fade"));
+	TestTrue(TEXT("Night turn slider"), Json.Contains(TEXT("ld_night_turn")) && Json[TEXT("ld_night_turn")]->GetStringField(TEXT("text")) == TEXT("Night turn"));
+	TestTrue(TEXT("Lighting Reset tab"), Json.Contains(TEXT("reset_lighting")));
 	auto TypeOf = [](const TSharedPtr<FJsonObject>& R)
 	{
 		FString Type = TEXT("text");

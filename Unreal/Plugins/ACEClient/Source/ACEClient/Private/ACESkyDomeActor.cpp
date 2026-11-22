@@ -33,6 +33,8 @@
 #include "UObject/UObjectIterator.h"
 #include "Personal/PersonalSkyHorizon.h" // personal: sky-horizon
 #include "Personal/PersonalFog.h" // personal: fog-distance
+#include "Personal/PersonalFogColor.h" // personal: fog-color
+#include "Personal/PersonalLightDirection.h" // personal: light-direction
 
 namespace
 {
@@ -1062,6 +1064,8 @@ bool AACESkyDomeActor::UpdateImportedSky(float DayFraction, bool bEnabled)
 		else
 			Frame.CloudOpacity*=1.f-Frame.Overcast;
 		const auto Haze=ImportedSky->Update(ImportedPaletteTime(DayFraction),Frame);
+		PersonalFogColor::Apply(*ImportedSky, DayFraction, Twilight, ActiveGroup.DayName, BuiltDayNumber, Frame.Overcast, Frame.Rain); // personal: fog-color
+		PersonalLightDirection::Apply(*ImportedSky, Frame, ActiveGroup.TimesOfDay, DayFraction); // personal: light-direction
 		bImportedClouds=ImportedSky->CloudShadowOpacity > KINDA_SMALL_NUMBER;
 		if (ColorFillMesh) ColorFillMesh->SetVisibility(Haze.A > KINDA_SMALL_NUMBER);
 		if (Haze.A > KINDA_SMALL_NUMBER)
@@ -1395,7 +1399,7 @@ void AACESkyDomeActor::UpdateFog(const FACEDatSkyTimeOfDay& A, const FACEDatSkyT
 	UpdateColorFill(bImportedVisible ? ImportedSky->SkyFogColor : FogColor);
 	if (HorizonMid)
 	{
-		HorizonMid->SetVectorParameterValue(TEXT("FillColor"),FogColor);
+		HorizonMid->SetVectorParameterValue(TEXT("FillColor"),PersonalFogColor::BandColor(FogColor, bImportedVisible)); // personal: fog-color
 		const float Height = FMath::Lerp(HorizonFadeHeight, ClearHorizonFadeHeight,
 			bImportedVisible ? ImportedSky->ClearDaylight : 0.f);
 		HorizonMid->SetScalarParameterValue(TEXT("HorizonFalloff"), 1.f / Height);

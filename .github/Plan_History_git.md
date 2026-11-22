@@ -1,4 +1,4 @@
-# Plan history (gvbz at a050fb43a with the Development Dashboard and Max Fog Distance, client v163, 2026.11.20.163)
+# Plan history (gvbz at a272be5e4 with the Development Dashboard and Max Fog Distance, plus Fog Colors by Weather and Smooth light direction, client v163, 2026.11.20.163)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -663,6 +663,147 @@ Not measured. Frame rate was fine in game at the limit and at 43.
 ### Depends on (Thwargle's code)
 
 `AACESkyDomeActor::UpdateFog` (its fog end, start, the `SetWorldDistanceFog` amount and the horizon band material), the shared fog collection and the fog graph of the client's materials (`WireRetailDistanceFog`), `UPersonalFarTerrainSubsystem::FogCoverageDistanceCm` and `VisibleRadius`, `GetGameDayFraction`, and the far terrain textures (`PersonalFarTerrainDetail::MeshCells`).
+
+## 9. Fog colors by weather
+
+| | |
+|---|---|
+| Merged | 2026-11-22, client v163, in the commit that added this section |
+| Settings | Check box `Fog Colors by Weather` (`PersonalFogColor`), off by default, right under `Use imported AC2 sky`. Slider `Fog Color Saturation` (`PersonalFogColorSaturation`), 0 to 1.5 in steps of 0.05, default 0.35, with its value under it (`0.35`), right under the check box. Both applied with Apply; Defaults and Reset include them |
+| Needs | `Use imported AC2 sky` on. With the classic sky, the fog is as the client sets it |
+
+### What it does
+
+With the imported AC2 sky, the client takes its fog color from one AC2 record, the clear day, so every sunrise and sunset has the same color; only overcast and rain move it toward the AC2 shower colors. With `Fog Colors by Weather` on, the fog through the sunrise and sunset windows takes its colors from the server's weather (the day group's name: Clear, Sunny, Cloudy, Rainy), with a small change from one day to the next. The sky just above the land (the horizon band) gets its own color from the same table. Outside the two windows, and with the option off, the fog is the AC2 color.
+
+The AC1 day groups cannot give this themselves: their 20 groups have only three fog color curves, and all of them are the same at sunrise and at the sunset peak. All groups also share the same twilight bounds, so the AC2 color is the same in every group at every time.
+
+### Defaults
+
+- Atmospheric tables per weather: Clear `Clear sky`, Sunny `Hazy`, Cloudy `Foggy`, Rainy `Overcast and rainy`; land fog in the `Horizon` column; table brightness not used.
+- Separate horizon band on, in the `Mid-sky` column.
+- Sunrise and sunset brightness: Clear 0.85 and 0.8, Sunny 0.9 and 0.85, Cloudy 0.85 and 0.8, Rainy 0.75 and 0.75.
+- Saturation from the option (0.35), strength 1, window 1.5, storm fade 0.35, day variation 0.5.
+
+### Files
+
+- `Private/Personal/PersonalFogColor.h/.cpp`, namespace `PersonalFogColor`:
+  - `OptionKey`, `SaturationOptionKey`, `IsOn()`, `SaturationInUse()`.
+  - Weather: `WeatherOf(DayName)`, `WeatherName`.
+  - Set A, the palettes: `Palette(Preset)` (four palettes of five colors), `PresetName`, `Ramp`, `RampColor`.
+  - Set B, the atmospheric tables: `TableColor`, `TableColumn`, `PhaseCount`, `TableName`, `ColumnName`, `TableRamp`.
+  - `Window`, `Position`, `Weight`, `StormFactor`, `ToHSV`, `LerpHue`, `Recolor`.
+  - Day to day: `DayOffsets(DayNumber)`, `VaryTarget`, `VaryBright`, constants `MaxHueShift` 20, `MaxSatScale` 0.3, `MaxBrightShift` 0.1.
+  - `Apply(...)` (the hook) and `BandColor(FogColor, bImportedVisible)` (the horizon band).
+- `Private/Personal/PersonalSliderLabel.h/.cpp`: the value label takes a number of decimals (default 0, as before); the saturation slider shows two.
+- Test `Private/Tests/Personal/PersonalFogColorTests.cpp` (`ACE.Personal.FogColor`).
+- `ClientMods/devdash/main.lua`: the Development Dashboard's Fog tab (fork only, like the rest of the dashboard), with its tests in `PersonalDevDashboardTests.cpp` and `PersonalDevDashboardLayoutTests.cpp`.
+- T edits, marked `// personal: fog-color` (line numbers at the merge):
+  - `Public/ACERuntimeOptions.h` lines 29 and 30: the option rows `{PersonalFogColor, "Fog Colors by Weather", 0, 0, 1}` and `{PersonalFogColorSaturation, "Fog Color Saturation", 0.35, 0, 1.5}`.
+  - `Private/UI/ACEVideoSettingsWidget.cpp` lines 204 and 205: the check box (in the far terrain check box list, so Apply, Defaults and Reset include it) and the slider with its label.
+  - `Private/ACESkyDomeActor.cpp` line 36 (include); in `UpdateImportedSky` line 1067, right after `ImportedSky->Update(...)`: `PersonalFogColor::Apply(*ImportedSky, DayFraction, Twilight, ActiveGroup.DayName, BuiltDayNumber, Frame.Overcast, Frame.Rain)`; in `UpdateFog` line 1402: the horizon band's `FillColor` is `PersonalFogColor::BandColor(FogColor, bImportedVisible)` (was `FogColor`).
+  - `Private/Tests/ACELegionsSkyTests.cpp` line 48: `ACE.Graphics.LegionsSkyImport` runs with the option off and puts the saved value back.
+
+### Console variables
+
+All `personal.FogColor.*`, test controls in the dashboard's Fog tab; values are not saved.
+
+- `Draw` (-1 follows the check box, 0 off, 1 on), `Strength` (0 to 1, 1), `Saturation` (-1 follows the option; 0 to 1.5 overrides it for the session), `Window` (0.5 to 2, 1.5), `StormFade` (0 to 1, 0.35).
+- `Weather` (-1 follows the server; 0 to 3 forces Clear, Sunny, Cloudy or Rainy colors), `Set` (0 palettes, 1 atmospheric tables, default 1).
+- Tables: `Column` (0 horizon, default; 1 mid-sky; 2 zenith), `TableBrightness` (0, default; 1 also moves the brightness toward the table color), `SplitHaze` (1, default: the horizon band takes its own column), `HazeColumn` (1, mid-sky, default).
+- Day to day: `Variation` (0 to 1, 0.5), `DayOffset` (whole days added to the server's day, 0; preview only).
+- Per weather (`Clear`, `Sunny`, `Cloudy`, `Rainy`): `.Table` (1 to 4), `.SunrisePalette` and `.SunsetPalette` (0 AC2, 1 to 4 the palettes, 5 Custom; Clear 4 and 1, Sunny 1 and 3, Cloudy and Rainy 2 and 2), `.SunriseHue`, `.SunriseSat`, `.SunsetHue`, `.SunsetSat` (for Custom: 15°, 0.45, 20°, 0.70, near the AC2 clear-day colors), `.SunriseBright` and `.SunsetBright` (0.5 to 1.5, defaults above).
+- `Current` (read only): weather and its source, day and day offset, color set, table or palettes, band column, saturation and its source, the day's variation, the window weights, rain, overcast and the amount in use.
+
+### How it works
+
+- `UpdateImportedSky` runs the AC2 renderer's `Update`, which sets its `FogColor` and `SkyFogColor` from the AC2 record every call. `Apply` recolors both right after, so the change never builds up, and everything that reads them follows: the world fog and the color-fill backdrop behind the sky. Without the AC2 sky the hook is not reached.
+- Windows: sunrise from the twilight bounds X to Y (0.16 to 0.27 of the day), sunset from Z to W (0.84 to 0.96), widened by `Window` around their middles (at 1.5: 0.13 to 0.30 and 0.81 to 0.99). The weight is a plateau: 0 outside, rising to 1 over the first 20 % of the window, back to 0 over the last 20 %.
+- Target color: the weather's table placed by time through the window, in the chosen column. Sunset: table 1 golden hour at 0, civil twilight at 0.4, nautical twilight at 0.75, night at 1; tables 2 to 4 dusk at 0, twilight at 0.5, night at 1. Sunrise: table 1 night at 0, blue hour at 0.4, dawn at 1; tables 2 to 4 night at 0, dawn at 1. Table 4's columns run the other way (near ground, mid-distance, distant horizon), so `Horizon` is its distant horizon. With the palettes, the colors are sorted by brightness and spread evenly across the window, the brightest where the AC2 sky is brightest (start of sunset, end of sunrise).
+- Recolor: in display sRGB HSV, the hue moves toward the target hue (the short way round) and the saturation toward the target saturation times the saturation in use, both by weight x `Strength` x storm factor. The brightness is the AC2 brightness times the weather's brightness factor for that window, blended by the same amount, so night stays dark and a pale table color does not light up the dusk.
+- Storm rule: the amount is multiplied by 1 - Rain x `Storm fade`, so the AC2 storm colors return while rain falls. Overcast is not used: the overcast cloud layer is opaque through most of every Cloudy and Rainy day.
+- Day to day: a fixed integer hash of the server's day number (the same on every client) gives three numbers from -1 to 1 for each window. Times `Day variation`, the target hue moves by up to 20°, the target saturation is multiplied by up to 1 ± 0.3, and the brightness factor moves by up to 0.1. The day number changes at day fraction 0, outside both windows at the default `Window`, so no step shows.
+- Horizon band: Thwargle's band (`HorizonMid`, a lower half sphere over the AC2 sky that fades out a few degrees above eye level) is colored with the fog color. With the tables and `SplitHaze` on, `Apply` also recolors the AC2 fog color in `HazeColumn` with the same weight, brightness and day offsets, and `BandColor` gives that to the band. Otherwise the band keeps the fog color.
+
+### Tests
+
+`ACE.Personal.FogColor` uses a settings file of its own and puts every `personal.FogColor` variable back: the defaults of all variables; the option rows (off by default; saturation 0.35, 0 to 1.5, right after the check box); weather names; the four palettes and four tables against their hex codes; windows and weights with `Window`; ramp order for both windows and a reversed palette; the short way round the hue wheel; recolor at amount 0 and with brightness factors and table values; the storm rule (rain only); table phases in time order in both windows and columns, table 4's reversed columns; `Apply` off, with `Draw` 0, preset AC2 and an unknown weather (no change); palettes, forced weather, custom colors, saturation, brightness per weather and window; the horizon band with the split on and off, every column, clamped values and set A; the saturation option and its dashboard override; the day offsets (range, the same for the same day, variation 0 leaves everything as it is, limits at 1, hue wrap), and the same offsets for fog and band; the slider label's decimals. `ACE.Personal.DevDashboard` and `.DevDashboardLayout` cover the Fog tab (controls, defaults, which controls show for each color set and weather, the saturation override and `Reset tab`). `ACE.RetailParity.Weather`, `.NetworkWeather`, `.FogColorProbe` and `ACE.Graphics.LegionsSkyImport` pass unchanged.
+
+### Checked
+
+In game on a local ACE server (2026-11-20 to 2026-11-22), with the dashboard's Fog tab: each weather at dawn and dusk, both color sets, the horizon band on and off, and the day-to-day change with `Preview day` and a timelapse. The defaults were set from these checks.
+
+### Baseline
+
+Not measured. The feature adds a few color operations per frame with the AC2 sky.
+
+### What differs from the first design
+
+- Both color sets were built to compare in game. The atmospheric tables became the default; the palettes stay as a choice in the dashboard.
+- The storm rule first used max(overcast, rain). Since the overcast layer is opaque from 0.02 to 0.96 of every Cloudy and Rainy day, this turned the colors off on those days. It now uses falling rain only, with `Storm fade`.
+- The second column first colored the renderer's sky fog color. That drives a backdrop the AC2 dome hides, so nothing changed on screen. It now colors the horizon band.
+- The saturation started as a dashboard value; it is now an option (`Fog Color Saturation`), which the dashboard can override for the session.
+- Brightness was one factor (1, then 0.9 for every weather); it is now set per weather and window.
+- The day-to-day change (a second stage) was added after the per-weather colors had been checked in game.
+
+### Depends on (Thwargle's code)
+
+`AACESkyDomeActor::UpdateImportedSky` (the renderer's `Update`, `Twilight`, `ActiveGroup.DayName`, `BuiltDayNumber`, `Frame.Overcast` and `Frame.Rain`), `FACELegionsSkyRenderer::FogColor` and `SkyFogColor`, `AACESkyDomeActor::UpdateFog` (the horizon band `HorizonMid` and its `FillColor`, `bImportedVisible`), the options window's far terrain check box list, and `UPersonalSliderLabel`.
+
+## 10. Smooth light direction
+
+| | |
+|---|---|
+| Merged | 2026-11-22, client v163, in the commit that added this section |
+| Setting | None in the options window. On by default; test controls in the Development Dashboard's Lighting tab |
+| Needs | `Use imported AC2 sky` on. The classic sky is not changed |
+
+### What it does
+
+With the AC2 sky, the client takes the light from the sun if it is above the horizon, else the large moon if it is, else the AC1 key direction. So the light turned in one frame when a body crossed the horizon, and the AC1 keys turn the heading from 270° to 90° at midnight through 180° within 0.001 of a day. In a timelapse, lit and dark slopes swapped at the moonset (a 161° turn) and at midnight (180°). Now the light turns gradually, from the time of day only, so a timelapse, `/time set` and normal play give the same light at the same moment. The largest turn per 0.0005 of a day is 5.4° (was 161°), in all 20 day groups. The light's strength and color are not changed.
+
+### Files
+
+- `Private/Personal/PersonalLightDirection.h/.cpp`, namespace `PersonalLightDirection`:
+  - Constants `VerticalTurnDegrees` 90, `SharpTurnDegrees` 90.
+  - `IsOn()`, `HorizonFade()` (5 to 45), `NightTurn()` (0.01 to 0.25).
+  - `TurnWindows(Keys, TurnLength)`, `ClientKeyAngles`, `AnglesToDirection`, `KeyDirection` (the AC1 key direction with sharp turns spread).
+  - `Weight(Body, FadeDegrees)`, `Turn(From, To, T)`, `Direction(KeyDir, Moon, Sun, FadeDegrees)`, `ElevationBearing`.
+  - `Apply(Sky, Frame, Keys, DayFraction)`.
+- Test `Private/Tests/Personal/PersonalLightDirectionTests.cpp` (`ACE.Personal.LightDirection`).
+- `ClientMods/devdash/main.lua`: the dashboard's Lighting tab (fork only).
+- T edits, marked `// personal: light-direction` (line numbers at the merge): `Private/ACESkyDomeActor.cpp` line 37 (include) and line 1068 in `UpdateImportedSky`, right after the fog color line: `PersonalLightDirection::Apply(*ImportedSky, Frame, ActiveGroup.TimesOfDay, DayFraction)`.
+
+### Console variables
+
+`personal.LightDir.Smooth` (1; 0 is the client's direction), `.HorizonFade` (20°), `.NightTurn` (0.1 of a day), `.Current` (read only: the moon and sun weights, the light's elevation and bearing). Dashboard Lighting tab: `Smooth light direction`, `Horizon fade`, `Night turn`, a status line and `Reset tab`.
+
+### How it works
+
+- Night turn: the AC1 key direction keeps the client's keys, but where two neighboring keys turn the heading by 90° or more in a span shorter than `Night turn`, the turn is spread evenly over `Night turn`, centered on that span, in the same direction as the client turns (through the south at midnight). The elevation stays as the keys give it (0.9° up at midnight), so night stays as dark as before.
+- Sun and moon: each one's weight rises from 0 at the horizon to 1 at `Horizon fade` degrees up (smoothstep, times its opacity). The light turns from the AC1 key direction toward the moon by the moon's weight, then toward the sun by the sun's weight.
+- Turning: along the shortest arc when the two directions are up to 90° apart, and about the vertical axis (bearing the short way round, elevation in a straight line) when they are further apart. A weighted sum would put the light straight overhead when two directions are far apart (a flash on flat ground); the shortest arc alone would lift the moonset turn (the moon low in the WNW, the AC1 key 11.6° up in the east) to 53° up. With the vertical-axis turn the light stays low and passes through the north.
+- `Apply` sets the renderer's `Current.Direction`, which the client's light update then uses.
+
+### Tests
+
+`ACE.Personal.LightDirection` uses a settings file of its own and puts the `personal.LightDir` variables back: defaults and clamps; the weight (0 without opacity, smoothstep, opacity); the turn (shortest arc up to 90°, about the vertical axis beyond, the moonset case stays low); then with the AC1 keys from the DAT files and the sun and moon on their measured AC2 paths, for all 20 day groups every 0.0005 of a day: the night turn windows do not overlap, the largest turn per step is under 6° (the client's is logged), halfway through the night turn the light is in the south at the keys' height, from the moon's last full-weight moment to the AC1 key the light stays below 30° up, away from the handoffs the light is the client's, and with `Smooth` 0 it is exactly the client's; `Current`. `ACE.Graphics.LegionsSkyImport` passes unchanged with the smoothing on.
+
+### Checked
+
+In game on a local ACE server (2026-11-22): a timelapse with the AC2 sky through moonset, sunrise, sunset and midnight.
+
+### Baseline
+
+Not measured. The feature adds a few vector operations per frame with the AC2 sky.
+
+### What differs from the first design
+
+- The vertical-axis turn first applied only above 178°, for directions almost opposite. At the moonset that lifted the light to 53° up; it now applies above 90°, which keeps the light at or below 19° there.
+
+### Depends on (Thwargle's code)
+
+`AACESkyDomeActor::UpdateImportedSky` (`Frame` with the sun and moon and their opacities, `ActiveGroup.TimesOfDay`), the AC1 key bracketing and heading lerp it uses (`BracketTimeOfDay`), and `FACELegionsSkyRenderer::Current.Direction`.
 
 ## Abandoned
 

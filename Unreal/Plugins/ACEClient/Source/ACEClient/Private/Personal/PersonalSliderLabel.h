@@ -8,7 +8,7 @@ class USlider;
 class UWidgetTree;
 
 /**
- * Personal settings: a line of text under a slider that shows the slider's value as a whole number,
+ * Personal settings: a line of text under a slider that shows the slider's value (a whole number, or with decimals),
  * for sliders where the number matters (a radius in landblocks). It reads the slider while the
  * window is open, so it also follows Reset and Defaults; the settings window needs no other code for it.
  */
@@ -17,11 +17,11 @@ class UPersonalSliderLabel : public UTextBlock
 {
 	GENERATED_BODY()
 public:
-	/** Style: a text block of the window whose font and color are copied. Unit: the text after the number. */
-	static UPersonalSliderLabel* Make(UWidgetTree* Tree, USlider* Slider, const UTextBlock* Style, const TCHAR* Unit);
+	/** Style: a text block of the window whose font and color are copied. Unit: the text after the number (none if empty). */
+	static UPersonalSliderLabel* Make(UWidgetTree* Tree, USlider* Slider, const UTextBlock* Style, const TCHAR* Unit, int32 Decimals = 0);
 
-	/** The text for a value: the number the feature uses (rounded), then the unit. */
-	static FString Format(float Value, const FString& Unit);
+	/** The text for a value: the number the feature uses (rounded to Decimals places; 0 a whole number), then the unit. */
+	static FString Format(float Value, const FString& Unit, int32 Decimals = 0);
 
 private:
 	UFUNCTION()
@@ -30,4 +30,5 @@ private:
 	UPROPERTY()
 	TObjectPtr<USlider> Slider;
 	FString Unit;
+	int32 Decimals = 0;
 };

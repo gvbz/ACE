@@ -9,7 +9,60 @@
 -- default in the client source; the default here is only shown while the client
 -- has not answered yet, Reset tab uses the default the client reports.
 local follow={"Follow option","Off","On"}
-local follow_values={["Follow option"]=-1,Off=0,On=1}
+local follow_values={-1,0,1}
+
+-- Fog tab (personal.FogColor.*). Selects carry their option names and values. Per-weather
+-- controls have weather (shown only for the weather picked in Edit weather), set ("palettes"
+-- or "tables": shown only with that color set) and custom (shown only while that window's
+-- palette is Custom).
+local fog_weathers={"Clear","Sunny","Cloudy","Rainy"}
+local presets={"AC2","dawn and dusk","Dawn to Dusk","Dusk and Dawn","From Dusk to Dawn","Custom"}
+local preset_values={0,1,2,3,4,5}
+local fog_current_name="personal.FogColor.Current"
+local fog_controls={
+    {id="fc_draw",text="Fog colors",name="personal.FogColor.Draw",kind="select",default=-1},
+    {id="fc_strength",text="Strength",name="personal.FogColor.Strength",kind="slider",min=0,max=1,step=0.05,default=1},
+    -- Saturation: -1 follows the Fog Color Saturation option; the slider then shows the value in use
+    -- (from Current, else follow). Moving it sets an override; Reset tab sets -1 again.
+    {id="fc_saturation",text="Saturation",name="personal.FogColor.Saturation",kind="slider",min=0,max=1.5,step=0.05,default=-1,follow=0.35},
+    {id="fc_window",text="Window",name="personal.FogColor.Window",kind="slider",min=0.5,max=2,step=0.05,default=1.5},
+    {id="fc_storm_fade",text="Storm fade",name="personal.FogColor.StormFade",kind="slider",min=0,max=1,step=0.05,default=0.35},
+    {id="fc_variation",text="Day variation",name="personal.FogColor.Variation",kind="slider",min=0,max=1,step=0.05,default=0.5},
+    {id="fc_day_offset",text="Preview day",name="personal.FogColor.DayOffset",kind="slider",min=-10,max=10,step=1,default=0},
+    {id="fc_weather",text="Weather",name="personal.FogColor.Weather",kind="select",default=-1,
+        options={"Follow server","Clear","Sunny","Cloudy","Rainy"},values={-1,0,1,2,3}},
+    {id="fc_set",text="Color set",name="personal.FogColor.Set",kind="select",default=1,
+        options={"Palettes","Atmospheric tables"},values={0,1}},
+    {id="fc_column",text="Column",name="personal.FogColor.Column",kind="select",default=0,set="tables",
+        options={"Horizon","Mid-sky","Zenith"},values={0,1,2}},
+    {id="fc_table_brightness",text="Use table brightness",name="personal.FogColor.TableBrightness",kind="checkbox",default=0,set="tables"},
+    {id="fc_split_haze",text="Separate horizon band",name="personal.FogColor.SplitHaze",kind="checkbox",default=1,set="tables"},
+    {id="fc_haze_column",text="Band column",name="personal.FogColor.HazeColumn",kind="select",default=1,set="tables",split=true,
+        options={"Horizon","Mid-sky","Zenith"},values={0,1,2}}}
+local fog_defaults={Clear={1,4,1,0.85,0.8},Sunny={3,1,3,0.9,0.85},Cloudy={4,2,2,0.85,0.8},Rainy={2,2,2,0.75,0.75}} -- table, sunrise palette, sunset palette, sunrise and sunset brightness
+for _,w in ipairs(fog_weathers) do
+    local p,lw="personal.FogColor."..w..".","fc_"..string.lower(w).."_"
+    local d=fog_defaults[w]
+    for _,c in ipairs({
+        {id=lw.."sunrise_palette",text="Sunrise palette",name=p.."SunrisePalette",kind="select",default=d[2],set="palettes",options=presets,values=preset_values},
+        {id=lw.."sunrise_hue",text="Sunrise hue",name=p.."SunriseHue",kind="slider",min=0,max=360,step=1,default=15,set="palettes",custom="sunrise"},
+        {id=lw.."sunrise_sat",text="Sunrise saturation",name=p.."SunriseSat",kind="slider",min=0,max=1,step=0.01,default=0.45,set="palettes",custom="sunrise"},
+        {id=lw.."sunset_palette",text="Sunset palette",name=p.."SunsetPalette",kind="select",default=d[3],set="palettes",options=presets,values=preset_values},
+        {id=lw.."sunset_hue",text="Sunset hue",name=p.."SunsetHue",kind="slider",min=0,max=360,step=1,default=20,set="palettes",custom="sunset"},
+        {id=lw.."sunset_sat",text="Sunset saturation",name=p.."SunsetSat",kind="slider",min=0,max=1,step=0.01,default=0.7,set="palettes",custom="sunset"},
+        {id=lw.."table",text="Table",name=p.."Table",kind="select",default=d[1],set="tables",
+            options={"Clear sky","Overcast and rainy","Hazy","Foggy"},values={1,2,3,4}},
+        {id=lw.."sunrise_bright",text="Sunrise brightness",name=p.."SunriseBright",kind="slider",min=0.5,max=1.5,step=0.05,default=d[4]},
+        {id=lw.."sunset_bright",text="Sunset brightness",name=p.."SunsetBright",kind="slider",min=0.5,max=1.5,step=0.05,default=d[5]}}) do
+        c.weather=w;fog_controls[#fog_controls+1]=c
+    end
+end
+-- Lighting tab (personal.LightDir.*): smooth light direction with the imported AC2 sky, and its status line.
+local light_current_name="personal.LightDir.Current"
+local light_controls={
+    {id="ld_smooth",text="Smooth light direction",name="personal.LightDir.Smooth",kind="checkbox",default=1},
+    {id="ld_horizon_fade",text="Horizon fade",name="personal.LightDir.HorizonFade",kind="slider",min=5,max=45,step=1,default=20},
+    {id="ld_night_turn",text="Night turn",name="personal.LightDir.NightTurn",kind="slider",min=0.01,max=0.25,step=0.01,default=0.1}}
 local pages={
     {id="far_terrain",text="Far Terrain",controls={
         {id="ft_wireframe",text="Wireframe",name="personal.FarTerrain.Wireframe",kind="checkbox",default=0},
@@ -36,8 +89,8 @@ local pages={
         {id="fr_mark_door",text="Mark door",name="personal.FarWindows.Mark",args="door"},
         {id="fr_mark_open",text="Mark open",name="personal.FarWindows.Mark",args="open"},
         {id="fr_mark_clear",text="Clear mark",name="personal.FarWindows.Mark",args="clear"}}},
-    {id="fog",text="Fog"},
-    {id="lighting",text="Lighting"},
+    {id="fog",text="Fog",controls=fog_controls,fog=true},
+    {id="lighting",text="Lighting",controls=light_controls,current="ld_current"},
     {id="shadows",text="Shadows"},
     {id="performance",text="Performance"},
     {id="admin",text="Admin",admin=true}}
@@ -73,7 +126,18 @@ local inflight={}       -- request id -> the request, for replies and retries
 local last_set={}       -- name -> id of the last set that carried it
 local serial,next_send,player=0,0,false
 local status="Reading the client's values..."
+local edit_weather="Clear" -- the weather whose Fog controls are shown
+local fog_current=nil       -- personal.FogColor.Current, read every two seconds
+local light_current=nil     -- personal.LightDir.Current, read with it
+local next_poll=0
 
+-- A number in Current after key (for example "saturation " -> 0.30); nil if Current is not read or has none.
+local function current_number(key)
+    if not fog_current then return nil end
+    local at=string.findplain(fog_current,key)
+    if not at then return nil end
+    return tonumber(string.sub(fog_current,at+#key,at+#key+3))
+end
 local function number(v)
     if type(v)=="boolean" then return v and 1 or 0 end
     if v=="true" then return 1 elseif v=="false" then return 0 end
@@ -81,6 +145,17 @@ local function number(v)
 end
 local function value_of(c)
     local v=values[c.name];if v==nil then v=c.default end;return v
+end
+-- A select's value for an option name, and the option name for a value (the first if none matches).
+local function select_value(c,label)
+    local options,list=c.options or follow,c.values or follow_values
+    for i,o in ipairs(options) do if o==label then return list[i] end end
+    return nil
+end
+local function select_label(c,v)
+    local options,list=c.options or follow,c.values or follow_values
+    for i,x in ipairs(list) do if x==v then return options[i] end end
+    return options[1]
 end
 local function usable(name,kind)
     local e=info and info[name]
@@ -133,6 +208,7 @@ end
 local function start(s)
     info=nil;values={};pending={};pending_count=0;queue={};inflight={};last_set={}
     status="Reading the client's values..."
+    edit_weather="Clear";fog_current=nil;light_current=nil;next_poll=0
     enqueue({operation="list"})
     admin={speed=4,place="",place_serial=0,name="",name_serial=0,location=nil,attackable=false,cloaked=false}
     chat_queue={};load_locations(s.state);state_dirty=false;places,places_asked,shown=nil,false,{}
@@ -151,6 +227,8 @@ local function on_list(e)
     for _,b in pairs(buttons) do
         if not usable(b.name,"command") then missing[#missing+1]=b.name end
     end
+    if info[fog_current_name] then fog_current=tostring(info[fog_current_name].value) end
+    if info[light_current_name] then light_current=tostring(info[light_current_name].value) end
     if #missing>0 then
         table.sort(missing);local seen,list={},{}
         for _,n in ipairs(missing) do if not seen[n] then seen[n]=true;list[#list+1]=n end end
@@ -162,7 +240,9 @@ end
 local function on_values(e,id)
     for name,v in pairs(e.values or {}) do
         -- A newer change of the same variable wins over an older reply.
-        if pending[name]==nil and (id==nil or last_set[name]==nil or last_set[name]==id) then values[name]=number(v) end
+        if name==fog_current_name then fog_current=tostring(v)
+        elseif name==light_current_name then light_current=tostring(v)
+        elseif pending[name]==nil and (id==nil or last_set[name]==nil or last_set[name]==id) then values[name]=number(v) end
     end
 end
 local function failed(r,e)
@@ -369,6 +449,32 @@ local function admin_ui()
                 {id="adm_cloaked",type="checkbox",text="Cloaked",tooltip="@cloak on / off",value=admin.cloaked}})}),
         section("adm_targets","Targets",{line(b("adm_smite","Smite target",fixed.adm_smite))})}
 end
+-- Fog tab: the status line, the shared controls, Edit weather, then that weather's controls of
+-- the color set in use. Reset tab covers every Fog variable, shown or not.
+local function fog_ui(control)
+    local tables=value_of(controls.fc_set)==1
+    local children={line({id="fc_current",text="Now: "..(fog_current or "waiting for the client.")})}
+    local function shown(c)
+        if c.set and (c.set=="tables")~=tables then return false end
+        if c.weather and c.weather~=edit_weather then return false end
+        if c.split and value_of(controls.fc_split_haze)~=1 then return false end
+        if c.custom then
+            local palette=controls["fc_"..string.lower(c.weather).."_"..c.custom.."_palette"]
+            if value_of(palette)~=5 then return false end
+        end
+        return true
+    end
+    local edit_added=false
+    for _,c in ipairs(fog_controls) do
+        if c.weather and not edit_added then
+            edit_added=true
+            children[#children+1]=line({id="fc_edit_weather",type="select",text="Edit weather",options=fog_weathers,value=edit_weather,
+                tooltip="Which weather's colors are shown below."})
+        end
+        if shown(c) then children[#children+1]=line(control(c)) end
+    end
+    return children
+end
 
 return function(s)
     if s.player~=player then player=s.player;start(s) end
@@ -387,9 +493,12 @@ return function(s)
         elseif e.type=="change" and controls[e.id] then
             local c=controls[e.id]
             if usable(c.name,"variable") then
-                local v=c.kind=="select" and follow_values[e.value] or clean(c,e.value)
+                local v
+                if c.kind=="select" then v=select_value(c,e.value) else v=clean(c,e.value) end
                 if v~=nil then put(c.name,v) end
             end
+        elseif e.type=="change" and e.id=="fc_edit_weather" then
+            for _,w in ipairs(fog_weathers) do if w==e.value then edit_weather=w end end
         elseif e.type=="change" and type(e.id)=="string" and string.sub(e.id,1,4)=="adm_" then admin_change(e.id,e.value)
         elseif e.type=="click" then
             local b=buttons[e.id]
@@ -404,6 +513,18 @@ return function(s)
     -- in one set, plus waiting requests, four at most.
     local requests
     local now=s.time or 0
+    -- The Fog and Lighting tabs' status lines: personal.FogColor.Current and personal.LightDir.Current
+    -- every two seconds, in one get.
+    if info and now>=next_poll then
+        local names={}
+        for _,n in ipairs({fog_current_name,light_current_name}) do if info[n] then names[#names+1]=n end end
+        if #names>0 then
+            next_poll=now+2
+            local waiting=false
+            for _,r in ipairs(queue) do if r.operation=="get" and r.names and r.names[1]==names[1] and #r.names==#names then waiting=true end end
+            if not waiting then enqueue({operation="get",names=names}) end
+        end
+    end
     local chat_ready=#chat_queue>0 and now-last_chat>=1
     if now>=next_send and (pending_count>0 or #queue>0 or chat_ready) then
         requests={}
@@ -431,10 +552,11 @@ return function(s)
         local v=value_of(c)
         if c.kind=="checkbox" then base.type="checkbox";base.value=(v or 0)~=0
         elseif c.kind=="select" then
-            base.type="select";base.options=follow
-            base.value=v==0 and "Off" or (v==1 and "On" or "Follow option")
+            base.type="select";base.options=c.options or follow
+            base.value=select_label(c,v)
         else
             base.type="slider";base.min=c.min;base.max=c.max;base.step=c.step
+            if c.follow and (v==nil or v<0) then v=current_number("saturation ") or c.follow end
             base.value=math.max(c.min,math.min(c.max,v or c.default))
         end
         return base
@@ -447,7 +569,11 @@ return function(s)
         local children={}
         if page.admin then children=admin_ui()
         elseif page.controls then
-            for _,c in ipairs(page.controls) do children[#children+1]=line(control(c)) end
+            if page.fog then children=fog_ui(control)
+            else
+                if page.current then children[1]=line({id=page.current,text="Now: "..(light_current or "waiting for the client.")}) end
+                for _,c in ipairs(page.controls) do children[#children+1]=line(control(c)) end
+            end
             if page.commands then
                 local list={}
                 for _,b in ipairs(page.commands) do list[#list+1]=button(b) end

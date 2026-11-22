@@ -52,13 +52,31 @@ bool FPersonalDevDashboardTest::RunTest(const FString& Parameters)
 	}
 
 	// Every variable the dashboard can set: values and set-by priority are put back at the end.
-	const TArray<FString> Names = {
+	const TArray<FString> FarNames = {
 		TEXT("personal.FarTerrain.Wireframe"), TEXT("personal.FarTerrain.Freeze"), TEXT("personal.FarWindows.Kinds"),
 		TEXT("personal.FarScenery.Fade"), TEXT("personal.FarScenery.SizeFactor"), TEXT("personal.FarScenery.Detail"),
 		TEXT("personal.FarScenery.MiddleRing"), TEXT("personal.FarScenery.SimplestRing"), TEXT("personal.FarScenery.Group"),
 		TEXT("personal.FarScenery.BudgetMs"), TEXT("personal.FarScenery.Radius"), TEXT("personal.FarWindows.Rooms"),
 		TEXT("personal.FarWindows.Draw"), TEXT("personal.FarWindows.RoomFogNear"), TEXT("personal.FarWindows.RoomFogFar"),
 		TEXT("personal.FarWindows.RoomLift"), TEXT("personal.FarWindows.DoorDistance"), TEXT("personal.FarWindows.RoomsAlways")};
+	// The Fog tab's 49 variables (personal.FogColor.*), after the 18 above.
+	TArray<FString> FogNames = {TEXT("personal.FogColor.Draw"), TEXT("personal.FogColor.Strength"), TEXT("personal.FogColor.Saturation"),
+		TEXT("personal.FogColor.Window"), TEXT("personal.FogColor.StormFade"), TEXT("personal.FogColor.Variation"), TEXT("personal.FogColor.DayOffset"),
+		TEXT("personal.FogColor.Weather"), TEXT("personal.FogColor.Set"), TEXT("personal.FogColor.Column"),
+		TEXT("personal.FogColor.TableBrightness"), TEXT("personal.FogColor.SplitHaze"), TEXT("personal.FogColor.HazeColumn")};
+	for (const TCHAR* Weather : {TEXT("Clear"), TEXT("Sunny"), TEXT("Cloudy"), TEXT("Rainy")})
+	{
+		for (const TCHAR* Field : {TEXT("Table"), TEXT("SunrisePalette"), TEXT("SunsetPalette"), TEXT("SunriseHue"), TEXT("SunriseSat"),
+			TEXT("SunsetHue"), TEXT("SunsetSat"), TEXT("SunriseBright"), TEXT("SunsetBright")})
+		{
+			FogNames.Add(FString::Printf(TEXT("personal.FogColor.%s.%s"), Weather, Field));
+		}
+	}
+	// The Lighting tab's three variables (personal.LightDir.*).
+	const TArray<FString> LightNames = {TEXT("personal.LightDir.Smooth"), TEXT("personal.LightDir.HorizonFade"), TEXT("personal.LightDir.NightTurn")};
+	TArray<FString> Names = FarNames;
+	Names.Append(FogNames);
+	Names.Append(LightNames);
 	struct FSaved { IConsoleVariable* Variable; FString Value; uint32 SetBy; };
 	TArray<FSaved> Saved;
 	for (const FString& Name : Names)
@@ -78,6 +96,32 @@ bool FPersonalDevDashboardTest::RunTest(const FString& Parameters)
 			S.Variable->SetFlags(EConsoleVariableFlags((uint32(S.Variable->GetFlags()) & ~uint32(ECVF_SetByMask)) | S.SetBy));
 		}
 	};
+	// The Fog and Lighting variables start at their defaults, as in a fresh client.
+	TArray<FString> FreshNames = FogNames;
+	FreshNames.Append(LightNames);
+	for (const FString& Name : FreshNames)
+	{
+		IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(*Name);
+		Variable->Set(*Variable->GetDefaultValue(), ECVF_SetByConsole);
+	}
+	// Current as the client writes it with Saturation following the option at 0.35 (read only: set by code, put back at the end).
+	IConsoleVariable* CurrentVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("personal.FogColor.Current"));
+	if (!TestNotNull(TEXT("Variable personal.FogColor.Current"), CurrentVariable))
+	{
+		return false;
+	}
+	const FString SavedCurrent = CurrentVariable->GetString();
+	ON_SCOPE_EXIT { CurrentVariable->Set(*SavedCurrent, ECVF_SetByCode); };
+	CurrentVariable->Set(TEXT("On. Clear (server), day 77 (+0). Atmospheric tables, Horizon, Clear sky, band Mid-sky; saturation 0.35 (option). Variation 0.50: outside the windows. Weights: sunrise 0.00, sunset 0.00; rain 0.00, overcast 0.00; amount 0.00."), ECVF_SetByCode);
+	// The Lighting tab's personal.LightDir.Current, the same way.
+	IConsoleVariable* LightCurrentVariable = IConsoleManager::Get().FindConsoleVariable(TEXT("personal.LightDir.Current"));
+	if (!TestNotNull(TEXT("Variable personal.LightDir.Current"), LightCurrentVariable))
+	{
+		return false;
+	}
+	const FString SavedLightCurrent = LightCurrentVariable->GetString();
+	ON_SCOPE_EXIT { LightCurrentVariable->Set(*SavedLightCurrent, ECVF_SetByCode); };
+	LightCurrentVariable->Set(TEXT("On. Moon 0.42, sun 0.00. Light 8.3° up, bearing 12°."), ECVF_SetByCode);
 
 	FACEClientPlugin Plugin;
 	Plugin.Id = TEXT("devdash");
@@ -114,7 +158,27 @@ bool FPersonalDevDashboardTest::RunTest(const FString& Parameters)
 		}
 		return true;
 	};
-	auto Requests = [&]()
+	// The Fog and Lighting tabs read personal.FogColor.Current and personal.LightDir.Current every two seconds, in one get;
+	// Requests leaves those gets out, AllRequests has them.
+	const FString CurrentName = TEXT("personal.FogColor.Current");
+	const FString LightCurrentName = TEXT("personal.LightDir.Current");
+	auto IsPoll = [&](const TSharedPtr<FJsonObject>& R)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* PollNames = nullptr;
+		if (R->GetStringField(TEXT("operation")) != TEXT("get") || !R->TryGetArrayField(TEXT("names"), PollNames) || PollNames->Num() == 0)
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& PollName : *PollNames)
+		{
+			if (PollName->AsString() != CurrentName && PollName->AsString() != LightCurrentName)
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+	auto AllRequests = [&]()
 	{
 		TArray<TSharedPtr<FJsonObject>> List;
 		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
@@ -125,6 +189,12 @@ bool FPersonalDevDashboardTest::RunTest(const FString& Parameters)
 				List.Add(Value->AsObject());
 			}
 		}
+		return List;
+	};
+	auto Requests = [&]()
+	{
+		TArray<TSharedPtr<FJsonObject>> List = AllRequests();
+		List.RemoveAll([&](const TSharedPtr<FJsonObject>& R) { return IsPoll(R); });
 		return List;
 	};
 	// Runs a request through the dev service and makes the result event the host would queue.
@@ -308,6 +378,345 @@ bool FPersonalDevDashboardTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Room fog far is back to 600"), Saved[14].Variable->GetFloat(), 600.f);
 	}
 
+	// Fog tab: the status line from personal.FogColor.Current, read every two seconds.
+	auto FogVariable = [&](const TCHAR* Name) { return IConsoleManager::Get().FindConsoleVariable(Name); };
+	{
+		TSharedPtr<FJsonObject> Poll;
+		for (int32 I = 0; I < 3 && !Poll.IsValid(); ++I)
+		{
+			if (!Step({}))
+			{
+				return false;
+			}
+			for (const TSharedPtr<FJsonObject>& R : AllRequests())
+			{
+				if (IsPoll(R))
+				{
+					Poll = R;
+				}
+			}
+		}
+		if (TestTrue(TEXT("The Fog tab reads Current"), Poll.IsValid()))
+		{
+			TArray<FString> PollNames;
+			for (const TSharedPtr<FJsonValue>& PollName : Poll->GetArrayField(TEXT("names")))
+			{
+				PollNames.Add(PollName->AsString());
+			}
+			TestEqual(TEXT("One get for both status lines"), PollNames, TArray<FString>{CurrentName, LightCurrentName});
+			if (!Step({Serve(Poll)}))
+			{
+				return false;
+			}
+			ReadUI();
+			TestEqual(TEXT("Status line shows Current"), Controls[TEXT("fc_current")]->GetStringField(TEXT("text")),
+				TEXT("Now: ") + FogVariable(*CurrentName)->GetString());
+			if (TestTrue(TEXT("Lighting status line"), Controls.Contains(TEXT("ld_current"))))
+			{
+				TestEqual(TEXT("Lighting status line shows its Current"), Controls[TEXT("ld_current")]->GetStringField(TEXT("text")),
+					FString(TEXT("Now: On. Moon 0.42, sun 0.00. Light 8.3° up, bearing 12°.")));
+			}
+		}
+	}
+	ReadUI();
+	// A fresh client: the atmospheric tables, Clear, the horizon band on. Table controls and Band column shown;
+	// no palettes, no other weather.
+	for (const TCHAR* Id : {TEXT("fc_current"), TEXT("fc_draw"), TEXT("fc_strength"), TEXT("fc_saturation"), TEXT("fc_window"), TEXT("fc_weather"),
+		TEXT("fc_variation"), TEXT("fc_day_offset"), TEXT("fc_set"), TEXT("fc_column"), TEXT("fc_table_brightness"), TEXT("fc_split_haze"),
+		TEXT("fc_haze_column"), TEXT("fc_edit_weather"), TEXT("fc_clear_table"), TEXT("fc_clear_sunrise_bright"), TEXT("fc_clear_sunset_bright"), TEXT("reset_fog")})
+	{
+		TestTrue(*FString::Printf(TEXT("Fog control %s"), Id), Controls.Contains(Id));
+	}
+	for (const TCHAR* Id : {TEXT("fc_clear_sunrise_palette"), TEXT("fc_clear_sunset_palette"), TEXT("fc_sunny_table"),
+		TEXT("fc_clear_sunrise_hue"), TEXT("fc_clear_sunset_sat")})
+	{
+		TestFalse(*FString::Printf(TEXT("Fog control %s is hidden"), Id), Controls.Contains(Id));
+	}
+	TestEqual(TEXT("Fog colors label"), Controls[TEXT("fc_draw")]->GetStringField(TEXT("text")), FString(TEXT("Fog colors")));
+	// The defaults chosen in game on 2026-11-22. Saturation follows the option: the slider shows the value in use (from Current).
+	TestEqual(TEXT("Saturation shows the option's 0.35"), Controls[TEXT("fc_saturation")]->GetNumberField(TEXT("value")), .35, 1e-6);
+	TestEqual(TEXT("Window starts at 1.5"), Controls[TEXT("fc_window")]->GetNumberField(TEXT("value")), 1.5, 1e-6);
+	TestEqual(TEXT("Color set starts at Atmospheric tables"), Controls[TEXT("fc_set")]->GetStringField(TEXT("value")), FString(TEXT("Atmospheric tables")));
+	TestEqual(TEXT("Column starts at Horizon"), Controls[TEXT("fc_column")]->GetStringField(TEXT("value")), FString(TEXT("Horizon")));
+	TestEqual(TEXT("Clear table is Clear sky"), Controls[TEXT("fc_clear_table")]->GetStringField(TEXT("value")), FString(TEXT("Clear sky")));
+	TestEqual(TEXT("Clear sunrise brightness 0.85"), Controls[TEXT("fc_clear_sunrise_bright")]->GetNumberField(TEXT("value")), .85, 1e-6);
+	TestEqual(TEXT("Clear sunset brightness 0.8"), Controls[TEXT("fc_clear_sunset_bright")]->GetNumberField(TEXT("value")), .8, 1e-6);
+	TArray<FString> Ids;
+	auto At = [&](const TCHAR* Id) { return Ids.IndexOfByKey(FString(Id)); };
+	Controls.GenerateKeyArray(Ids);
+	// Storm fade: a slider right after Window, 0 to 1 in steps of 0.05, starting at 0.35.
+	if (TestTrue(TEXT("Fog control fc_storm_fade"), Controls.Contains(TEXT("fc_storm_fade"))))
+	{
+		const TSharedPtr<FJsonObject> StormFade = Controls[TEXT("fc_storm_fade")];
+		TestEqual(TEXT("Storm fade label"), StormFade->GetStringField(TEXT("text")), FString(TEXT("Storm fade")));
+		TestEqual(TEXT("Storm fade is a slider"), StormFade->GetStringField(TEXT("type")), FString(TEXT("slider")));
+		TestEqual(TEXT("Storm fade min"), StormFade->GetNumberField(TEXT("min")), 0.);
+		TestEqual(TEXT("Storm fade max"), StormFade->GetNumberField(TEXT("max")), 1.);
+		TestEqual(TEXT("Storm fade step"), StormFade->GetNumberField(TEXT("step")), .05, 1e-6);
+		TestEqual(TEXT("Storm fade starts at 0.35"), StormFade->GetNumberField(TEXT("value")), .35, 1e-6);
+		TestTrue(TEXT("Storm fade comes right after Window"), At(TEXT("fc_window")) != INDEX_NONE && At(TEXT("fc_window")) < At(TEXT("fc_storm_fade")));
+	}
+	// Day variation (0 to 1, step 0.05, 0.5) and Preview day (-10 to 10, step 1, 0), below Storm fade and before Weather.
+	struct FSliderCheck { const TCHAR* Id; const TCHAR* Text; double Min, Max, Step, Value; };
+	for (const FSliderCheck& S : {FSliderCheck{TEXT("fc_variation"), TEXT("Day variation"), 0., 1., .05, .5},
+		FSliderCheck{TEXT("fc_day_offset"), TEXT("Preview day"), -10., 10., 1., 0.}})
+	{
+		if (TestTrue(*FString::Printf(TEXT("Fog control %s"), S.Id), Controls.Contains(S.Id)))
+		{
+			const TSharedPtr<FJsonObject> C = Controls[S.Id];
+			TestEqual(*FString::Printf(TEXT("%s label"), S.Id), C->GetStringField(TEXT("text")), FString(S.Text));
+			TestEqual(*FString::Printf(TEXT("%s is a slider"), S.Id), C->GetStringField(TEXT("type")), FString(TEXT("slider")));
+			TestEqual(*FString::Printf(TEXT("%s min"), S.Id), C->GetNumberField(TEXT("min")), S.Min, 1e-6);
+			TestEqual(*FString::Printf(TEXT("%s max"), S.Id), C->GetNumberField(TEXT("max")), S.Max, 1e-6);
+			TestEqual(*FString::Printf(TEXT("%s step"), S.Id), C->GetNumberField(TEXT("step")), S.Step, 1e-6);
+			TestEqual(*FString::Printf(TEXT("%s starts at its default"), S.Id), C->GetNumberField(TEXT("value")), S.Value, 1e-6);
+		}
+	}
+	TestTrue(TEXT("Storm fade, Day variation, Preview day, Weather in this order"), At(TEXT("fc_storm_fade")) < At(TEXT("fc_variation"))
+		&& At(TEXT("fc_variation")) < At(TEXT("fc_day_offset")) && At(TEXT("fc_day_offset")) < At(TEXT("fc_weather")));
+	TestEqual(TEXT("Weather follows the server"), Controls[TEXT("fc_weather")]->GetStringField(TEXT("value")), FString(TEXT("Follow server")));
+	// Separate horizon band: a check box right after Use table brightness, on; Band column right after it, Mid-sky.
+	if (TestTrue(TEXT("Tables: fc_split_haze shown"), Controls.Contains(TEXT("fc_split_haze"))))
+	{
+		const TSharedPtr<FJsonObject> Split = Controls[TEXT("fc_split_haze")];
+		TestEqual(TEXT("Separate horizon band label"), Split->GetStringField(TEXT("text")), FString(TEXT("Separate horizon band")));
+		TestEqual(TEXT("Separate horizon band is a check box"), Split->GetStringField(TEXT("type")), FString(TEXT("checkbox")));
+		TestTrue(TEXT("Separate horizon band is on"), Split->GetBoolField(TEXT("value")));
+		TestTrue(TEXT("Separate horizon band comes right after Use table brightness"), At(TEXT("fc_table_brightness")) != INDEX_NONE
+			&& At(TEXT("fc_table_brightness")) < At(TEXT("fc_split_haze")) && At(TEXT("fc_split_haze")) < At(TEXT("fc_edit_weather")));
+	}
+	if (TestTrue(TEXT("Separate horizon band on: Band column shown"), Controls.Contains(TEXT("fc_haze_column"))))
+	{
+		const TSharedPtr<FJsonObject> BandColumn = Controls[TEXT("fc_haze_column")];
+		TestEqual(TEXT("Band column label"), BandColumn->GetStringField(TEXT("text")), FString(TEXT("Band column")));
+		TestEqual(TEXT("Band column is a select"), BandColumn->GetStringField(TEXT("type")), FString(TEXT("select")));
+		TArray<FString> Options;
+		for (const TSharedPtr<FJsonValue>& O : BandColumn->GetArrayField(TEXT("options")))
+		{
+			Options.Add(O->AsString());
+		}
+		TestEqual(TEXT("Band column options"), Options, TArray<FString>{TEXT("Horizon"), TEXT("Mid-sky"), TEXT("Zenith")});
+		TestEqual(TEXT("Band column starts at Mid-sky"), BandColumn->GetStringField(TEXT("value")), FString(TEXT("Mid-sky")));
+		TestTrue(TEXT("Band column comes right after Separate horizon band"), At(TEXT("fc_split_haze")) < At(TEXT("fc_haze_column"))
+			&& At(TEXT("fc_haze_column")) < At(TEXT("fc_edit_weather")));
+	}
+	// Saturation follows the option: a new Current with another option value moves the slider; moving it sets the override.
+	CurrentVariable->Set(TEXT("On. Clear (server), day 77 (+0). Atmospheric tables, Horizon, Clear sky, band Mid-sky; saturation 0.65 (option). Variation 0.50: outside the windows. Weights: sunrise 0.00, sunset 0.00; rain 0.00, overcast 0.00; amount 0.00."), ECVF_SetByCode);
+	{
+		TSharedPtr<FJsonObject> Poll;
+		for (int32 I = 0; I < 4 && !Poll.IsValid(); ++I)
+		{
+			if (!Step({}))
+			{
+				return false;
+			}
+			for (const TSharedPtr<FJsonObject>& R : AllRequests())
+			{
+				if (IsPoll(R))
+				{
+					Poll = R;
+				}
+			}
+		}
+		if (TestTrue(TEXT("Current read again"), Poll.IsValid()) && !Step({Serve(Poll)}))
+		{
+			return false;
+		}
+	}
+	ReadUI();
+	TestEqual(TEXT("Saturation shows the option's new 0.65"), Controls[TEXT("fc_saturation")]->GetNumberField(TEXT("value")), .65, 1e-6);
+	TestEqual(TEXT("The client still follows the option"), FogVariable(TEXT("personal.FogColor.Saturation"))->GetFloat(), -1.f);
+	if (!Step({Event(TEXT("change"), TEXT("fc_saturation"), MakeShared<FJsonValueNumber>(.45))}))
+	{
+		return false;
+	}
+	Sent = Requests();
+	if (TestEqual(TEXT("One set for Saturation"), Sent.Num(), 1))
+	{
+		TestEqual(TEXT("Saturation override 0.45"), Sent[0]->GetObjectField(TEXT("values"))->GetNumberField(TEXT("personal.FogColor.Saturation")), .45, 1e-6);
+		if (!Step({Serve(Sent[0])}))
+		{
+			return false;
+		}
+		TestEqual(TEXT("The client uses the override"), FogVariable(TEXT("personal.FogColor.Saturation"))->GetFloat(), .45f, 1e-6f);
+	}
+	ReadUI();
+	TestEqual(TEXT("Saturation shows the override"), Controls[TEXT("fc_saturation")]->GetNumberField(TEXT("value")), .45, 1e-6);
+	// Rainy, Separate horizon band off, Day variation 1, Preview day +3.
+	if (!Step({Event(TEXT("change"), TEXT("fc_edit_weather"), MakeShared<FJsonValueString>(TEXT("Rainy"))),
+		Event(TEXT("change"), TEXT("fc_split_haze"), MakeShared<FJsonValueBoolean>(false)),
+		Event(TEXT("change"), TEXT("fc_variation"), MakeShared<FJsonValueNumber>(1.)),
+		Event(TEXT("change"), TEXT("fc_day_offset"), MakeShared<FJsonValueNumber>(3.))}))
+	{
+		return false;
+	}
+	Sent = Requests();
+	if (TestEqual(TEXT("One set for the band and the day"), Sent.Num(), 1))
+	{
+		const TSharedPtr<FJsonObject> DayValues = Sent[0]->GetObjectField(TEXT("values"));
+		TestEqual(TEXT("Three values"), DayValues->Values.Num(), 3);
+		TestEqual(TEXT("SplitHaze 0"), DayValues->GetNumberField(TEXT("personal.FogColor.SplitHaze")), 0.);
+		TestEqual(TEXT("Variation 1"), DayValues->GetNumberField(TEXT("personal.FogColor.Variation")), 1.);
+		TestEqual(TEXT("DayOffset 3"), DayValues->GetNumberField(TEXT("personal.FogColor.DayOffset")), 3.);
+		if (!Step({Serve(Sent[0])}))
+		{
+			return false;
+		}
+		TestEqual(TEXT("The client previews day +3"), FogVariable(TEXT("personal.FogColor.DayOffset"))->GetInt(), 3);
+	}
+	ReadUI();
+	for (const TCHAR* Id : {TEXT("fc_column"), TEXT("fc_table_brightness"), TEXT("fc_rainy_table"), TEXT("fc_rainy_sunrise_bright"), TEXT("fc_rainy_sunset_bright")})
+	{
+		TestTrue(*FString::Printf(TEXT("Tables, Rainy: %s shown"), Id), Controls.Contains(Id));
+	}
+	for (const TCHAR* Id : {TEXT("fc_rainy_sunrise_palette"), TEXT("fc_clear_table"), TEXT("fc_clear_sunrise_bright")})
+	{
+		TestFalse(*FString::Printf(TEXT("Tables, Rainy: %s hidden"), Id), Controls.Contains(Id));
+	}
+	TestEqual(TEXT("Rainy table is Overcast and rainy"), Controls[TEXT("fc_rainy_table")]->GetStringField(TEXT("value")), FString(TEXT("Overcast and rainy")));
+	TestEqual(TEXT("Rainy sunrise brightness 0.75"), Controls[TEXT("fc_rainy_sunrise_bright")]->GetNumberField(TEXT("value")), .75, 1e-6);
+	TestEqual(TEXT("Rainy sunset brightness 0.75"), Controls[TEXT("fc_rainy_sunset_bright")]->GetNumberField(TEXT("value")), .75, 1e-6);
+	TestFalse(TEXT("Separate horizon band off: Band column hidden"), Controls.Contains(TEXT("fc_haze_column")));
+	TestEqual(TEXT("Preview day shows +3"), Controls[TEXT("fc_day_offset")]->GetNumberField(TEXT("value")), 3., 1e-6);
+	// Palettes and Clear; Clear's sunset palette to Custom: the Custom sunset shows its hue and saturation.
+	if (!Step({Event(TEXT("change"), TEXT("fc_set"), MakeShared<FJsonValueString>(TEXT("Palettes"))),
+		Event(TEXT("change"), TEXT("fc_edit_weather"), MakeShared<FJsonValueString>(TEXT("Clear"))),
+		Event(TEXT("change"), TEXT("fc_clear_sunset_palette"), MakeShared<FJsonValueString>(TEXT("Custom")))}))
+	{
+		return false;
+	}
+	Sent = Requests();
+	if (TestEqual(TEXT("One set for the Fog changes"), Sent.Num(), 1))
+	{
+		const TSharedPtr<FJsonObject> FogValues = Sent[0]->GetObjectField(TEXT("values"));
+		TestEqual(TEXT("Two values"), FogValues->Values.Num(), 2);
+		TestEqual(TEXT("Color set 0"), FogValues->GetNumberField(TEXT("personal.FogColor.Set")), 0.);
+		TestEqual(TEXT("Custom is 5"), FogValues->GetNumberField(TEXT("personal.FogColor.Clear.SunsetPalette")), 5.);
+		if (!Step({Serve(Sent[0])}))
+		{
+			return false;
+		}
+		TestEqual(TEXT("The client uses the palettes"), FogVariable(TEXT("personal.FogColor.Set"))->GetInt(), 0);
+	}
+	ReadUI();
+	TestTrue(TEXT("Palettes: Clear palettes shown"), Controls.Contains(TEXT("fc_clear_sunrise_palette")) && Controls.Contains(TEXT("fc_clear_sunset_palette")));
+	if (Controls.Contains(TEXT("fc_clear_sunrise_palette")))
+	{
+		TestEqual(TEXT("Clear sunrise palette is From Dusk to Dawn"), Controls[TEXT("fc_clear_sunrise_palette")]->GetStringField(TEXT("value")), FString(TEXT("From Dusk to Dawn")));
+		TestEqual(TEXT("Six presets"), Controls[TEXT("fc_clear_sunrise_palette")]->GetArrayField(TEXT("options")).Num(), 6);
+	}
+	TestTrue(TEXT("Custom sunset hue shown"), Controls.Contains(TEXT("fc_clear_sunset_hue")) && Controls.Contains(TEXT("fc_clear_sunset_sat")));
+	TestFalse(TEXT("Sunrise hue still hidden"), Controls.Contains(TEXT("fc_clear_sunrise_hue")));
+	for (const TCHAR* Id : {TEXT("fc_column"), TEXT("fc_table_brightness"), TEXT("fc_clear_table"), TEXT("fc_split_haze"), TEXT("fc_haze_column")})
+	{
+		TestFalse(*FString::Printf(TEXT("Palettes: %s hidden"), Id), Controls.Contains(Id));
+	}
+	TestTrue(TEXT("Palettes: Day variation and Preview day still shown"), Controls.Contains(TEXT("fc_variation")) && Controls.Contains(TEXT("fc_day_offset")));
+	// Reset tab puts every Fog variable back, shown or not, to the defaults; Saturation follows the option again.
+	if (!Step({Event(TEXT("click"), TEXT("reset_fog"), nullptr)}))
+	{
+		return false;
+	}
+	Sent = Requests();
+	if (TestEqual(TEXT("Fog reset sends one set"), Sent.Num(), 1))
+	{
+		const TSharedPtr<FJsonObject> ResetValues = Sent[0]->GetObjectField(TEXT("values"));
+		TestEqual(TEXT("Every Fog variable (49)"), ResetValues->Values.Num(), 49);
+		for (const TCHAR* Name : {TEXT("personal.FogColor.StormFade"), TEXT("personal.FogColor.SplitHaze"), TEXT("personal.FogColor.HazeColumn"),
+			TEXT("personal.FogColor.Variation"), TEXT("personal.FogColor.DayOffset"), TEXT("personal.FogColor.Saturation")})
+		{
+			TestTrue(*FString::Printf(TEXT("%s is reset"), Name), ResetValues->HasField(Name));
+		}
+		TestEqual(TEXT("Saturation reset to -1"), ResetValues->GetNumberField(TEXT("personal.FogColor.Saturation")), -1., 1e-6);
+		TestTrue(TEXT("The Fog reset is accepted"), Serve(Sent[0])->AsObject()->GetBoolField(TEXT("ok")));
+		TestEqual(TEXT("Clear sunset palette back to 1"), FogVariable(TEXT("personal.FogColor.Clear.SunsetPalette"))->GetInt(), 1);
+		TestEqual(TEXT("Color set back to the tables"), FogVariable(TEXT("personal.FogColor.Set"))->GetInt(), 1);
+		TestEqual(TEXT("Separate horizon band back to on"), FogVariable(TEXT("personal.FogColor.SplitHaze"))->GetInt(), 1);
+		TestEqual(TEXT("Saturation back to the option"), FogVariable(TEXT("personal.FogColor.Saturation"))->GetFloat(), -1.f);
+		TestEqual(TEXT("Window back to 1.5"), FogVariable(TEXT("personal.FogColor.Window"))->GetFloat(), 1.5f, 1e-6f);
+		TestEqual(TEXT("Storm fade back to 0.35"), FogVariable(TEXT("personal.FogColor.StormFade"))->GetFloat(), .35f, 1e-6f);
+		TestEqual(TEXT("Day variation back to 0.5"), FogVariable(TEXT("personal.FogColor.Variation"))->GetFloat(), .5f, 1e-6f);
+		TestEqual(TEXT("Preview day back to 0"), FogVariable(TEXT("personal.FogColor.DayOffset"))->GetInt(), 0);
+		TestEqual(TEXT("Clear sunset brightness back to 0.8"), FogVariable(TEXT("personal.FogColor.Clear.SunsetBright"))->GetFloat(), .8f, 1e-6f);
+	}
+	ReadUI();
+	TestEqual(TEXT("After Reset tab, Saturation shows the option's value again"), Controls[TEXT("fc_saturation")]->GetNumberField(TEXT("value")), .65, 1e-6);
+
+	// Lighting tab: the status line, Smooth light direction (on), Horizon fade (5 to 45, step 1, 20), Night turn
+	// (0.01 to 0.25, step 0.01, 0.1), in this order, then Reset tab.
+	{
+		TArray<FString> LightIds;
+		for (const TSharedPtr<FJsonValue>& Row : Controls[TEXT("lighting")]->GetArrayField(TEXT("children")))
+		{
+			for (const TSharedPtr<FJsonValue>& Child : Row->AsObject()->GetArrayField(TEXT("children")))
+			{
+				LightIds.Add(Child->AsObject()->GetStringField(TEXT("id")));
+			}
+		}
+		TestEqual(TEXT("Lighting tab controls in order"), LightIds, TArray<FString>{TEXT("ld_current"), TEXT("ld_smooth"), TEXT("ld_horizon_fade"),
+			TEXT("ld_night_turn"), TEXT("reset_lighting"), TEXT("lighting_reset_row_fill2"), TEXT("lighting_reset_row_fill3")});
+	}
+	if (TestTrue(TEXT("Lighting control ld_smooth"), Controls.Contains(TEXT("ld_smooth"))))
+	{
+		const TSharedPtr<FJsonObject> Smooth = Controls[TEXT("ld_smooth")];
+		TestEqual(TEXT("Smooth light direction label"), Smooth->GetStringField(TEXT("text")), FString(TEXT("Smooth light direction")));
+		TestEqual(TEXT("Smooth light direction is a check box"), Smooth->GetStringField(TEXT("type")), FString(TEXT("checkbox")));
+		TestTrue(TEXT("Smooth light direction is on"), Smooth->GetBoolField(TEXT("value")));
+		TestTrue(TEXT("Smooth light direction is enabled"), Enabled(TEXT("ld_smooth")));
+	}
+	for (const FSliderCheck& S : {FSliderCheck{TEXT("ld_horizon_fade"), TEXT("Horizon fade"), 5., 45., 1., 20.},
+		FSliderCheck{TEXT("ld_night_turn"), TEXT("Night turn"), .01, .25, .01, .1}})
+	{
+		if (TestTrue(*FString::Printf(TEXT("Lighting control %s"), S.Id), Controls.Contains(S.Id)))
+		{
+			const TSharedPtr<FJsonObject> C = Controls[S.Id];
+			TestEqual(*FString::Printf(TEXT("%s label"), S.Id), C->GetStringField(TEXT("text")), FString(S.Text));
+			TestEqual(*FString::Printf(TEXT("%s is a slider"), S.Id), C->GetStringField(TEXT("type")), FString(TEXT("slider")));
+			TestEqual(*FString::Printf(TEXT("%s min"), S.Id), C->GetNumberField(TEXT("min")), S.Min, 1e-6);
+			TestEqual(*FString::Printf(TEXT("%s max"), S.Id), C->GetNumberField(TEXT("max")), S.Max, 1e-6);
+			TestEqual(*FString::Printf(TEXT("%s step"), S.Id), C->GetNumberField(TEXT("step")), S.Step, 1e-6);
+			TestEqual(*FString::Printf(TEXT("%s starts at its default"), S.Id), C->GetNumberField(TEXT("value")), S.Value, 1e-6);
+		}
+	}
+	auto LightVariable = [&](const TCHAR* Name) { return IConsoleManager::Get().FindConsoleVariable(Name); };
+	if (!Step({Event(TEXT("change"), TEXT("ld_smooth"), MakeShared<FJsonValueBoolean>(false)),
+		Event(TEXT("change"), TEXT("ld_horizon_fade"), MakeShared<FJsonValueNumber>(15.)),
+		Event(TEXT("change"), TEXT("ld_night_turn"), MakeShared<FJsonValueNumber>(.05))}))
+	{
+		return false;
+	}
+	Sent = Requests();
+	if (TestEqual(TEXT("One set for the Lighting changes"), Sent.Num(), 1))
+	{
+		const TSharedPtr<FJsonObject> LightValues = Sent[0]->GetObjectField(TEXT("values"));
+		TestEqual(TEXT("Three Lighting values"), LightValues->Values.Num(), 3);
+		TestEqual(TEXT("Smooth 0"), LightValues->GetNumberField(TEXT("personal.LightDir.Smooth")), 0.);
+		TestEqual(TEXT("HorizonFade 15"), LightValues->GetNumberField(TEXT("personal.LightDir.HorizonFade")), 15., 1e-6);
+		TestEqual(TEXT("NightTurn 0.05"), LightValues->GetNumberField(TEXT("personal.LightDir.NightTurn")), .05, 1e-6);
+		if (!Step({Serve(Sent[0])}))
+		{
+			return false;
+		}
+		TestEqual(TEXT("The client's light is no longer smoothed"), LightVariable(TEXT("personal.LightDir.Smooth"))->GetInt(), 0);
+		TestEqual(TEXT("The client uses Horizon fade 15"), LightVariable(TEXT("personal.LightDir.HorizonFade"))->GetFloat(), 15.f, 1e-6f);
+		TestEqual(TEXT("The client uses Night turn 0.05"), LightVariable(TEXT("personal.LightDir.NightTurn"))->GetFloat(), .05f, 1e-6f);
+	}
+	ReadUI();
+	TestFalse(TEXT("Smooth light direction shows off"), Controls[TEXT("ld_smooth")]->GetBoolField(TEXT("value")));
+	if (!Step({Event(TEXT("click"), TEXT("reset_lighting"), nullptr)}))
+	{
+		return false;
+	}
+	Sent = Requests();
+	if (TestEqual(TEXT("Lighting reset sends one set"), Sent.Num(), 1))
+	{
+		TestEqual(TEXT("Every Lighting variable (3)"), Sent[0]->GetObjectField(TEXT("values"))->Values.Num(), 3);
+		TestTrue(TEXT("The Lighting reset is accepted"), Serve(Sent[0])->AsObject()->GetBoolField(TEXT("ok")));
+		TestEqual(TEXT("Smooth back to 1"), LightVariable(TEXT("personal.LightDir.Smooth"))->GetInt(), 1);
+		TestEqual(TEXT("Horizon fade back to 20"), LightVariable(TEXT("personal.LightDir.HorizonFade"))->GetFloat(), 20.f, 1e-6f);
+		TestEqual(TEXT("Night turn back to 0.1"), LightVariable(TEXT("personal.LightDir.NightTurn"))->GetFloat(), .1f, 1e-6f);
+	}
+
 	// Admin tab: commands go to the chat service, one per callback, at least one second apart.
 	auto ChatSent = [&]()
 	{
@@ -361,6 +770,13 @@ bool FPersonalDevDashboardTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Five weather buttons"), Controls[TEXT("adm_weather_row")]->GetArrayField(TEXT("children")).Num(), 5);
 	TestEqual(TEXT("Storm label"), Controls[TEXT("adm_w_storm")]->GetStringField(TEXT("text")), FString(TEXT("Storm")));
 	TestEqual(TEXT("Four time buttons"), Controls[TEXT("adm_time_row")]->GetArrayField(TEXT("children")).Num(), 4);
+	TestFalse(TEXT("No weather Default button"), Controls.Contains(TEXT("adm_w_default")));
+	TestFalse(TEXT("No time Default button"), Controls.Contains(TEXT("adm_t_default")));
+	if (TestTrue(TEXT("Reset sky is still there"), Controls.Contains(TEXT("adm_reset_sky"))))
+	{
+		TestEqual(TEXT("Reset sky label"), Controls[TEXT("adm_reset_sky")]->GetStringField(TEXT("text")), FString(TEXT("Reset sky")));
+		TestEqual(TEXT("Reset sky tooltip"), Controls[TEXT("adm_reset_sky")]->GetStringField(TEXT("tooltip")), FString(TEXT("@weather reset, @time reset, @timelapse reset")));
+	}
 
 	// A button sends its command with @, which the ACE server runs as a command.
 	if (!Step({Event(TEXT("click"), TEXT("adm_heal"), nullptr)}))
