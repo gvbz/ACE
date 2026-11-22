@@ -8,6 +8,20 @@ with a few added options. The original README is in the repository root.
 - `master` matches Thwargle's repository.
 - `gvbz` has the changes below, on top of client v163 (2026.11.20.163). Since v159 they are also part of Thwargle's client (pull request #1), with his later changes.
 
+## Changes in v163
+
+- Fog Colors by Weather: with `Use imported AC2 sky` on, the fog at
+  sunrise and sunset takes its colors from the server's weather
+  (Clear, Sunny, Cloudy, Rainy), with a small change from one day to
+  the next. The sky just above the horizon gets its own color.
+  `Fog Colors by Weather` toggle (off by default) and `Fog Color
+  Saturation` (0 to 1.5, default 0.35). Test controls are in the
+  Development Dashboard's Fog tab.
+- Smooth light direction: with `Use imported AC2 sky` on, the light
+  turns gradually when the sun or the large moon rises or sets and
+  at midnight, instead of turning in one frame. Test controls are in
+  the Development Dashboard's Lighting tab.
+
 ## Changes in v161
 
 - Max Fog Distance: the fog never reaches past the set distance, in

@@ -2,6 +2,8 @@
 
 Screenshots of each change in this fork, with its setting off and on. Each pair is from the same spot, camera and time of day. The pictures are at 3440x1440, shown at half size. Click a picture to open it.
 
+- [v163](#v163)
+  - [Fog Colors by Weather](#fog-colors-by-weather)
 - [v161](#v161)
   - [All Features](#all-features)
 - [v158](#v158)
@@ -13,6 +15,21 @@ Screenshots of each change in this fork, with its setting off and on. Each pair 
   - [Far Terrain Horizon](#far-terrain-horizon)
   - [Far Terrain Rooms](#far-terrain-rooms)
   - [All Features](#all-features-1)
+
+## v163
+
+### Fog Colors by Weather
+
+The same spot and camera in each pair, client v163 (2026.11.20.163), with the AC2 sky on: On has `Fog Colors by Weather` on at its defaults, Off has it off. Only pair 2 also changes `Far Terrain Horizon` (on in On, off in Off).
+
+| | Off | On |
+|---|---|---|
+| 1. Clear, sunset | [![Fog Colors by Weather off, v163, 1 (Clear, sunset)](comparisons/fog-colors-v163_1_off.jpg)](comparisons/fog-colors-v163_1_off.jpg) | [![Fog Colors by Weather on, v163, 1 (Clear, sunset)](comparisons/fog-colors-v163_1_on.jpg)](comparisons/fog-colors-v163_1_on.jpg) |
+| 2. Clear, dusk, large moon up; Far Terrain Horizon also on in On, off in Off | [![Fog Colors by Weather off, v163, 2 (Clear, dusk, large moon up; Far Terrain Horizon off)](comparisons/fog-colors-v163_2_off.jpg)](comparisons/fog-colors-v163_2_off.jpg) | [![Fog Colors by Weather on, v163, 2 (Clear, dusk, large moon up; Far Terrain Horizon on)](comparisons/fog-colors-v163_2_on.jpg)](comparisons/fog-colors-v163_2_on.jpg) |
+| 3. Clear, after dusk | [![Fog Colors by Weather off, v163, 3 (Clear, after dusk)](comparisons/fog-colors-v163_3_off.jpg)](comparisons/fog-colors-v163_3_off.jpg) | [![Fog Colors by Weather on, v163, 3 (Clear, after dusk)](comparisons/fog-colors-v163_3_on.jpg)](comparisons/fog-colors-v163_3_on.jpg) |
+| 4. Overcast | [![Fog Colors by Weather off, v163, 4 (Overcast)](comparisons/fog-colors-v163_4_off.jpg)](comparisons/fog-colors-v163_4_off.jpg) | [![Fog Colors by Weather on, v163, 4 (Overcast)](comparisons/fog-colors-v163_4_on.jpg)](comparisons/fog-colors-v163_4_on.jpg) |
+| 5. Rain | [![Fog Colors by Weather off, v163, 5 (Rain)](comparisons/fog-colors-v163_5_off.jpg)](comparisons/fog-colors-v163_5_off.jpg) | [![Fog Colors by Weather on, v163, 5 (Rain)](comparisons/fog-colors-v163_5_on.jpg)](comparisons/fog-colors-v163_5_on.jpg) |
+| 6. Overcast | [![Fog Colors by Weather off, v163, 6 (Overcast)](comparisons/fog-colors-v163_6_off.jpg)](comparisons/fog-colors-v163_6_off.jpg) | [![Fog Colors by Weather on, v163, 6 (Overcast)](comparisons/fog-colors-v163_6_on.jpg)](comparisons/fog-colors-v163_6_on.jpg) |
 
 ## v161
 
