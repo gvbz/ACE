@@ -25,7 +25,8 @@ with a few added options. The original README is in the repository root.
   feel of the AC2 sky is kept. Rain weakens the colors, and each day
   shifts them slightly. `Fog Colors by Weather` toggle (off by
   default) and `Fog Color Saturation` (0 to 1.5, default 0.35). Test
-  controls are in the Development Dashboard's Fog tab.
+  controls are in the Development Dashboard's Fog tab. This truly
+  creates a 1 in 1000 sunrise.
 - Smooth light direction: with `Use imported AC2 sky` on, the light
   turns gradually when the sun or the large moon rises or sets and
   at midnight, instead of turning in one frame. Test controls are in
