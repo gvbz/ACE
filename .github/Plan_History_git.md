@@ -1,4 +1,4 @@
-# Plan history (gvbz at a272be5e4 with the Development Dashboard and Max Fog Distance, plus Fog Colors by Weather and Smooth light direction, client v163, 2026.11.20.163)
+# Plan history (gvbz at 74dd150c with the Development Dashboard, Max Fog Distance, Fog Colors by Weather and Smooth light direction, plus the macOS build, client v163, 2026.11.20.163)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -804,6 +804,47 @@ Not measured. The feature adds a few vector operations per frame with the AC2 sk
 ### Depends on (Thwargle's code)
 
 `AACESkyDomeActor::UpdateImportedSky` (`Frame` with the sun and moon and their opacities, `ActiveGroup.TimesOfDay`), the AC1 key bracketing and heading lerp it uses (`BracketTimeOfDay`), and `FACELegionsSkyRenderer::Current.Direction`.
+
+## 11. macOS build
+
+| | |
+|---|---|
+| Merged | 2026-11-22, client v163, in the commit that added this section |
+| Setting | None |
+| Contributed | By advis61, pull request https://github.com/gvbz/ACE/pull/1 (one commit, 401fb04a) |
+
+### What it does
+
+The client compiles on macOS with Unreal Engine 5.8. On macOS the launcher saves profiles the way the client already does on Linux: one profile file that only the user's account can read, with password saving off by default, and the DAT files in the app's own saved-data folder. It reuses Thwargle's Linux profile code; no new code path was written. Windows, Android and Linux behave as before.
+
+### Files
+
+All are Thwargle's files. The edits are not marked `// personal:`; this list records them instead.
+
+- `Private/ACELoginSettings.cpp`: the Linux branches (POSIX includes, opt-in password saving, owner-only file created before any data is written, passwords dropped on load when saving is off) also cover macOS.
+- `Private/ACELoginSettings.h`: the comment on `Load` names the Linux and macOS profile file.
+- `Public/ACELoginProfile.h`: the comment on `bSavePasswordsLocally` names Linux and macOS.
+- `Private/ACELoginLobby.cpp`: the Linux launcher text and the `Remember passwords on this device (unencrypted)` check box also show on macOS; the DAT and account hints are reworded without "Linux"; the app DAT folder is the default on macOS.
+- `Private/ACEDatSubsystem.cpp`: macOS reads the DAT files from the app's saved-data `DAT` folder, as Linux and Android do.
+- `Private/Mods/ACEPluginPresentation.cpp`: the local helper `Value` is renamed `PresentationValue` (Clang on macOS reports it as shadowing).
+- `ACEWorldBakeDatTools/Private/ACEWorldBakeDatTools.cpp`: two unreachable `break` lines after `return` removed.
+- `ACEWorldBakeDatTools/Public/ACEWorldBakeDatTools.h`: forward declaration `class UTexture2D;`.
+- `Private/Tests/ACELauncherTests.cpp`: the Linux blocks also cover macOS; their labels say "Local" instead of "Linux".
+- `Private/Tests/ACELoginAndTextLifetimeTests.cpp`: the same for the login settings test.
+
+### Tests
+
+Built on macOS by advis61 (Sequoia 15.8.3, Xcode 26.1.1, Unreal Engine 5.8 Mac Development Editor), with four tests run there.
+
+On Windows (2026-11-22, client v163): the editor builds. `ACE.Launcher.DirectoryAndProfiles`, `ACE.Launcher.ResponsiveUI`, `ACE.RetailParity.LocalLoginSettings` and `ACE.RetailParity.TextLifetime` pass with `-RenderOffscreen`; `ACE.Launcher.ViewportPlacement` passes in the launched client (`-game`). The usual sets pass: `ACE.Personal` with `ACE.RetailParity.CameraAndEdges` (26 of 26, `-nullrhi`), `ACE.Personal` with the weather, sky, display and fog tests (30 of 30, `-RenderOffscreen`), and `ACE.Plugins` 95 of 97 (`Decisions` and `EquipmentBuffCycle` failed before this change too).
+
+### Checked
+
+No in-game check: every behavior change is inside a Linux or macOS `#if`, and the rename and the removed `break` lines change nothing at runtime, so Windows is unchanged.
+
+### Depends on (Thwargle's code)
+
+The Linux profile code in `ACELoginSettings.cpp` and `ACELoginLobby.cpp`, and the Android and Linux DAT folder in `UACEDatSubsystem::Initialize`.
 
 ## Abandoned
 

@@ -282,7 +282,7 @@ void UACELoginWidget::EnsureDefaultLayout()
 	AccountList=WidgetTree->ConstructWidget<UScrollBox>(); AccountList->SetScrollbarThickness(FVector2D(8,8));
 	auto* AccountSlot=Details->AddChildToVerticalBox(AccountList); AccountSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill)); AccountSlot->SetPadding(FMargin(0,0,0,12));
 	LoginButton=ActionButton(TEXT("Launch"),TEXT("launch"),FString(),true); AddLine(Details,LoginButton,8);
-	AddLine(Details,Label(PLATFORM_LINUX ? TEXT("Manage saved accounts and optional password saving on the Accounts tab.") : TEXT("Accounts are saved securely on this device."),14,true),0);
+	AddLine(Details,Label((PLATFORM_LINUX || PLATFORM_MAC) ? TEXT("Manage saved accounts and optional password saving on the Accounts tab.") : TEXT("Accounts are saved securely on this device."),14,true),0);
 	// Server editor: explicit save/cancel avoids sending credentials to an edited endpoint by accident.
 	UVerticalBox* Edit; Pages->AddChild(Card(Edit));
 	AddLine(Edit,Label(TEXT("Server details"),30),18);
@@ -322,7 +322,7 @@ void UACELoginWidget::EnsureDefaultLayout()
 	Row(Files,{{TEXT("Save location"),TEXT("savedat")},{TEXT("Use default"),TEXT("defaultdat")}});
 #else
 	Row(Files,{{TEXT("Save location"),TEXT("savedat")},{TEXT("Use app DAT folder"),TEXT("defaultdat")}});
-	AddLine(Files,Label(PLATFORM_LINUX ? TEXT("Enter an absolute Linux folder path. DAT filenames are case sensitive.") : TEXT("The folder must be accessible to this app. The Android installer uses the app's DAT folder."),18,true),20);
+	AddLine(Files,Label((PLATFORM_LINUX || PLATFORM_MAC) ? TEXT("Enter an absolute folder path. Match the DAT filenames exactly.") : TEXT("The folder must be accessible to this app. The Android installer uses the app's DAT folder."),18,true),20);
 #endif
 	FileStatus=Label(TEXT(""),20); AddLine(Files,FileStatus,24);
 	AddLine(Files,Label(TEXT("Changing an already-loaded installation takes effect after restarting. No game files are moved or copied."),18,true));
@@ -391,7 +391,7 @@ void UACELoginWidget::EnsureDefaultLayout()
 	auto* EyeWidth=WidgetTree->ConstructWidget<USizeBox>(); EyeWidth->SetWidthOverride(44); EyeWidth->SetContent(PasswordVisibilityButton);
 	PasswordRow->AddChildToHorizontalBox(EyeWidth)->SetPadding(FMargin(8,0,0,0));
 	SetPasswordVisible(false);
-#if PLATFORM_LINUX
+#if PLATFORM_LINUX || PLATFORM_MAC
 	RememberPasswordsCheckBox=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("RememberPasswordsCheckBox"));
 	RememberPasswordsCheckBox->SetWidgetStyle(AutoUpdateStyle);
 	auto* RememberRow=WidgetTree->ConstructWidget<UHorizontalBox>(); RememberPasswordsCheckBox->SetContent(RememberRow);
@@ -405,7 +405,7 @@ void UACELoginWidget::EnsureDefaultLayout()
 	AddLine(Accounts,RememberPasswordsCheckBox,8);
 #endif
 	Row(Accounts,{{TEXT("Save account"),TEXT("saveaccount")},{TEXT("New account"),TEXT("newaccount")},{TEXT("Remove account"),TEXT("removeaccount")}});
-	AddLine(Accounts,Label(PLATFORM_LINUX ? TEXT("Password saving is off by default. The local file is restricted to your Linux account. Turning this off removes saved passwords; they remain available for this session.") : TEXT("Accounts are saved securely on this device."),14,true));
+	AddLine(Accounts,Label((PLATFORM_LINUX || PLATFORM_MAC) ? TEXT("Password saving is off by default. The local file is restricted to your computer's user account. Turning this off removes saved passwords. Passwords remain available for this session.") : TEXT("Accounts are saved securely on this device."),14,true));
 	Row(Accounts,{{TEXT("Back to play"),TEXT("play")}});
 	// Inline destructive-action confirmation is also fully usable with VR pointers.
 	FooterSize=WidgetTree->ConstructWidget<USizeBox>(); FooterSize->SetWidthOverride(1028);
@@ -868,7 +868,7 @@ void UACELoginWidget::RunAction(const FString& Action, const FString& Value)
 		else { if (Profile.Servers.Num()>=128) { SetStatus(TEXT("Remove an unused server before adding another.")); return; } Profile.Servers.Add(S); }
 		SelectServer(S.Id); Pages->SetActiveWidgetIndex(0); SetStatus(TEXT("Server saved."));
 	}
-	else if (Action==TEXT("saveaccount")) { if (StoreAccount()) SetStatus(TEXT("Account saved securely on this device.")); }
+	else if (Action==TEXT("saveaccount")) { if (StoreAccount()) SetStatus((PLATFORM_LINUX || PLATFORM_MAC) ? TEXT("Account saved on this device.") : TEXT("Account saved securely on this device.")); }
 	else if (Action==TEXT("newaccount"))
 	{
 		Profile.SelectedAccountId.Reset(); Profile.Account.Reset(); Profile.Password.Reset();
@@ -915,7 +915,7 @@ void UACELoginWidget::RunAction(const FString& Action, const FString& Value)
 	else if (Action==TEXT("files")) { Pages->SetActiveWidgetIndex(3); UpdateDatStatus(); }
 	else if (Action==TEXT("defaultdat"))
 	{
-#if PLATFORM_ANDROID || PLATFORM_LINUX
+#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MAC
 		DatBox->SetText(FText::FromString(FPaths::ProjectSavedDir()/TEXT("DAT")));
 #else
 		DatBox->SetText(FText::FromString(TEXT("C:/Turbine/Asheron's Call")));

@@ -31,6 +31,14 @@ with a few added options. The original README is in the repository root.
   turns gradually when the sun or the large moon rises or sets and
   at midnight, instead of turning in one frame. Test controls are in
   the Development Dashboard's Lighting tab.
+- macOS build: the client compiles on macOS with Unreal Engine 5.8,
+  and launcher profiles save there the same way as on Linux. Saving
+  passwords is off by default; when turned on, they are kept in a
+  profile file only the user's account can read. Windows is
+  unchanged. Contributed by advis61
+  (https://github.com/gvbz/ACE/pull/1). The edits are in the
+  client's launcher, login, plugin and world bake files, without
+  `// personal:` markers.
 
 ## Changes in v161
 

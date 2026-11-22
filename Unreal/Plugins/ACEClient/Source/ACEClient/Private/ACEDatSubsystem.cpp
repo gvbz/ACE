@@ -1291,7 +1291,7 @@ void UACEDatSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	DisplayView = CreateACEDisplayView(GetGameInstance());
 	PrepareRuntimeMaterials();
-#if PLATFORM_ANDROID || PLATFORM_LINUX
+#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MAC
     // DAT files are supplied separately in the app's writable saved-data folder.
 	DatDirectory = FPaths::ProjectSavedDir() / TEXT("DAT");
     UE_LOG(LogTemp, Log, TEXT("AC DAT directory: %s"), *DatDirectory);

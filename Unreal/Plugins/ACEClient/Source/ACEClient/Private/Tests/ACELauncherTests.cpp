@@ -84,11 +84,11 @@ bool FACELauncherDirectoryTest::RunTest(const FString&)
     TestEqual(TEXT("Alternate alias survives restart"),Restored.Accounts[1].Alias,FString(TEXT("Coldeve crafter")));
     TestEqual(TEXT("Alias and actual username appear together"),Restored.Accounts[1].DisplayName(),FString(TEXT("Coldeve crafter (legacy)")));
     TestEqual(TEXT("DAT folder persists"),Restored.DatDirectory,P.DatDirectory);
-#if PLATFORM_LINUX
-    TestTrue(TEXT("Linux retains account selection without saving passwords"),Restored.SelectedAccountId==P.SelectedAccountId && Restored.Password.IsEmpty() && Restored.Accounts[0].Password.IsEmpty() && Restored.Accounts[1].Password.IsEmpty());
+#if PLATFORM_LINUX || PLATFORM_MAC
+    TestTrue(TEXT("Local retains account selection without saving passwords"),Restored.SelectedAccountId==P.SelectedAccountId && Restored.Password.IsEmpty() && Restored.Accounts[0].Password.IsEmpty() && Restored.Accounts[1].Password.IsEmpty());
     FString SavedProfile; FFileHelper::LoadFileToString(SavedProfile,*Path);
-    TestFalse(TEXT("Linux profile contains no primary password"),SavedProfile.Contains(TEXT("fixture-only")));
-    TestFalse(TEXT("Linux profile contains no alternate password"),SavedProfile.Contains(TEXT("other-secret")));
+    TestFalse(TEXT("Local profile contains no primary password"),SavedProfile.Contains(TEXT("fixture-only")));
+    TestFalse(TEXT("Local profile contains no alternate password"),SavedProfile.Contains(TEXT("other-secret")));
 #else
     TestTrue(TEXT("Active account and password survive restart"),Restored.SelectedAccountId==P.SelectedAccountId && Restored.Accounts[0].Password==P.Password);
     TestEqual(TEXT("Same username retains its alternate password"),Restored.Accounts[1].Password,FString(TEXT("other-secret")));
@@ -105,7 +105,7 @@ bool FACELauncherDirectoryTest::RunTest(const FString&)
     TestTrue(TEXT("Existing profiles without the new field always default off"),ACELoginSettings::Load(Migrated,Path) && !Migrated.bAutoUpdate);
     const FString Removed=Restored.SelectedServerId; Restored.RemoveServer(Removed);
     TestEqual(TEXT("Removing a server retains shared accounts"),Restored.Accounts.Num(),2);
-    TestTrue(TEXT("Removing a server preserves selected login"),Restored.SelectedAccountId==P.SelectedAccountId && (PLATFORM_LINUX ? Restored.Password.IsEmpty() : Restored.Password==P.Password));
+    TestTrue(TEXT("Removing a server preserves selected login"),Restored.SelectedAccountId==P.SelectedAccountId && ((PLATFORM_LINUX || PLATFORM_MAC) ? Restored.Password.IsEmpty() : Restored.Password==P.Password));
     IFileManager::Get().Delete(*Path,false,true);
     return true;
 }
@@ -243,8 +243,8 @@ bool FACELauncherWidgetTest::RunTest(const FString&)
     if (!TestNotNull(TEXT("Game instance owns the updater"),W->Updater.Get())) return false;
     TestNotNull(TEXT("Updates page provides a real checkbox"),W->AutoUpdateCheckBox.Get());
     TestFalse(TEXT("Checkbox starts unchecked"),W->AutoUpdateCheckBox->IsChecked());
-#if PLATFORM_LINUX
-    if(TestNotNull(TEXT("Linux accounts provide a password-saving checkbox"),W->RememberPasswordsCheckBox.Get()))
+#if PLATFORM_LINUX || PLATFORM_MAC
+    if(TestNotNull(TEXT("Local accounts provide a password-saving checkbox"),W->RememberPasswordsCheckBox.Get()))
     {
         TestFalse(TEXT("Password saving starts unchecked"),W->RememberPasswordsCheckBox->IsChecked());
         W->RememberPasswordsCheckBox->SetIsChecked(true);
@@ -253,8 +253,8 @@ bool FACELauncherWidgetTest::RunTest(const FString&)
             TStrongObjectPtr<UACELoginWidget> Reopened(CreateWidget<UACELoginWidget>(GI,UACELoginWidget::StaticClass()));
             Reopened->ProfilePath=W->ProfilePath;
             auto ReopenedSlate=Reopened->TakeWidget();
-            TestTrue(TEXT("Reopened Linux launcher restores the password preference"),Reopened->RememberPasswordsCheckBox->IsChecked());
-            TestEqual(TEXT("Reopened Linux launcher fills the selected account password"),Reopened->PasswordBox->GetText().ToString(),FString(TEXT("fixture-two")));
+            TestTrue(TEXT("Reopened Local launcher restores the password preference"),Reopened->RememberPasswordsCheckBox->IsChecked());
+            TestEqual(TEXT("Reopened Local launcher fills the selected account password"),Reopened->PasswordBox->GetText().ToString(),FString(TEXT("fixture-two")));
             Reopened->NativeDestruct();
         }
         W->RememberPasswordsCheckBox->SetIsChecked(false);
@@ -265,16 +265,16 @@ bool FACELauncherWidgetTest::RunTest(const FString&)
             && !Cleared.Accounts.ContainsByPredicate([](const FACELoginAccount& A){return !A.Password.IsEmpty();}));
         TestFalse(TEXT("Unchecking retains the current session password"),W->PasswordBox->GetText().IsEmpty());
     }
-    TestTrue(TEXT("Linux exposes supported automatic installation"),W->AutoUpdateCheckBox->IsVisible());
-    TestFalse(TEXT("Linux automatic updates are opt-in"),W->Updater->IsAutoUpdateEnabled());
+    TestTrue(TEXT("Local exposes supported automatic installation"),W->AutoUpdateCheckBox->IsVisible());
+    TestFalse(TEXT("Local automatic updates are opt-in"),W->Updater->IsAutoUpdateEnabled());
     W->AutoUpdateCheckBox->SetIsChecked(true);
     W->AutoUpdateCheckBox->OnCheckStateChanged.Broadcast(true);
     FACELoginSettings UpdatePreference;
-    TestTrue(TEXT("Linux checking enables and persists automatic updates"),W->Updater->IsAutoUpdateEnabled()
+    TestTrue(TEXT("Local checking enables and persists automatic updates"),W->Updater->IsAutoUpdateEnabled()
         && ACELoginSettings::Load(UpdatePreference,W->ProfilePath) && UpdatePreference.bAutoUpdate);
     W->AutoUpdateCheckBox->SetIsChecked(false);
     W->AutoUpdateCheckBox->OnCheckStateChanged.Broadcast(false);
-    TestTrue(TEXT("Linux unchecking disables and persists automatic updates"),!W->Updater->IsAutoUpdateEnabled()
+    TestTrue(TEXT("Local unchecking disables and persists automatic updates"),!W->Updater->IsAutoUpdateEnabled()
         && ACELoginSettings::Load(UpdatePreference,W->ProfilePath) && !UpdatePreference.bAutoUpdate);
 #else
     W->AutoUpdateCheckBox->SetIsChecked(true);
