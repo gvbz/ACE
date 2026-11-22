@@ -11,12 +11,21 @@ with a few added options. The original README is in the repository root.
 ## Changes in v163
 
 - Fog Colors by Weather: with `Use imported AC2 sky` on, the fog at
-  sunrise and sunset takes its colors from the server's weather
-  (Clear, Sunny, Cloudy, Rainy), with a small change from one day to
-  the next. The sky just above the horizon gets its own color.
-  `Fog Colors by Weather` toggle (off by default) and `Fog Color
-  Saturation` (0 to 1.5, default 0.35). Test controls are in the
-  Development Dashboard's Fog tab.
+  sunrise and sunset is recolored from atmospheric color tables based
+  on real-world sky colors, with a different table for each server
+  weather: Clear uses the clear sky table, Sunny the hazy table,
+  Cloudy the foggy table, and Rainy the overcast and rainy table.
+  Each table gives colors for each twilight phase (on clear days
+  golden hour, civil and nautical twilight, night, blue hour and
+  dawn), at the horizon, mid-sky and zenith. The fog follows the
+  phases through sunrise and sunset in the horizon colors, and the
+  horizon band (the sky just above the land) in the mid-sky colors.
+  The tables change the hue and saturation of the AC2 fog, but its
+  brightness stays the AC2 sky's (adjusted per weather), so the base
+  feel of the AC2 sky is kept. Rain weakens the colors, and each day
+  shifts them slightly. `Fog Colors by Weather` toggle (off by
+  default) and `Fog Color Saturation` (0 to 1.5, default 0.35). Test
+  controls are in the Development Dashboard's Fog tab.
 - Smooth light direction: with `Use imported AC2 sky` on, the light
   turns gradually when the sun or the large moon rises or sets and
   at midnight, instead of turning in one frame. Test controls are in
