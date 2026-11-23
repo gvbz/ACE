@@ -6,7 +6,7 @@ with a few added options. The original README is in the repository root.
 ## Branches
 
 - `master` matches Thwargle's repository.
-- `gvbz` has the changes below, on top of client v163 (2026.11.20.163). Since v159 they are also part of Thwargle's client (pull request #1), with his later changes.
+- `gvbz` has the changes below, on top of client v164 (2026.11.23.164). The v158 changes are part of Thwargle's client since v159 (pull request #1), and Max Fog Distance with the Far Terrain Horizon band since v164 (pull request #2), with his later changes.
 
 ## Changes in v163
 
@@ -41,6 +41,8 @@ with a few added options. The original README is in the repository root.
   `// personal:` markers.
 
 ## Changes in v161
+
+Max Fog Distance and Far Terrain Horizon were sent to Thwargle in pull request #2 and are part of his client since v164.
 
 - Max Fog Distance: the fog never reaches past the set distance, in
   any weather (`Max Fog Distance`, 5 to 43 landblocks, default 11; 43

@@ -1,4 +1,4 @@
-# Plan history (gvbz at 74dd150c with the Development Dashboard, Max Fog Distance, Fog Colors by Weather and Smooth light direction, plus the macOS build, client v163, 2026.11.20.163)
+# Plan history (gvbz at e0ae3c2c with the Development Dashboard, Fog Colors by Weather and Smooth light direction, plus the macOS build, client v164, 2026.11.23.164)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -867,7 +867,7 @@ Retail fog depends on weather, time of day and color at once, so one multiplier 
 
 ## Since v159
 
-Thwargle's release v159 (82391a7e, 2026.11.17.159) contains the changes above (pull request #1) and changes some of them. Release v160 (7e9348e5, 2026.11.18.160) changes none of them. Both were merged into `gvbz` as b5abfd700; under `Unreal/` the branch now matches Thwargle's `master`. Line numbers in the sections above are for 156bdf587 and may now be off.
+Thwargle's release v159 (82391a7e, 2026.11.17.159) contains the changes above (pull request #1) and changes some of them. Release v160 (7e9348e5, 2026.11.18.160) changes none of them. Both were merged into `gvbz` as b5abfd700; under `Unreal/` the branch then matched Thwargle's `master`, until the Development Dashboard (section 7). Line numbers in the sections above are for 156bdf587 and may now be off.
 
 - Options window: the far terrain check boxes (`Far Terrain`, `Far Terrain Objects`, `Hide Far Terrain with Fog`, `Far Terrain Rooms`, `Far Terrain Textures`, `Far Terrain Horizon`) are plain check boxes applied with Apply, and Defaults and Reset include them. Apply rebuilds the sky when `Far Terrain Horizon` turns on or off (this was in `UPersonalOptionCheckBox`). Labels, keys and defaults are unchanged.
 - Far scenery: `Far Terrain Objects Radius` runs from 3 to 24 (was 3 to 8), default 6. Past ring 8, units are at least 4 x 4 landblocks. Never built past the far terrain radius.
@@ -901,3 +901,10 @@ Thwargle's release v162 (ab8ad50d, 2026.11.19.162), merged into `gvbz` as e487d6
 Thwargle's release v163 (93209864, 2026.11.20.163), merged into `gvbz` as a050fb43a. No change to the fork's features; the Development Dashboard's marked lines keep their v162 line numbers.
 
 - Unity build: v163 gives the helpers in `ACEPluginClientBus.cpp` and `ACEPluginClientMessaging.cpp` their own names (`BusString`, `EncodeBusMessage`, `ClientMessageString`, `IsClientChannelName`, `ClientMessagingAvailable`), so they no longer clash with the other `Mods/` files. Both files were taken as in Thwargle's client, so the v162 fix (7b94a2e84) is gone and the two files match Thwargle's `master`.
+
+### v164
+
+Thwargle's release v164 (f5bf3592, 2026.11.23.164), merged into `gvbz` as e0ae3c2c. It includes pull request #2 (merge 72d38848): Max Fog Distance and the horizon band opacity (section 8), unchanged. No other change to the fork's features.
+
+- Two conflicts, next to the fog distance lines that both sides had: the fog color and light direction includes in `ACESkyDomeActor.cpp` and the fog color line in `ACELegionsSkyTests.cpp`. Both were resolved with the `gvbz` lines.
+- Under `Unreal/` the branch differs from Thwargle's `master` by the Development Dashboard (section 7), Fog Colors by Weather and Smooth light direction (sections 9 and 10) and the macOS build (section 11). The dashboard's marked lines are now `ACEPluginSubsystem.cpp` 470 and 475; the fog color lines in `ACEVideoSettingsWidget.cpp` are now 207 and 208.
