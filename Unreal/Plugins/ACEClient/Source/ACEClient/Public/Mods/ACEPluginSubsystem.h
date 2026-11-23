@@ -316,6 +316,7 @@ public:
     void ClearUCMLog();
     FString UCMLogSaveError;
     TSharedRef<SWidget> MakeWaypointPanel(bool bMap=false, bool bArrowOnly=false, bool bShowTitle=true);
+    TSharedRef<SWidget> MakeWaypointRoutePanel();
     TSharedRef<SWidget> MakeWaypointMapIcon();
     TSharedRef<SWidget> MakeWaypointDungeonOverlay();
     bool IsWaypointMapUnlocked() const;
@@ -338,8 +339,12 @@ public:
     const TArray<FACEWaypointLandmark>& GetWaypointLocations();
     uint64 WaypointLocationsRevision=0;
     TArray<FACEWaypointLandmark> WaypointItinerary;
+    uint64 WaypointItineraryRevision=0;
+    /** Replace directions and show/raise their independent window when nonempty. */
+    void SetWaypointItinerary(TArray<FACEWaypointLandmark> Steps);
     bool bWaypointAtlasHasRoutingData=false;
     void RecordRouteAction(const FString& Type, float Charge = .5f);
+    bool UpdateUCMRoutePointPosition(int32 Index, const TSharedPtr<FJsonObject>& Expected, const FACEPosition& Position);
     void RefreshAutomationData();
     /** Estimated remaining duration of our confirmed harmful cast on this target. */
     bool GetTargetEffectTimer(int32 Target,int32 Spell,double& Remaining,double& Duration) const;
@@ -505,6 +510,8 @@ private:
     void TickLocalServices();
     void UpdateRouteVisibility(const FACEPosition& Position, const TArray<TSharedPtr<FJsonValue>>& Route,
         const class FACEPluginSightQuery& Sight, const TSharedPtr<FJsonObject>& Snapshot);
+    TOptional<FACEPosition> FindRouteShortcut(const FACEPosition& Position, const FACEPosition& Anchor,
+        const FACEPosition& Destination, const FACEPluginSightQuery& Sight) const;
     void RecordRouteMovement(const FACEPosition& Position, uint32 TeleportSequence);
     bool bTrackRouteMovement=false, bRouteMovementOverflow=false;
     TArray<FACEPosition> RouteMovementSamples;
@@ -685,6 +692,9 @@ private:
     UPROPERTY(Transient) TObjectPtr<AActor> RouteActor;
     TArray<FACEPluginRouteSegment> RouteSegments;
     int32 RoutePoint=1;
+    uint32 RoutePositionRevision=0;
+    bool bMovingAlongRoute=false;
+    TOptional<FACEPosition> RouteShortcutAnchor;
     uint32 MovementBlockedSerial=0;
     bool bRouteJoinRequested=true;
     int32 RouteVisibilityOffset=0;

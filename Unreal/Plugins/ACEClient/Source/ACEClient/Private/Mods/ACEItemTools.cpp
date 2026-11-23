@@ -60,7 +60,9 @@ bool UACEPluginSubsystem::StartItemTools(const FString& Mode)
     if(Mode==TEXT("chest")&&String(P->Profile,TEXT("key_name")).IsEmpty()&&(!P->Profile->TryGetArrayField(TEXT("chest_rules"),ChestRules)||ChestRules->IsEmpty()))
     {Notice=TEXT("Choose a key or a chest collection profile before starting.");return false;}
     ItemToolsProgress=MakeShared<FJsonObject>();
-    return Start(P->Id);
+    if(!Start(P->Id))return false;
+    if(Mode==TEXT("merge"))ScheduleDecisionWake(FPlatformTime::Seconds());
+    return true;
 }
 
 bool UACEPluginSubsystem::RunItemToolsCommand(const FString& Arguments)
@@ -112,17 +114,42 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::ItemToolsSnapshot(FACEClientPlugin*
 {
     auto S=Policy?Snapshot():MakeShared<FJsonObject>();auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto Session=C->GetSession();
     const double Now=FPlatformTime::Seconds();auto Builtin=Find(TEXT("itemtools"));auto* P=Policy?Policy:Builtin.Get();
+    const bool Merging=!Policy&&P&&String(P->Profile,TEXT("mode"))==TEXT("merge");
     auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());
     if(!Policy)
     {
         S->SetNumberField(TEXT("time"),Now);S->SetBoolField(TEXT("ready"),!P||Now>=P->NextAction);
         S->SetBoolField(TEXT("busy"),C->IsUseBusy()||PendingSpell||ConfirmedBuffAckAt||(PC&&(PC->IsWorldTransitionActive()||PC->IsUseApproachActive())));
-        S->SetObjectField(TEXT("position"),MakeShared<FJsonObject>());ExtendSnapshot(S);
+        if(!Merging){S->SetObjectField(TEXT("position"),MakeShared<FJsonObject>());ExtendSnapshot(S);}
     }
-    S->SetNumberField(TEXT("it_currency"),Session->GetVendorCurrencyCount());
     S->SetNumberField(TEXT("it_failure_serial"),Session->GetInventoryFailureSerial());
     S->SetNumberField(TEXT("it_failure_item"),uint32(Session->GetInventoryFailureItem()));
     S->SetNumberField(TEXT("it_failure_error"),Session->GetInventoryFailureError());
+    if(Merging)
+    {
+        S->SetNumberField(TEXT("action_serial"),ActionSerial);
+        S->SetNumberField(TEXT("action_error"),LastActionError);
+        S->SetBoolField(TEXT("portal_space"),MetaPortalSpace);
+        TArray<TSharedPtr<FJsonValue>> Stacks;
+        for(const auto& Pair:Session->GetWorldObjects())
+        {
+            const auto& Item=Pair.Value;
+            if(Item.MaxStackSize<=1||!IsOwnedPluginItem(Item))continue;
+            const int32 Count=FMath::Max(1,Item.StackSize);
+            auto Row=MakeShared<FJsonObject>();
+            Row->SetNumberField(TEXT("id"),uint32(Item.Guid));
+            Row->SetNumberField(TEXT("wcid"),Item.WeenieClassId);
+            Row->SetNumberField(TEXT("count"),Count);
+            Row->SetNumberField(TEXT("max_stack"),Item.MaxStackSize);
+            Row->SetStringField(TEXT("name"),ACERetailObjectNames::Name(Item));
+            // Full targets still belong in the receipt view.
+            Row->SetBoolField(TEXT("transferable"),Count<Item.MaxStackSize&&Transferable(C,Item));
+            Stacks.Add(MakeShared<FJsonValueObject>(Row));
+        }
+        S->SetArrayField(TEXT("inventory"),Stacks);
+        return S;
+    }
+    S->SetNumberField(TEXT("it_currency"),Session->GetVendorCurrencyCount());
     TArray<TSharedPtr<FJsonValue>> Targets;
     FACEPosition Here=C->GetPlayerPosition();if(PC)PC->TryGetLocallyPredictedPosition(Here);
     ExtendItemInventorySnapshot(S);
@@ -205,7 +232,8 @@ bool UACEPluginSubsystem::ExecuteItemTools(FACEClientPlugin& P,const TSharedPtr<
     else if(Action==TEXT("it_split"))
     {
         if(!Found||!Transferable(C,Item)||Amount>=Item.StackSize)return Fail(TEXT("Split item changed."));
-        const int32 Pack=C->FindPickupContainer(Id,0,Amount);if(!Pack)return Fail(TEXT("Free one slot in any pack to split a funding stack."));
+        const int32 Pack=C->PlanInventoryPickup(Id,0,Amount,false).Container;
+        if(!Pack)return Fail(TEXT("Free one slot in any pack to split a funding stack."));
         C->SendStackableSplitToContainer(Id,Pack,0,Amount);
     }
     else if(Action==TEXT("it_key")||Action==TEXT("it_open"))
@@ -226,16 +254,16 @@ bool UACEPluginSubsystem::ExecuteItemTools(FACEClientPlugin& P,const TSharedPtr<
     else if(Action==TEXT("it_pickup"))
     {
         if(!Found||!Nearby()||!Target.IsOpenable()||Target.IsDoor()||Item.ContainerId!=TargetId||C->GetOpenExternalContainerGuid()!=TargetId||Amount>FMath::Max(1,Item.StackSize))return Fail(TEXT("Chest or loot changed; pickup stopped."));
-        const int32 Pack=C->FindPickupContainer(Id,0,Amount);if(!Pack)return Fail(TEXT("All packs are full; chest items remain untouched."));
-        if(Amount<Item.StackSize)
-        {
-            int32 Merge=0;for(const auto& V:C->GetPackItems(Pack))if(Transferable(C,V)&&ACEInventoryRules::MergeAmount(Item,V)>=Amount){Merge=V.Guid;break;}
-            if(Merge)C->SendStackableMerge(Id,Merge,Amount);else C->SendStackableSplitToContainer(Id,Pack,0,Amount);
-        }
-        else C->SendPutItemInContainer(Id,Pack,0);
+        const auto Pickup=C->PlanInventoryPickup(Id,0,Amount);
+        if(!Pickup.Container)return Fail(TEXT("All packs are full; chest items remain untouched."));
+        if(Pickup.MergeTarget)C->SendStackableMerge(Id,Pickup.MergeTarget,Amount);
+        else if(Amount<Item.StackSize)C->SendStackableSplitToContainer(Id,Pickup.Container,0,Amount);
+        else C->SendPutItemInContainer(Id,Pickup.Container,0,false);
     }
     else return Fail(TEXT("Unknown Item Tools action."));
-    P.NextAction=FPlatformTime::Seconds()+.1;return true;
+    // The built-in merge policy waits for both stack updates before dispatching again.
+    P.NextAction=FPlatformTime::Seconds()+(P.Id==TEXT("itemtools")&&Action==TEXT("it_merge")?0.:.1);
+    return true;
 }
 
 void UACEPluginSubsystem::ExtendItemInventorySnapshot(const TSharedPtr<FJsonObject>& S)

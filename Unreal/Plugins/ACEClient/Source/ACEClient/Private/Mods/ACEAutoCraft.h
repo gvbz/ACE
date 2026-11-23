@@ -5,6 +5,8 @@
 namespace ACEAutoCraft
 {
 constexpr int32 MaxUnits=100000, MaxOperations=10000, MaxDepth=24;
+constexpr int32 DefaultAmmoMinimum=25, MaxAmmoMinimum=1000;
+struct FBundleAmmo { int32 Recipe, Kind, Damage, Quality; };
 struct FItem { int32 Id=0, MaxStack=1; uint32 Icon=0, Type=0; FString Name; bool PackSlot=false; };
 struct FRecipe
 {
@@ -67,6 +69,7 @@ struct FACEAutoCraftState
     ACEAutoCraft::FInventory Inventory, Before;
     FString Character, CatalogServer, ProfileSignature, Details, InventorySummary;
     bool Loaded=false, Paused=false, Pending=false, Confirmed=false, ResultSeen=false, FailureMessage=false;
+    bool BundleAmmoJob=false;
     FString Preparation;
     int32 PrepareAmount=0, SourceBefore=0, TargetBefore=0;
     TSet<int32> BeforeIds;
@@ -76,6 +79,7 @@ struct FACEAutoCraftState
     uint32 Serial=0, InventoryFailureSerial=0;
     double NextRefresh=0, NextAction=0, Deadline=0, ResultAt=0, RequestedAt=0;
     TArray<TSharedPtr<FJsonValue>> Candidates;
+    TArray<ACEAutoCraft::FBundleAmmo> BundleAmmo;
     TMap<FString,TArray<int32>> SupplyRecipes;
     TSet<FString> BlockedSupplies;
 };

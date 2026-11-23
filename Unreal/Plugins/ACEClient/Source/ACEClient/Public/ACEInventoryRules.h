@@ -31,7 +31,7 @@ namespace ACEInventoryRules
         if (Index == INDEX_NONE) return INDEX_NONE;
         const int32 Source = Items.IndexOfByKey(SourceGuid);
         if (bWholeStack && Source != INDEX_NONE && Source < Index) --Index;
-        return Index;
+        return bWholeStack && Index == Source ? INDEX_NONE : Index;
     }
 
     // Vendor stock is a unit count, not a stack count. An unlimited supply does

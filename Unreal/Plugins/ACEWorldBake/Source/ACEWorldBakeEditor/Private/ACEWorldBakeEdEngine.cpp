@@ -1,5 +1,7 @@
 #include "ACEWorldBakeEdEngine.h"
 #include "ACEGameEngine.h"
+#include "ACERuntimeOptions.h"
+#include "Misc/ScopeExit.h"
 #include "ACEWorldBakeEditor.h"
 #include "ACEWorldBakeEditorInternal.h"
 #include "ACEWorldBakeWorldBuilder.h"
@@ -27,6 +29,7 @@
 #include "LevelEditor.h"
 #include "IAssetViewport.h"
 #include "Settings/LevelEditorPlaySettings.h"
+#include "Settings/LevelEditorMiscSettings.h"
 
 namespace ACEWorldBakeEditorWcStreaming
 {
@@ -773,8 +776,21 @@ float UACEWorldBakeEdEngine::GetMaxTickRate(float DeltaTime, bool bAllowFrameRat
 	return ACEFrontendFrameRate::GetLimit(*this,Super::GetMaxTickRate(DeltaTime,bAllowFrameRateSmoothing),true);
 }
 
+bool UACEWorldBakeEdEngine::ShouldThrottleCPUUsage() const
+{
+	// The editor's background throttle otherwise reduces preview UCM to 3 Hz.
+	return !ACEBackgroundActivity::HasClientWorld(*this)&&Super::ShouldThrottleCPUUsage();
+}
+
 void UACEWorldBakeEdEngine::Tick(float DeltaSeconds, bool bIdleMode)
 {
+	// EditorEngine has an extra background audio mute independent of FApp.
+	// Borrow it for the play session only; do not save over editor preferences.
+	auto* AudioSettings=GetMutableDefault<ULevelEditorMiscSettings>();
+	const bool SavedBackgroundAudio=AudioSettings->bAllowBackgroundAudio;
+	if(ACEBackgroundActivity::HasClientWorld(*this))
+		AudioSettings->bAllowBackgroundAudio=ACERuntimeOptions::Get(TEXT("ActiveSoundOnly"))<=.5f;
+	ON_SCOPE_EXIT {AudioSettings->bAllowBackgroundAudio=SavedBackgroundAudio;};
 	ApplyPieLoginMapRedirect();
 
 	if (GEditor && GEditor->PlayWorld)

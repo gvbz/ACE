@@ -2554,7 +2554,7 @@ void UACEGameHUDWidget::OnUseSelectedClicked()
 	FACEWorldObject Obj;
 	if (Client->GetWorldObject(Sel.Guid, Obj) && ACEInventoryRules::IsWorldPickupOnUse(Obj))
 	{
-		Client->SendPutItemInContainer(Sel.Guid, Client->ResolvePickupContainer(Sel.Guid, SelectedPackGuid), 0);
+		Client->SendInventoryPickup(Sel.Guid,SelectedPackGuid);
 	}
 	else
 	{
@@ -3900,7 +3900,6 @@ void UACEGameHUDWidget::FinishDrag(const FVector2D& ScreenPos)
 {
 	const EACEDragKind Kind = DragKind;
 	const int32 Payload = DragPayloadId;
-	const int32 SourcePack = DragSourcePackGuid;
 	const bool bWasActive = bDragActive;
 	CancelDrag();
 	if (!bWasActive || Kind == EACEDragKind::None || Payload == 0 || !Client)
@@ -3928,12 +3927,28 @@ void UACEGameHUDWidget::FinishDrag(const FVector2D& ScreenPos)
 				return;
 			}
 		}
-		// Grid cell → reorder within the open pack (placement = cell index).
+		// A grid drop either merges with the item under the cursor or inserts
+		// before that slot, taking the source's original slot into account.
 		for (int32 i = 0; i < InventoryIconSlots.Num(); ++i)
 		{
 			if (WidgetContains(InventoryIconSlots[i].Get(), ScreenPos))
 			{
-				Client->SendPutItemInContainer(Payload, SelectedPackGuid != 0 ? SelectedPackGuid : SourcePack, i);
+				const int32 Container=SelectedPackGuid ? SelectedPackGuid : Client->GetPlayerGuid();
+				const int32 Target=InventoryCellGuids.IsValidIndex(i) ? InventoryCellGuids[i] : 0;
+				FACEWorldObject Source,Destination;
+				if(!Client->GetWorldObject(Payload,Source) || ACEInventoryRules::IsContainer(Source))return;
+				if(Client->GetWorldObject(Target,Destination))
+					if(const int32 Amount=ACEInventoryRules::MergeAmount(Source,Destination);
+						Amount>0 && !Client->GetTradeSelfItems().Contains(Payload) && !Client->GetTradeSelfItems().Contains(Target))
+					{
+						Client->SendStackableMerge(Payload,Target,Amount);
+						Client->SelectObject(Target);
+						return;
+					}
+				TArray<int32> Slots;
+				if(const auto Session=Client->GetSession())Session->GetPackItemGuids(Container,Slots);
+				const int32 Placement=ACEInventoryRules::DropInsertionIndex(Slots,Payload,Target,true);
+				if(Placement!=INDEX_NONE)Client->SendPutItemInContainer(Payload,Container,Placement,false);
 				return;
 			}
 		}

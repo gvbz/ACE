@@ -1,9 +1,31 @@
 # Virindi compatibility review
 
+## UCM compatibility verification (2026-11-22)
+
+- vTank's `cLogic.InitializeDefaultLogicRules` and `cr.ValidNow` use the
+  item-use lock to sequence recovery with the other activities. UCM now keeps
+  its per-vital receipt and duplicate-use protections while letting combat,
+  loot, and navigation proceed after the native action gate opens.
+- Imports accept signed door lockpick margins used by vTank's `b7` rule.
+  Imported profiles inherit its default of −50 when the value is omitted.
+- `BuffController` compares character level with the configured ceiling for
+  each untrained magic school. Imported UCM settings now apply those limits,
+  including the default of level 80.
+- `f3` uses `SettingsCategories` and `SettingsEnumInfo` as editor metadata.
+  Those tables no longer generate unsupported gameplay diagnostics during
+  import. Both bundled files parsed, and the vTank template converted. The
+  bundled settings database requires additional behavior adapters.
+
+The source review also checked the existing attack and debuff rules, equipment
+and component checks, buff refresh, loot receipts, route doors, linked profiles,
+and meta scheduling against the local reference. Reports are under
+`TestOutput/Parity-Nov22`. Live hunts, server-specific item and recipe data,
+and external vTank integrations remain outside this verification.
+
 ## Known-gap audit and interaction follow-up (2026-11-13)
 
-This is the current UCM comparison summary. Older dated sections below preserve
-investigation history; their remaining-gap lists are not current task lists.
+This audit records the UCM comparison as of November 13. Older dated sections
+preserve the investigation history.
 The audit distinguishes defects in implemented behavior from features that still
 need a separate implementation or external data.
 
@@ -162,6 +184,12 @@ Automatic fellowship and integrated crafting follow-up (2026-11-13):
   supply list with stock minima. It manufactures ammunition and ordinary
   supplies from available recipe ingredients; intermediate ingredients can be
   crafted recursively. It does not invent recipes for unknown custom items.
+- vTank's `bv.cs` and `ga.cs` check for craftable ammunition while selecting a
+  launcher loadout and enter peace before crafting. UCM's **Craft ammunition
+  from bundles** uses matching standard recipes from the production catalog.
+  The adjustable stock threshold counts the equipped stack and compatible
+  rounds in packs. The native executor checks skill, ownership and the result
+  of each batch before combat resumes.
 - UCM crafts one output batch at a time, checks fresh stock before dispatch,
   excludes retained/equipped/traded inputs and nonempty containers, respects
   trained crafting skills, enters peace and uses the existing split/merge and

@@ -2,10 +2,12 @@
 #include "Mods/ACEPluginSubsystem.h"
 #include "ACEVTProfile.h"
 #include "Mods/ACEUCMProfiles.h"
+#include "Mods/ACEAutoCraft.h"
 #include "ACEUCMLootPresentation.h"
 #include "ACEPetDevice.h"
 #include "ACEPluginEquipment.h"
 #include "ACEClientSubsystem.h"
+#include "ACEPlayerController.h"
 #include "ACEDatSubsystem.h"
 #include "UI/ACEUIResourceResolver.h"
 #include "UI/ACERetailObjectNames.h"
@@ -167,7 +169,11 @@ namespace ACEUCMPanelPrivate
         FString CreatingSection,CreationError,DeletingSection,DeletingName,MonsterSearch,MonsterFilter;
         int32 RoutePage=0;
         static constexpr int32 RoutePageSize=8;
-        void ResetProfileEditors(){LootDraft.Reset();ConditionDraft.Reset();StateIndex=0;ExpandedMonster=INDEX_NONE;MonsterPage=0;RoutePage=0;}
+        int32 RouteEditIndex=INDEX_NONE;
+        TWeakPtr<FJsonObject> RouteEditOriginal;
+        int32 RouteEditCell=0;
+        FString RouteEditCoordinates[3];
+        void ResetProfileEditors(){LootDraft.Reset();ConditionDraft.Reset();StateIndex=0;ExpandedMonster=INDEX_NONE;MonsterPage=0;RoutePage=0;RouteEditOriginal.Reset();}
         void CreateSection(const FString& Section)
         {
             if(!CanLeaveLootRule())return;
@@ -642,7 +648,7 @@ namespace ACEUCMPanelPrivate
                 Add(Toggle(TEXT("item_buffs_enabled"),TEXT("Item enchantment buffs"),TEXT("Maintain item-magic buffs, including armor banes and weapon auras. Turning this off also excludes manually selected item spells."),true));
                 Slider(TEXT("refresh_seconds"),TEXT("Rebuff before expiry"),10,300,300,Accent,TEXT(" sec"));
                 Add(Text(TEXT("Refreshes before timers expire; nearby expirations are grouped during a buff cycle. Saved refresh settings are preserved."),14,Muted));
-                Add(Toggle(TEXT("idle_buff_topoff"),TEXT("Refresh buffs while idle"),TEXT("Tops up buffs after combat and looting when no target is nearby.")));
+                Add(Toggle(TEXT("idle_buff_topoff"),TEXT("Buff only while idle"),TEXT("Waits until nearby monsters are gone before routine self buffs or consumable buffs. Refreshes only in the last 10% of each buff's duration, within the configured window. Recovery and explicit Force Buff remain available during combat.")));
                 Slider(TEXT("idle_buff_seconds"),TEXT("Idle buff refresh window"),60,3600,1200,Accent,TEXT(" sec"));
                 ProtectionControls();
                 Heading(TEXT("Buff exceptions"),TEXT("Override individual buff families when needed."));
@@ -811,6 +817,8 @@ namespace ACEUCMPanelPrivate
                 Slider(TEXT("mana_tank_minimum"),TEXT("Minimum mana in source loot"),0,10000,1000,Accent,TEXT(""));
                 Heading(TEXT("Automatic crafting"),TEXT("Replenish supplies from the bundled recipe catalog using owned, unprotected ingredients. Imported assist and buff items are included. Recovery has priority between crafting actions; each craft waits for its inventory result."));
                 Add(Toggle(TEXT("auto_craft"),TEXT("Craft supplies automatically"),TEXT("Make one batch when a configured supply runs out; top up to its minimum while idle.")));
+                Add(Toggle(TEXT("auto_craft_ammo"),TEXT("Craft ammunition from bundles"),TEXT("When ammunition for the selected launcher and damage type runs low, combine one batch of matching bundled heads and shafts. Requires trained Fletching.")));
+                Slider(TEXT("craft_ammo_minimum"),TEXT("Craft when ammunition is below"),1,ACEAutoCraft::MaxAmmoMinimum,ACEAutoCraft::DefaultAmmoMinimum,Accent,TEXT(" rounds"));
                 Add(Toggle(TEXT("craft_confirm"),TEXT("Accept crafting confirmations"),TEXT("Only accepts the crafting prompt for the active recipe. Turn off to answer prompts manually."),true));
                 const TCHAR* CraftKeys[]={TEXT("craft_health_kits"),TEXT("craft_stamina_kits"),TEXT("craft_mana_kits"),TEXT("craft_health_food"),TEXT("craft_stamina_food"),TEXT("craft_mana_food")};
                 const TCHAR* CraftLabels[]={TEXT("Idle health kits"),TEXT("Idle stamina kits"),TEXT("Idle mana kits"),TEXT("Idle health food"),TEXT("Idle stamina food"),TEXT("Idle mana food")};
@@ -841,7 +849,7 @@ namespace ACEUCMPanelPrivate
             else if(Page==TEXT("Route"))
             {
                 SectionSelector(TEXT("Routes"));
-                Heading(TEXT("Route points"),TEXT("Walk to your starting spot and add a waypoint. Move along the path and add another at each turn. Every point saves immediately to the file above."));
+                Heading(TEXT("Route points"),TEXT("Add waypoints at each turn. Use Edit position to adjust a waypoint while the route is running."));
                 Add(Button(TEXT("+ Add waypoint at my position"),[this](){AddRoutePoint(TEXT("walk"));}));
                 Add(Toggle(TEXT("route_preview"),TEXT("Show route in world"),TEXT("Blue lines connect saved points; amber marks jumps."),true));
                 const TArray<TSharedPtr<FJsonValue>>* Route=nullptr;
@@ -867,7 +875,21 @@ namespace ACEUCMPanelPrivate
                         +SVerticalBox::Slot().AutoHeight()[Text(FString::Printf(TEXT("%.1f, %.1f, %.1f"),Num(O,TEXT("x")),Num(O,TEXT("y")),Num(O,TEXT("z"))),12,Muted)]];
                     Row->AddSlot().AutoWidth()[SNew(SBox).IsEnabled(I>0)[Button(TEXT("↑"),[this,I](){EditRoute(I,-1);})]];
                     Row->AddSlot().AutoWidth().Padding(4,0)[SNew(SBox).IsEnabled(I+1<Count)[Button(TEXT("↓"),[this,I](){EditRoute(I,1);})]];
-                    Row->AddSlot().AutoWidth()[Button(TEXT("Remove"),[this,I](){EditRoute(I,0);})];Add(Tile(Row));
+                    Row->AddSlot().AutoWidth()[Button(TEXT("Remove"),[this,I](){EditRoute(I,0);})];
+                    auto CardBody=SNew(SVerticalBox);
+                    CardBody->AddSlot().AutoHeight()[Row];
+                    if(I==RouteEditIndex&&RouteEditOriginal.Pin()==O)
+                        CardBody->AddSlot().AutoHeight().Padding(0,8,0,0)[RoutePositionEditor()];
+                    else if(!Bool(O,TEXT("legacy"))||Bool(O,TEXT("walk_first")))
+                        CardBody->AddSlot().AutoHeight().HAlign(HAlign_Left).Padding(0,4,0,0)
+                            [Button(TEXT("Edit position"),[this,I,O](){
+                                RouteEditIndex=I;
+                                RouteEditOriginal=O;
+                                SetRoutePositionDraft(uint32(Num(O,TEXT("cell"))),
+                                    FVector(Num(O,TEXT("x")),Num(O,TEXT("y")),Num(O,TEXT("z"))));
+                                Rebuild();
+                            })];
+                    Add(Tile(CardBody));
                 }
                 Heading(TEXT("Special steps"),TEXT("Add an interaction, portal, jump, pause or recall at the end of the route. After a portal, add the next waypoint at your destination."));
                 auto Buttons=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(5,5));
@@ -887,7 +909,7 @@ namespace ACEUCMPanelPrivate
                     {Dat->TryGetSpellInfo(Id,Name,IconId);Recalls->AddSlot()[Button(TEXT("+ ")+Name,[this,Id](){RecordExtra(TEXT("recall"),TEXT("spell"),Id);})];}
                 }
                 Add(Recalls);
-                Heading(TEXT("Route behavior"),TEXT("Start joins the nearest waypoint, then follows points in order. Route edits stop UCM; press Start when ready."));
+                Heading(TEXT("Route behavior"),TEXT("Start joins the nearest reachable waypoint, then follows points in order."));
                 auto Options=SNew(SUniformGridPanel).SlotPadding(FMargin(0,0,8,6));int32 OptionIndex=0;
                 auto Option=[&](const TCHAR* Key,const FString& Label,const FString& Help,bool Default=false){
                     Options->AddSlot(LootNarrow?0:OptionIndex%2,LootNarrow?OptionIndex:OptionIndex/2)[Toggle(Key,Label,Help,Default)];++OptionIndex;};
@@ -998,6 +1020,57 @@ namespace ACEUCMPanelPrivate
         }
         TSharedRef<SWidget> IconWidget(uint32 Id){return Icon(Id);}
         TSharedPtr<FJsonObject> StateObject()const{return P()->GetArrayField(TEXT("states"))[StateIndex]->AsObject();}
+        void SetRoutePositionDraft(int32 Cell,const FVector& Position)
+        {
+            RouteEditCell=Cell;
+            for(int32 Axis=0;Axis<3;++Axis)RouteEditCoordinates[Axis]=FString::SanitizeFloat(Position[Axis]);
+        }
+        TSharedRef<SWidget> RoutePositionEditor()
+        {
+            auto Axes=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(8,4));
+            for(int32 Axis=0;Axis<3;++Axis)
+            {
+                static const TCHAR* Labels[]={TEXT("X"),TEXT("Y"),TEXT("Z")};
+                Axes->AddSlot()
+                    [SNew(SHorizontalBox)
+                    +SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,4,0)[Text(Labels[Axis],14)]
+                    +SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(92)
+                        [SNew(SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit)
+                            .Tag(FName(*(FString(TEXT("UCMRoutePosition."))+Labels[Axis])))
+                            .Text_Lambda([this,Axis](){return FText::FromString(RouteEditCoordinates[Axis]);})
+                            .OnTextChanged_Lambda([this,Axis](const FText& Value){RouteEditCoordinates[Axis]=Value.ToString();})]]];
+            }
+            auto Actions=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(5,4));
+            Actions->AddSlot()[Button(TEXT("Use my position"),[this](){
+                auto* Client=Host->GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
+                if(!Client||Client->GetSessionState()!=EACESessionState::InWorld)
+                {Host->Notice=TEXT("Enter the world to use your position.");return;}
+                auto Position=Client->GetPlayerPosition();
+                const auto* PC=Host->GetWorld()?Cast<AACEPlayerController>(Host->GetWorld()->GetFirstPlayerController()):nullptr;
+                if(PC)PC->TryGetLocallyPredictedPosition(Position);
+                if(Position.IsValid())
+                {SetRoutePositionDraft(Position.CellId,Position.Location);Rebuild();}
+            })];
+            Actions->AddSlot()[Button(TEXT("Save position"),[this](){
+                FACEPosition Position;
+                Position.CellId=RouteEditCell;
+                for(int32 Axis=0;Axis<3;++Axis)
+                {
+                    const auto Value=RouteEditCoordinates[Axis].TrimStartAndEnd();
+                    if(!Value.IsNumeric())
+                    {Host->Notice=TEXT("Enter a number for each waypoint coordinate.");return;}
+                    Position.Location[Axis]=FCString::Atod(*Value);
+                }
+                if(Host->UpdateUCMRoutePointPosition(RouteEditIndex,RouteEditOriginal.Pin(),Position))
+                {RouteEditOriginal.Reset();Rebuild();}
+            })];
+            Actions->AddSlot()[Button(TEXT("Cancel"),[this](){RouteEditOriginal.Reset();Rebuild();})];
+            return SNew(SVerticalBox)
+                +SVerticalBox::Slot().AutoHeight().Padding(0,0,0,4)
+                    [LiveText([this](){return FString::Printf(TEXT("Cell %08X"),uint32(RouteEditCell));})]
+                +SVerticalBox::Slot().AutoHeight().Padding(0,0,0,4)[Axes]
+                +SVerticalBox::Slot().AutoHeight()[Actions];
+        }
         void ShowLastRoutePoint()
         {const TArray<TSharedPtr<FJsonValue>>* Points=nullptr;if(P()->TryGetArrayField(TEXT("route"),Points)&&Points->Num())RoutePage=(Points->Num()-1)/RoutePageSize;}
         void AddRoutePoint(const FString& Kind,float Charge=0)

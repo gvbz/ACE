@@ -337,65 +337,79 @@ int32 UACEClientSubsystem::ResolvePickupContainer(int32 ItemGuid, int32 OpenPack
 
 int32 UACEClientSubsystem::FindPickupContainer(int32 ItemGuid, int32 OpenPackGuid, int32 Amount) const
 {
+	return PlanInventoryPickup(ItemGuid, OpenPackGuid, Amount).Container;
+}
+
+FACEInventoryPickup UACEClientSubsystem::PlanInventoryPickup(int32 ItemGuid, int32 OpenPackGuid, int32 Amount, bool bAutoMerge) const
+{
 	const int32 Self = GetPlayerGuid();
-	if (!Session || !Self) return 0;
+	if (!Session || !Self || ItemGuid == Self) return {};
 	const auto& Objects = Session->GetWorldObjects();
 	const auto* Item = Objects.Find(ItemGuid);
-	if (!Item) return 0;
+	if (!Item) return {};
 	Amount = Amount > 0 ? FMath::Min(Amount, FMath::Max(1, Item->StackSize)) : FMath::Max(1, Item->StackSize);
 	const auto Offered = GetTradeSelfItems();
 	const auto OtherOffers = GetTradePartnerItems();
+	if (Offered.Contains(ItemGuid) || OtherOffers.Contains(ItemGuid)
+		|| Offered.Contains(Item->ContainerId) || OtherOffers.Contains(Item->ContainerId)) return {};
+
+	// Retail searches the main pack's exhaustive item list before considering
+	// the preferred bag. Retain the exact target for split and full pickups.
+	if (bAutoMerge)
+		if (const int32 Target = Session->FindContainerMergeTarget(ItemGuid, Self, Amount, true))
+			if (const auto* Stack = Objects.Find(Target)) return {Stack->ContainerId, Target};
+
 	TArray<int32> Containers{Self};
 	for (const auto& Pack : GetPlayerPacks())
-		if (Pack.Guid != ItemGuid && ACEInventoryRules::IsContainer(Pack) && !Offered.Contains(Pack.Guid))
+		if (Pack.Guid != ItemGuid && ACEInventoryRules::IsContainer(Pack)
+			&& !Offered.Contains(Pack.Guid) && !OtherOffers.Contains(Pack.Guid))
 			Containers.Add(Pack.Guid);
 
 	// CPlayerSystem::PlaceInBackpack reads MainPackPreferred (option 0x29).
 	// Only our own open pack is a preference; a corpse/chest is never a destination.
 	const int32 Preferred = !IsCharacterOptionSet(0x29) && Containers.Contains(OpenPackGuid) ? OpenPackGuid : Self;
-	auto UsesPackSlot = [](const FACEWorldObject& Object)
+	const bool bPackItem = ACEInventoryRules::IsContainer(*Item) || (Item->ItemType & ACEItemType::Container)
+		|| (Item->ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot);
+	const int32 Exclude = Amount >= FMath::Max(1, Item->StackSize) ? ItemGuid : 0;
+	TMap<int32,int32> ItemCounts;
+	if(!bPackItem)
 	{
-		return ACEInventoryRules::IsContainer(Object) || (Object.ItemType & ACEItemType::Container)
-			|| (Object.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot);
-	};
-	const bool bPackItem = UsesPackSlot(*Item);
-	TMap<int32, int32> Counts;
-	TSet<int32> MergeContainers;
-	const bool bCanAutoMerge = !Item->WielderId && !Item->CurrentWieldedLocation
-		&& !IsOwnedInventoryItem(*Item) && !Offered.Contains(ItemGuid) && !OtherOffers.Contains(ItemGuid);
-	for (const auto& Pair : Objects)
-	{
-		const auto& Other = Pair.Value;
-		if (!Containers.Contains(Other.ContainerId) || Other.WielderId || Other.ParentGuid || Other.CurrentWieldedLocation) continue;
-		if (UsesPackSlot(Other) == bPackItem
-			&& (Other.Guid != ItemGuid || Amount < Item->StackSize)) ++Counts.FindOrAdd(Other.ContainerId);
-		if (bCanAutoMerge && !Offered.Contains(Other.Guid) && !OtherOffers.Contains(Other.Guid)
-			&& ACEInventoryRules::MergeAmount(*Item, Other) >= Amount)
-			MergeContainers.Add(Other.ContainerId);
+		for(int32 Container:Containers)ItemCounts.Add(Container,0);
+		Session->GetPackItemCounts(ItemCounts);
+		if(Exclude)
+			if(int32* Existing=ItemCounts.Find(Item->ContainerId))
+				*Existing=Session->CountContainerSlots(Item->ContainerId,false,Exclude);
 	}
-	// ViewContents can arrive before ObjectCreate for an unopened side pack.
-	// Those entries already occupy slots even though their descriptions are pending.
-	for (int32 Container : Containers)
-		if (const auto* Contents = Session->GetContainerContents(Container))
-			for (const auto& Ref : *Contents)
-				if (!Objects.Contains(Ref.ItemGuid) && (Ref.ContainerType != 0) == bPackItem)
-					++Counts.FindOrAdd(Container);
-	// ItemHolder::AttemptToPlaceInContainer auto-merges across owned packs before
-	// looking for a free slot. This also permits pickup into an otherwise full bag.
-	for (int32 Container : Containers)
-		if (MergeContainers.Contains(Container)) return Container;
-
 	auto HasRoom = [&](int32 Container)
 	{
 		const auto* Object = Objects.Find(Container);
 		if (!Object) return false;
 		const int32 Capacity = bPackItem ? Object->ContainersCapacity : Object->ItemsCapacity;
-		return Capacity == -1 || Counts.FindRef(Container) < Capacity;
+		if(Capacity==-1)return true;
+		const int32 Used=bPackItem ? Session->CountContainerSlots(Container,true,Exclude) : ItemCounts.FindRef(Container);
+		return Used < Capacity;
 	};
-	if (HasRoom(Preferred)) return Preferred;
+	if (HasRoom(Preferred)) return {Preferred};
 	for (int32 Container : Containers)
-		if (HasRoom(Container)) return Container;
-	return 0;
+		if (Container != Preferred && HasRoom(Container)) return {Container};
+	return {};
+}
+
+void UACEClientSubsystem::SendInventoryPickup(int32 ItemGuid, int32 OpenPackGuid, int32 Amount)
+{
+	FACEWorldObject Item;
+	if (!GetWorldObject(ItemGuid,Item)) return;
+	const int32 StackSize=FMath::Max(1,Item.StackSize);
+	Amount=Amount>0 ? FMath::Min(Amount,StackSize) : StackSize;
+	const auto Pickup=PlanInventoryPickup(ItemGuid,OpenPackGuid,Amount);
+	if(Pickup.MergeTarget)
+	{
+		SendStackableMerge(ItemGuid,Pickup.MergeTarget,Amount);
+		SelectObject(Pickup.MergeTarget);
+	}
+	else if(!Pickup.Container)ReceiveChatMessage(TEXT("No pack has room for that item."),FString(),ACEChatMessageType::TransientInfo);
+	else if(Amount<StackSize)SendStackableSplitToContainer(ItemGuid,Pickup.Container,0,Amount);
+	else SendPutItemInContainer(ItemGuid,Pickup.Container,0,false);
 }
 
 bool UACEClientSubsystem::SortInventoryItem(int32 Guid)
@@ -766,11 +780,11 @@ FString UACEClientSubsystem::GetLastTellSenderName() const
 	return Session ? Session->GetLastTellSenderName() : FString();
 }
 
-void UACEClientSubsystem::SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement)
+void UACEClientSubsystem::SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement, bool bAutoMerge)
 {
 	if (Session)
 	{
-		Session->SendPutItemInContainer(ItemGuid, ContainerGuid, Placement);
+		Session->SendPutItemInContainer(ItemGuid, ContainerGuid, Placement, bAutoMerge);
 	}
 }
 

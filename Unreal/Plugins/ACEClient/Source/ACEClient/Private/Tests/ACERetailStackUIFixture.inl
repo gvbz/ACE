@@ -259,6 +259,19 @@ TFunction<void()> CheckStackTransfers = [&]()
     Session.WorldObjects[SplitPart.Guid].WeenieClassId=LootStack.WeenieClassId;
     Session.CachedC2SPackets.Reset(); Controller->SendInventoryPickup(LootStack.Guid,7);
     LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(SplitPart.Guid),7});
+    // Ordinary cell drops insert at the requested position instead of searching
+    // another bag for an unrelated matching stack.
+    Session.CachedC2SPackets.Reset(); Gameplay->MoveInventoryAmount(LootStack.Guid,Player.Guid,0,7,false);
+    LastWire(ACEGameAction::StackableSplitToContainer,{uint32(LootStack.Guid),uint32(Player.Guid),0,7});
+    auto& MovingStack=Session.WorldObjects[LootStack.Guid];
+    const int32 BeforeContainer=MovingStack.ContainerId;
+    MovingStack.ContainerId=Bag.Guid;
+    Session.CachedC2SPackets.Reset(); Controller->SendInventoryPickup(LootStack.Guid,7);
+    LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(SplitPart.Guid),7});
+    MovingStack.ContainerId=BeforeContainer;
+    const auto SplitSpace=Client->PlanInventoryPickup(LootStack.Guid,Bag.Guid,7,false);
+    TestEqual(TEXT("A split that needs a new stack uses a free slot"),SplitSpace.Container,Player.Guid);
+    TestEqual(TEXT("Split preparation never substitutes an existing stack"),SplitSpace.MergeTarget,0);
     Session.WorldObjects[Bag.Guid]=Bag;
     Session.WorldObjects.Remove(Spare.Guid); Session.WorldObjects.Remove(GroundBag.Guid);
     Session.CharacterOptions2=SavedOptions2;

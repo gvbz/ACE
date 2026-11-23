@@ -427,6 +427,16 @@ bool FACEPluginVM::Step(const TSharedPtr<FJsonObject>& Snapshot, const TSharedPt
             Intent->SetNumberField(Key, Value);
         }
         else if (lua_isboolean(State, -1)) Intent->SetBoolField(Key, lua_toboolean(State, -1) != 0);
+        else if(Key==TEXT("services_profile")&&lua_istable(State,-1))
+        {
+            // The native UCM executor uses the effective settings after meta
+            // overrides. Apply the same bounded decoder used for profile data.
+            int Nodes=0,OutputBytes=0;
+            auto Value=ReadOutput(State,-1,0,Nodes,OutputBytes,Error,true);
+            if(!Value)return false;
+            if(Value->Type!=EJson::Object){Error=TEXT("Invalid services profile");return false;}
+            Intent->SetField(Key,Value);
+        }
         else if((Key==TEXT("presentation")||Key==TEXT("state")||Key==TEXT("ui")||Key==TEXT("chat_filters")||Key==TEXT("chat_subscriptions")||Key==TEXT("markers")||Key==TEXT("world_plates")||Key==TEXT("terrain_overlay")||Key==TEXT("messages")||Key==TEXT("client_channels")||Key==TEXT("client_messages")||Key==TEXT("requests")||Key==TEXT("profile_patch"))&&lua_istable(State,-1))
         {
             int Nodes=0,OutputBytes=0;auto Value=ReadOutput(State,-1,0,Nodes,OutputBytes,Error,Key==TEXT("profile_patch")||Key==TEXT("requests"),Key==TEXT("client_messages"));
@@ -452,6 +462,12 @@ bool FACEPluginVM::Step(const TSharedPtr<FJsonObject>& Snapshot, const TSharedPt
                 }
                 lua_getfield(State,-1,"kind");size_t Len=0;const char* Kind=lua_tolstring(State,-1,&Len);
                 if(Kind&&Len<=32)Point->SetStringField(TEXT("kind"),UTF8_TO_TCHAR(Kind));lua_pop(State,1);
+                for(const char* Field:{"legacy","walk_first"})
+                {
+                    lua_getfield(State,-1,Field);
+                    if(lua_isboolean(State,-1))Point->SetBoolField(UTF8_TO_TCHAR(Field),lua_toboolean(State,-1)!=0);
+                    lua_pop(State,1);
+                }
                 Route.Add(MakeShared<FJsonValueObject>(Point));lua_pop(State,1);
             }
             Intent->SetArrayField(Key,Route);

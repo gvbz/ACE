@@ -63,6 +63,8 @@
   "buff_others": false,
   "buff_other_range": 20,
   "auto_craft": false,
+  "auto_craft_ammo": false,
+  "craft_ammo_minimum": 25,
   "auto_fellowship": false,
   "craft_confirm": true,
   "fellowship_votes": true,

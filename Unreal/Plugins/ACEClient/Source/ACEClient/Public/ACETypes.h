@@ -1373,6 +1373,8 @@ struct ACECLIENT_API FACEWorldObject
 	int32 PlacementPosition = INDEX_NONE;
 	/** Retail PublicWeenieDesc priority, used to select the outermost worn layer. */
 	UPROPERTY(BlueprintReadOnly, Category = "ACE") int32 ClothingPriority = 0;
+	/** Distinguish an explicit empty coverage mask from an omitted property. */
+	bool bHasClothingPriority = false;
 
 	/** ACE EquipMask from PublicWeenieDesc.CurrentlyWieldedLocation. */
 	UPROPERTY(BlueprintReadOnly, Category = "ACE")

@@ -486,8 +486,8 @@ bool FACEPluginHostTest::RunTest(const FString&)
         auto PathBox=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasPath")));
         auto Browse=FindControl(Panel,TEXT("Waypoint.BrowseLocations"));
         if(!TestTrue(TEXT("XML Browse is distinct from viewing the imported atlas"),PathBox&&Browse
-            &&Browse==FindControl(Panel,TEXT("Browse locations"))
-            &&FindControl(Panel,TEXT("View imported locations")).IsValid()))return false;
+            &&Browse==FindControl(Panel,TEXT("Browse XML file"))
+            &&FindControl(Panel,TEXT("Search locations")).IsValid()))return false;
         auto CompletePicker=[&](const FString& Path,const FString& Error,bool Cancelled)
         {
             auto Finish=MoveTemp(PickerComplete);Finish(Path,Error,Cancelled);
@@ -496,7 +496,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
             Browse->UpdateAllAttributes();Panel->SlatePrepass(1.f);
         };
         TestTrue(TEXT("XML Browse is enabled before any path or atlas exists"),PathBox->GetText().IsEmpty()&&IsControlEnabled(Panel,Browse));
-        Click(TEXT("Browse locations"));
+        Click(TEXT("Browse XML file"));
         TestEqual(TEXT("Browse requests one XML chooser"),PickerRequests,1);
         TestTrue(TEXT("Chooser starts without a typed path"),PickerInitialPath.IsEmpty());
         TestTrue(TEXT("An open chooser disables another Browse request"),ACEWaypointFilePicker::IsOpen()&&!IsControlEnabled(Panel,Browse));
@@ -507,7 +507,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
         TestTrue(TEXT("Selecting an XML waits for the explicit Import button"),H->GetWaypointLocations().IsEmpty()
             &&FindControl(Panel,TEXT("Waypoint.AtlasPath"))==PathBox&&!FindControl(Panel,TEXT("Waypoint.AtlasResults")).IsValid());
         TestTrue(TEXT("Browse is available again after choosing a file"),!ACEWaypointFilePicker::IsOpen()&&IsControlEnabled(Panel,Browse));
-        Click(TEXT("Browse locations"));
+        Click(TEXT("Browse XML file"));
         TestEqual(TEXT("The existing path seeds the next chooser"),PickerInitialPath,Atlas);
         if(!TestTrue(TEXT("Picker failure callback is available"),bool(PickerComplete)))return false;
         CompletePicker(FString(),TEXT("Could not open the XML chooser"),false);
@@ -515,27 +515,27 @@ bool FACEPluginHostTest::RunTest(const FString&)
         if(!TestTrue(TEXT("Picker errors are visible without losing the typed path"),PickerStatus
             &&PickerStatus->GetText().ToString().Contains(TEXT("Could not open the XML chooser"))&&PathBox->GetText().ToString()==Atlas))return false;
         const FString BeforeCancel=PickerStatus->GetText().ToString();
-        Click(TEXT("Browse locations"));
+        Click(TEXT("Browse XML file"));
         if(!TestTrue(TEXT("Picker cancellation callback is available"),bool(PickerComplete)))return false;
         CompletePicker(FString(),FString(),true);
         TestTrue(TEXT("Cancelling the XML chooser preserves path, feedback and imported data"),PathBox->GetText().ToString()==Atlas
             &&PickerStatus->GetText().ToString()==BeforeCancel&&H->GetWaypointLocations().IsEmpty());
-        Click(TEXT("Browse locations"));
+        Click(TEXT("Browse XML file"));
         if(!TestTrue(TEXT("Typed filename validation callback is available"),bool(PickerComplete)))return false;
         CompletePicker(Root/TEXT("not an atlas.txt"),FString(),false);
         TestTrue(TEXT("A typed non-XML filename cannot bypass the chooser filter"),PathBox->GetText().ToString()==Atlas
             &&PickerStatus->GetText().ToString().Contains(TEXT("Choose a GoArrow or CoD XML file"))&&H->GetWaypointLocations().IsEmpty());
-        Click(TEXT("Browse locations"));
+        Click(TEXT("Browse XML file"));
         if(!TestTrue(TEXT("Uppercase XML filename callback is available"),bool(PickerComplete)))return false;
         const FString UppercaseAtlas=Root/TEXT("Locations.XML");
         CompletePicker(UppercaseAtlas,FString(),false);
         TestEqual(TEXT("XML selection accepts case-insensitive extensions"),PathBox->GetText().ToString(),UppercaseAtlas);
         TestTrue(TEXT("Choosing XML still leaves import under user control"),H->GetWaypointLocations().IsEmpty()
             &&PickerStatus->GetText().ToString().Contains(TEXT("Import locations")));
-        Click(TEXT("View imported locations"));
+        Click(TEXT("Search locations"));
         auto EmptyStatus=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.AtlasStatus")));
         auto EmptyResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
-        if(!TestTrue(TEXT("View imported locations opens an empty atlas with guidance back to import"),EmptyStatus&&EmptyResults
+        if(!TestTrue(TEXT("Search locations opens an empty atlas with guidance back to import"),EmptyStatus&&EmptyResults
             &&EmptyResults->GetItems().IsEmpty()&&EmptyStatus->GetText().ToString().Contains(TEXT("No locations imported"))
             &&EmptyStatus->GetText().ToString().Contains(TEXT("Back"))))return false;
         Click(TEXT("Back"));
@@ -548,6 +548,10 @@ bool FACEPluginHostTest::RunTest(const FString&)
         auto Search=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasSearch")));
         auto Results=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
         if(!TestTrue(TEXT("Atlas picker available"),Search&&Results))return false;
+        Search->SetText(FText::FromString(TEXT("  vIlLaGe  ")));
+        if(!TestEqual(TEXT("Search trims and matches imported names without case sensitivity"),Results->GetItems().Num(),1))return false;
+        Search->SetText(FText::FromString(TEXT("no such destination")));
+        TestTrue(TEXT("No matching imported location leaves a clear empty list"),Results->GetItems().IsEmpty());
         Search->SetText(FText::FromString(TEXT("tOwN")));
         if(!TestEqual(TEXT("Search by type returns the destination"),Results->GetItems().Num(),1))return false;
         Results->SetSelection(Results->GetItems()[0]);Click(TEXT("Point arrow"));
@@ -561,7 +565,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
         {FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);FPlatformProcess::Sleep(.001f);}
         TestEqual(TEXT("Directions include one transport and the destination"),H->WaypointItinerary.Num(),2);
         TestTrue(TEXT("Arrow targets usable entrance and ignores disabled shortcut"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(1,0));
-        Click(TEXT("Back"));Click(TEXT("View imported locations"));
+        Click(TEXT("Back"));Click(TEXT("Search locations"));
         Click(TEXT("2. Reach Test village at 0.00N, 56.00E"));
         TestTrue(TEXT("Reopened route can point to the final leg"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(56,0));
         TestFalse(TEXT("Choosing atlas destinations and route legs keeps the floating arrow hidden"),H->WaypointOption(TEXT("arrow")));
@@ -573,12 +577,28 @@ bool FACEPluginHostTest::RunTest(const FString&)
         TestTrue(TEXT("Failed import stays in settings and displays its error"),ImportStatus&&!ImportStatus->GetText().IsEmpty()
             &&FindControl(Panel,TEXT("Waypoint.AtlasPath")).IsValid()&&!FindControl(Panel,TEXT("Waypoint.AtlasResults")).IsValid());
         TestEqual(TEXT("Failed import preserves the successful atlas"),H->GetWaypointLocations().Num(),3);
-        Click(TEXT("View imported locations"));
+        Click(TEXT("Search locations"));
         auto PreservedResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
-        if(!TestTrue(TEXT("View imported locations remains enabled after failure and opens the preserved atlas"),PreservedResults&&PreservedResults->GetItems().Num()==3))return false;
+        if(!TestTrue(TEXT("Search locations remains enabled after failure and opens the preserved atlas"),PreservedResults&&PreservedResults->GetItems().Num()==3))return false;
         Click(TEXT("Back"));
         TestTrue(TEXT("Back preserves the failed file path for correction"),PathBox->GetText().ToString()==InvalidAtlas
             &&FindControl(Panel,TEXT("Waypoint.AtlasPath"))==PathBox);
+        Click(TEXT("Open map"));
+        auto MapFilter=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.MapFilter")));
+        if(!TestTrue(TEXT("Full map exposes imported search beside its marker filter"),MapFilter&&FindControl(Panel,TEXT("Waypoint.SearchLocations"))))return false;
+        MapFilter->SetText(FText::FromString(TEXT("portal")));
+        Click(TEXT("Search locations"));
+        auto MapResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
+        auto MapSearch=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasSearch")));
+        if(!TestTrue(TEXT("Map search lists the imported atlas independently of the map filter"),MapResults&&MapSearch&&MapResults->GetItems().Num()==3))return false;
+        MapSearch->SetText(FText::FromString(TEXT("village")));
+        if(!TestEqual(TEXT("Map search finds the named destination"),MapResults->GetItems().Num(),1))return false;
+        H->ClearWaypoint();
+        MapResults->Private_OnItemDoubleClicked(MapResults->GetItems()[0]);
+        TestTrue(TEXT("Double-click imported result sets its exact coordinates"),H->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(56,0));
+        Click(TEXT("Back"));
+        TestTrue(TEXT("Back from imported search preserves the original map filter and view"),FindControl(Panel,TEXT("Waypoint.MapFilter"))==MapFilter
+            &&MapFilter->GetText().ToString()==TEXT("portal"));
     }
     H->bWaypointLocationsLoaded=false;
     TestEqual(TEXT("Imported locations reload from disk"),H->GetWaypointLocations().Num(),3);
@@ -622,7 +642,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
         ON_SCOPE_EXIT
         {
             H->StorageRoot=SavedRoot;H->Notice=SavedNotice;H->WaypointLocations=SavedLocations;
-            H->WaypointItinerary=SavedItinerary;H->WaypointLocationsRevision=SavedRevision;
+            H->SetWaypointItinerary(SavedItinerary);H->WaypointLocationsRevision=SavedRevision;
             H->bWaypointLocationsLoaded=SavedLoaded;H->bWaypointAtlasHasRoutingData=SavedRouting;
         };
         FString LongRoot=FPaths::ConvertRelativePathToFull(Root/TEXT("long-atlas-root"));
@@ -684,7 +704,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
             TestTrue(TEXT("Reloaded atlas retains routing metadata"),H->bWaypointAtlasHasRoutingData);
 
             auto Panel=H->MakeWaypointPanel();
-            auto Browse=StaticCastSharedPtr<SButton>(FindControl(Panel,TEXT("View imported locations")));
+            auto Browse=StaticCastSharedPtr<SButton>(FindControl(Panel,TEXT("Search locations")));
             if(!TestTrue(*FString::Printf(TEXT("Browse is enabled for %s"),*File),Browse&&IsControlEnabled(Panel,Browse)))return false;
             Browse->SimulateClick();
             auto Search=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasSearch")));
@@ -705,7 +725,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
             auto Back=StaticCastSharedPtr<SButton>(FindControl(Panel,TEXT("Back")));
             if(!TestTrue(TEXT("Directory fixture browser keeps Back enabled"),Back&&IsControlEnabled(Panel,Back)))return false;
             Back->SimulateClick();TestTrue(TEXT("Back restores atlas import controls"),FindControl(Panel,TEXT("Waypoint.AtlasPath")).IsValid());
-            AddInfo(FString::Printf(TEXT("Host atlas roundtrip and View imported locations: %s (%d locations)"),*File,LastLocations.Num()));
+            AddInfo(FString::Printf(TEXT("Host atlas roundtrip and Search locations: %s (%d locations)"),*File,LastLocations.Num()));
         }
         const FString SavedAtlas=H->UserDirectory()/TEXT("Waypoint/locations.json"),BadAtlas=Root/TEXT("directory-invalid-atlas.xml");
         FString Before,After;
@@ -1396,7 +1416,34 @@ bool FACEPluginHostTest::RunTest(const FString&)
             Pixels.Reset();WaypointTarget->GameThread_GetRenderTargetResource()->ReadPixels(Pixels,ReadFlags);
             TestEqual(TEXT("Waypoint panel renders"),Pixels.Num(),Width*760);
             Png.Reset();FImageUtils::PNGCompressImageArray(Width,760,Pixels,Png);
-            FFileHelper::SaveArrayToFile(Png,*(FPaths::ProjectSavedDir()/TEXT("Automation")/FString::Printf(TEXT("Waypoint-%s-%d.png"),Map?TEXT("Map"):TEXT("Settings"),Width)));WaypointTarget->ReleaseResource();
+            FFileHelper::SaveArrayToFile(Png,*(FPaths::ProjectSavedDir()/TEXT("Automation")/FString::Printf(TEXT("Waypoint-%s-%d.png"),Map?TEXT("Map"):TEXT("Settings"),Width)));
+            auto SearchButton=StaticCastSharedPtr<SButton>(FindControl(Widget,TEXT("Waypoint.SearchLocations")));
+            if(TestTrue(TEXT("Both rendered Waypoint views expose imported search"),SearchButton.IsValid()))
+            {
+                SearchButton->SimulateClick();
+                for(int Pass=0;Pass<3;++Pass){Renderer.DrawWidget(WaypointTarget,Widget,Size,0);FlushRenderingCommands();}
+                Pixels.Reset();WaypointTarget->GameThread_GetRenderTargetResource()->ReadPixels(Pixels,ReadFlags);
+                Png.Reset();FImageUtils::PNGCompressImageArray(Width,760,Pixels,Png);
+                FFileHelper::SaveArrayToFile(Png,*(FPaths::ProjectSavedDir()/TEXT("Automation")/FString::Printf(TEXT("Waypoint-Search-%s-%d.png"),Map?TEXT("Map"):TEXT("Settings"),Width)));
+            }
+            WaypointTarget->ReleaseResource();
+        }
+        {
+            const auto Previous=H->WaypointItinerary;ON_SCOPE_EXIT{H->SetWaypointItinerary(Previous);};
+            H->SetWaypointItinerary({
+                {FVector2D(1,0),TEXT("A portal with a long destination name"),TEXT("Portal"),FVector2D(55,0)},
+                {FVector2D(56,0),TEXT("Test village"),TEXT("Town"),{}}});
+            for(int Width:{440,280})
+            {
+                const FVector2D Size(Width,360);auto Widget=H->MakeWaypointRoutePanel();
+                auto* RouteTarget=FWidgetRenderer::CreateTargetFor(Size,TF_Bilinear,true);
+                for(int Pass=0;Pass<3;++Pass){Renderer.DrawWidget(RouteTarget,Widget,Size,0);FlushRenderingCommands();}
+                Pixels.Reset();RouteTarget->GameThread_GetRenderTargetResource()->ReadPixels(Pixels,ReadFlags);
+                TestEqual(TEXT("Detached route renders at normal and narrow widths"),Pixels.Num(),Width*360);
+                Png.Reset();FImageUtils::PNGCompressImageArray(Width,360,Pixels,Png);
+                FFileHelper::SaveArrayToFile(Png,*(FPaths::ProjectSavedDir()/TEXT("Automation")/FString::Printf(TEXT("Waypoint-Route-%d.png"),Width)));
+                RouteTarget->ReleaseResource();
+            }
         }
         for(const FString Page:{TEXT("Overview"),TEXT("Buffs"),TEXT("Buff others"),TEXT("Combat"),TEXT("Recovery"),TEXT("Route"),TEXT("Loot"),TEXT("Vendors"),TEXT("Loot editor"),TEXT("Salvage groups"),TEXT("Rules"),TEXT("Metas"),TEXT("Profiles"),TEXT("Standalone loot"),TEXT("Import")})
         for(int Width:{780,450})

@@ -20,6 +20,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "ProceduralMeshComponent.h"
 #include "RenderingThread.h"
+#include "RHICommandList.h"
+#include "TextureResource.h"
 #include "ShaderCompiler.h"
 #include "ImageUtils.h"
 
@@ -47,12 +49,20 @@ bool FACEHookedItemMaterialTest::RunTest(const FString&)
         auto* Swatch=Cast<UTexture2D>(Texture);
         if(!TestNotNull(TEXT("Solid-color texture is valid"),Swatch)) return;
         if(!TestTrue(TEXT("Solid color uses a one-pixel swatch"),Swatch->GetSizeX()==1 && Swatch->GetSizeY()==1)) return;
-        auto* Data=Swatch->GetPlatformData();
-        if(!TestTrue(TEXT("Swatch has pixel data"),Data && Data->Mips.Num()>0)) return;
-        const auto* Pixel=static_cast<const FColor*>(Data->Mips[0].BulkData.LockReadOnly());
-        if(TestNotNull(TEXT("Swatch pixel is available"),Pixel))
-            TestEqual(TEXT("Authored black survives material conversion"),*Pixel,FColor::Black);
-        Data->Mips[0].BulkData.Unlock();
+        if(!FApp::CanEverRender()) return;
+        const auto* Resource=Swatch->GetResource();
+        if(!TestNotNull(TEXT("Swatch has a render resource"),Resource)) return;
+        // UE can discard the transient mip's CPU bytes after upload. Check
+        // the texture the material samples instead of its former upload buffer.
+        TArray<FColor> Pixels;
+        ENQUEUE_RENDER_COMMAND(ACEReadSolidSwatch)([Resource,&Pixels](FRHICommandListImmediate& Cmd)
+        {
+            if(Resource->TextureRHI)
+                Cmd.ReadSurfaceData(Resource->TextureRHI,FIntRect(0,0,1,1),Pixels,FReadSurfaceDataFlags());
+        });
+        FlushRenderingCommands();
+        if(TestEqual(TEXT("Swatch readback has one pixel"),Pixels.Num(),1))
+            TestEqual(TEXT("Authored black survives material conversion"),Pixels[0],FColor::Black);
     };
     // UV wrapping must not change a solid surface's color or force a fallback
     // that lighting/examination then mistake for a white textured surface.

@@ -174,6 +174,11 @@ void UACEPluginSubsystem::ObserveAttackDone(uint32 Error)
 }
 void UACEPluginSubsystem::ObserveInventoryStateChanged()
 {
+    if(auto Items=Find(TEXT("itemtools"));Items&&Items->Running&&S(Items->Profile,TEXT("mode"))==TEXT("merge"))
+    {
+        Items->NextDecision=0;
+        ScheduleDecisionWake(FPlatformTime::Seconds());
+    }
     auto P=PolicyPlugin();if(!P||!P->Running)return;
     const bool Waiting=!P->WaitAction.IsEmpty()||P->CombatTransitionIntent.IsValid();
     RefreshActionWait(*P);
@@ -799,6 +804,39 @@ void UACEPluginSubsystem::UpdateRouteVisibility(const FACEPosition& Position,
     if(!Pending)RouteVisibilityOffset=0;
 }
 
+TOptional<FACEPosition> UACEPluginSubsystem::FindRouteShortcut(const FACEPosition& Position, const FACEPosition& Anchor,
+    const FACEPosition& Destination, const FACEPluginSightQuery& Sight) const
+{
+    const auto Connected=[](const FACEPosition& A,const FACEPosition& B)
+    {
+        const uint32 ACell=uint32(A.CellId),BCell=uint32(B.CellId);
+        return A.IsValid()&&B.IsValid()&&((ACell>>16)==(BCell>>16)||((ACell&0xffff)<0x100&&(BCell&0xffff)<0x100));
+    };
+    if(!Connected(Position,Destination)||!Connected(Anchor,Destination))return {};
+
+    const FVector From=Position.ToUnrealLocation(), Start=Anchor.ToUnrealLocation(), End=Destination.ToUnrealLocation();
+    FACEPluginRouteGround Ground(*GetWorld(),2500);
+    const auto Walkable=[&](const FVector& A,const FVector& B)
+    {
+        return FVector::DistSquared(A,B)<=FMath::Square(40000.)&&Ground.CanQueryPath(A,B)&&Ground.Reachable(A,B,Sight,20.f);
+    };
+    if(Walkable(From,End))return Destination;
+
+    // Check both the approach and the remaining leg. A route on another floor
+    // or behind a closed door can have the same horizontal coordinates.
+    const FVector Leg=End-Start;
+    const double LengthSquared=Leg.SizeSquared2D();
+    if(LengthSquared<=KINDA_SMALL_NUMBER)return {};
+    const FVector Offset=From-Start;
+    const double Parameter=FMath::Clamp((Offset.X*Leg.X+Offset.Y*Leg.Y)/LengthSquared,0.,1.);
+    if(Parameter>=1.)return {};
+    FVector Join;
+    if(!Ground.Sample(Start+Leg*Parameter,Join)||!Walkable(From,Join)||!Walkable(Join,End))return {};
+    FACEPosition Result=Anchor;
+    Result.SetLocationFromUnreal(Join);
+    return Connected(Position,Result)?TOptional<FACEPosition>(Result):TOptional<FACEPosition>();
+}
+
 TSharedPtr<FJsonValue> UACEPluginSubsystem::PluginItemSnapshot(const FACEWorldObject& Item)
 {
     auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
@@ -832,6 +870,7 @@ TSharedPtr<FJsonValue> UACEPluginSubsystem::PluginItemSnapshot(const FACEWorldOb
     const bool Equipped=C->GetPlayerGuid()!=0 && (Item.WielderId==C->GetPlayerGuid() || (Item.CurrentWieldedLocation && Item.ParentGuid==C->GetPlayerGuid()));
     J->SetBoolField(TEXT("equipped"),Equipped);J->SetNumberField(TEXT("ammo_type"),Item.AmmoType);
     J->SetBoolField(TEXT("resource_available"),LootItemAvailable(C,Item));
+    if(Item.ValidLocations&0x800000)J->SetBoolField(TEXT("ammo_available"),Equipped||LootItemAvailable(C,Item,true));
     if(Item.ObjectDescriptionFlags&0x20000)J->SetBoolField(TEXT("lockpick_available"),LootItemAvailable(C,Item,true)&&Item.Structure>0);
     // Retention protects against destructive donor use, not releasing stored
     // mana. Both the supply and containing packs must remain outside trade.
@@ -1313,11 +1352,38 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
             }
         }
         Out->SetNumberField(TEXT("movement_blocked_serial"),MovementBlockedSerial);
-        if(auto UCM=PolicyPlugin();UCM&&UCM->Running&&bRouteJoinRequested)
+        if(auto UCM=PolicyPlugin();UCM&&UCM->Running)
         {
+            Out->SetBoolField(TEXT("route_shortcuts"),true);
             const TArray<TSharedPtr<FJsonValue>>* Route=nullptr;
             if((RuntimeRoute?RuntimeRoute:UCM->Profile)->TryGetArrayField(TEXT("route"),Route))
-                UpdateRouteVisibility(P,*Route,Sight,Out);
+            {
+                if(bRouteJoinRequested)UpdateRouteVisibility(P,*Route,Sight,Out);
+                if(RouteShortcutAnchor)
+                {
+                    Out->SetBoolField(TEXT("route_shortcut_checked"),true);
+                    if(Route->IsValidIndex(RoutePoint-1))
+                    {
+                        const auto Waypoint=(*Route)[RoutePoint-1]->AsObject();
+                        const bool Legacy=B(Waypoint,TEXT("legacy"));
+                        if(!Legacy||B(Waypoint,TEXT("walk_first")))
+                        {
+                            FACEPosition Destination;
+                            Destination.CellId=int32(uint32(N(Waypoint,TEXT("cell"))));
+                            Destination.Location=FVector(N(Waypoint,TEXT("x")),N(Waypoint,TEXT("y")),N(Waypoint,TEXT("z")));
+                            // Imported coordinate routes may encode an indoor waypoint in outdoor cells.
+                            if(Legacy&&Destination.IsValid()&&(uint32(P.CellId)&0xffff)>=0x100)
+                            {
+                                const FVector WorldPosition=Destination.ToUnrealLocation();
+                                Destination.CellId=P.CellId;
+                                Destination.SetLocationFromUnreal(WorldPosition);
+                            }
+                            if(const auto Shortcut=FindRouteShortcut(P,*RouteShortcutAnchor,Destination,Sight))
+                                Out->SetObjectField(TEXT("route_shortcut"),Pos(*Shortcut));
+                        }
+                    }
+                }
+            }
         }
         for(const auto& Value:Members)
         {
@@ -1744,8 +1810,8 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
         if(Found && Item.ContainerId && Item.ContainerId==C->GetOpenExternalContainerGuid() && C->GetWorldObject(Item.ContainerId,Container) && Container.IsCorpse())
         {
             const int32 Amount=int32(FMath::Clamp(N(I,TEXT("amount"),FMath::Max(1,Item.StackSize)),1.,double(FMath::Max(1,Item.StackSize))));
-            const int32 Destination=C->FindPickupContainer(Id,0,Amount);
-            if(!Destination)
+            const auto Pickup=C->PlanInventoryPickup(Id,0,Amount);
+            if(!Pickup.Container)
             {
                 ReportActivityFailure(P,I,TEXT("No pack has space for this loot; waiting for inventory space"));
                 if(P.ActivityFailure)P.ActivityFailure->SetBoolField(TEXT("inventory_full"),true);
@@ -1753,25 +1819,15 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
                 return true;
             }
             TrackActionWait(P,Action,Id,Item.StackSize);
-            int32 MergeTo=0;
-            if(Amount<Item.StackSize)
-            {
-                // A partial pickup into a full pack must merge directly. Split
-                // creates a new stack and requires a free slot on the server.
-                const auto Offered=C->GetTradeSelfItems();
-                for(const auto& Target:C->GetPackItems(Destination))
-                    if(C->IsOwnedInventoryItem(Target)&&!Offered.Contains(Target.Guid)
-                        &&ACEInventoryRules::MergeAmount(Item,Target)>=Amount){MergeTo=Target.Guid;break;}
-            }
-            else if(auto Session=C->GetSession())MergeTo=Session->FindContainerMergeTarget(Id,Destination,Amount);
-            if(MergeTo)
+            if(Pickup.MergeTarget)
             {
                 FACEWorldObject Target;
-                if(C->GetWorldObject(MergeTo,Target)){P.WaitMergeTarget=MergeTo;P.WaitMergeCount=Target.StackSize+Amount;}
-                C->SendStackableMerge(Id,MergeTo,Amount);
+                if(C->GetWorldObject(Pickup.MergeTarget,Target))
+                {P.WaitMergeTarget=Pickup.MergeTarget;P.WaitMergeCount=FMath::Max(1,Target.StackSize)+Amount;}
+                C->SendStackableMerge(Id,Pickup.MergeTarget,Amount);
             }
-            else if(Amount<Item.StackSize)C->SendStackableSplitToContainer(Id,Destination,0,Amount);
-            else C->SendPutItemInContainer(Id,Destination,0);
+            else if(Amount<Item.StackSize)C->SendStackableSplitToContainer(Id,Pickup.Container,0,Amount);
+            else C->SendPutItemInContainer(Id,Pickup.Container,0,false);
         }
         P.NextAction=Now+1;return true;
     }

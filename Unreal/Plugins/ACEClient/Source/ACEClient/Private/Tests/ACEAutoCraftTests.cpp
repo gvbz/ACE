@@ -7,8 +7,11 @@
 #include "Mods/ACEAutoCraft.h"
 #include "Mods/ACEPluginSubsystem.h"
 #include "ACEClientSubsystem.h"
+#include "ACEPlayerController.h"
 #include "ACESession.h"
 #include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "Protocol/ACEBinaryReader.h"
@@ -110,7 +113,13 @@ bool FACEAutoCraftTest::RunTest(const FString&)
     }
     // A real native host + loopback transport verifies direction, ownership,
     // pending confirmation, pause, timeout and the Plugin Manager lifecycle.
-    auto* GI=NewObject<UGameInstance>();GI->Init();ON_SCOPE_EXIT{GI->Shutdown();};
+    const auto Values=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
+        .CreateNavigation(false).CreateAISystem(false);
+    auto* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Values);
+    auto* GI=NewObject<UGameInstance>(GEngine);World->SetGameInstance(GI);
+    auto& Context=GEngine->CreateNewWorldContext(EWorldType::Game);
+    Context.OwningGameInstance=GI;Context.SetCurrentWorld(World);GI->OnWorldChanged(nullptr,World);GI->Init();
+    ON_SCOPE_EXIT{GI->Shutdown();GEngine->DestroyWorldContext(World);World->DestroyWorld(false);};
     auto* C=GI->GetSubsystem<UACEClientSubsystem>();auto* H=GI->GetSubsystem<UACEPluginSubsystem>();
     H->StorageRoot=FPaths::ProjectSavedDir()/TEXT("AutoCraftTests")/FGuid::NewGuid().ToString(EGuidFormats::Digits);H->Settings=MakeShared<FJsonObject>();
     C->Session=MakeShared<FACESession>();auto& S=*C->Session;S.State=EACESessionState::InWorld;S.PlayerGuid=0x50000001;
@@ -338,6 +347,62 @@ bool FACEAutoCraftTest::RunTest(const FString&)
         TestTrue(TEXT("Craft failure is delivered to scheduler"),UCM->ActivityFailure.IsValid());
         S.bUseBusy=false;UCM->Profile->SetBoolField(TEXT("auto_craft"),false);auto Empty=MakeShared<FJsonObject>();H->ExtendUCMCraftSnapshot(Empty);
         TestFalse(TEXT("Disable releases crafting state"),H->UCMCraft.IsValid());H->Stop(UCM->Id,TEXT("Test complete"));
+    }
+    // The missile option runs without a named supply or the general craft toggle.
+    {
+        auto* PC=World->SpawnActor<AACEPlayerController>();
+        auto* Local=NewObject<ULocalPlayer>(GEngine);
+        GI->AddLocalPlayer(Local,FPlatformUserId::CreateFromInternalId(0));PC->SetPlayer(Local);
+        ON_SCOPE_EXIT{GI->RemoveLocalPlayer(Local);PC->Destroy();};
+        if(!TestTrue(TEXT("Ammo crafting uses the local-controller dispatch"),GI->GetFirstLocalPlayerController()==PC))return false;
+        auto UCM=H->Find(TEXT("ucm"));UCM->Running=true;UCM->Player=S.PlayerGuid;UCM->Server=C->GetServerName();
+        UCM->Profile->SetBoolField(TEXT("auto_craft_ammo"),true);
+        UCM->Profile->SetNumberField(TEXT("craft_ammo_minimum"),25);
+        H->UCMServicesProfile.Reset();
+        const auto& Wrapped=Catalog.Recipes[Catalog.ById.FindChecked(TEXT("23911"))];
+        S.WorldObjects.Reset();S.WorldObjects.Add(Self.Guid,Self);S.Confirmations.Reset();S.bUseBusy=false;
+        Item(10,Wrapped.Source,1);Item(11,Wrapped.Target,1);
+        auto Offers=[&]()
+        {
+            auto Snapshot=MakeShared<FJsonObject>();if(H->UCMCraft)H->UCMCraft->NextRefresh=0;
+            H->ExtendUCMCraftSnapshot(Snapshot);
+            return Snapshot->GetObjectField(TEXT("crafting"))->GetArrayField(TEXT("candidates"));
+        };
+        S.PlayerVitals.Skills[0].Current=Wrapped.Difficulty-1;
+        TestTrue(TEXT("Insufficient Fletching skips wrapped ammunition"),Offers().IsEmpty());
+        S.PlayerVitals.Skills[0].Current=400;
+        S.WorldObjects[10].ObjectDescriptionFlags|=ACEObjectDescFlag::Retained;
+        TestTrue(TEXT("Protected arrowhead bundles are skipped"),Offers().IsEmpty());
+        S.WorldObjects[10].ObjectDescriptionFlags=0;
+        const auto Available=Offers();
+        if(TestEqual(TEXT("Wrapped bundles expose a direct ammo recipe without a craft target"),Available.Num(),1))
+        {
+            const auto Choice=Available[0]->AsObject();
+            TestEqual(TEXT("Wrapped batch uses the catalog recipe"),Choice->GetStringField(TEXT("recipe")),Wrapped.Id);
+            TestEqual(TEXT("Candidate advertises arrow launcher kind"),Choice->GetNumberField(TEXT("ammo_type")),1.);
+            TestEqual(TEXT("Fire ammunition uses the retail damage bit"),Choice->GetNumberField(TEXT("damage_type")),16.);
+        }
+        auto Request=MakeShared<FJsonObject>();Request->SetStringField(TEXT("action"),TEXT("craft"));
+        Request->SetStringField(TEXT("recipe"),Wrapped.Id);Request->SetStringField(TEXT("phase"),TEXT("ammunition"));
+        Item(12,Wrapped.Output,25);H->ExecuteUCMCraft(*UCM,Request);
+        TestEqual(TEXT("Fresh ammo at the minimum cancels a stale batch"),H->UCMCraft->Selected,INDEX_NONE);
+        S.WorldObjects.Remove(12);
+        S.PlayerVitals.CombatMode=4;S.PlayerVitals.StatQualityInts.Add(40,4);
+        H->ExecuteUCMCraft(*UCM,Request);
+        TestTrue(TEXT("Ammo crafting waits for confirmed peace"),UCM->CombatTransitionIntent.IsValid()&&H->UCMCraft->Selected==INDEX_NONE);
+        S.PendingCombatMode=0;S.PlayerVitals.CombatMode=1;S.PlayerVitals.StatQualityInts.Add(40,1);++S.CombatModeRevision;
+        H->UpdateCombatTransition(*UCM);
+        if(TestTrue(TEXT("Confirmed peace dispatches the bundle use"),H->UCMCraft->Pending))
+        {
+            TestEqual(TEXT("Wrapped batch uses the native catalog yield"),H->UCMCraft->Goal,1000);
+            TestEqual(TEXT("The arrowheads are the use source"),H->UCMCraft->SourceGuid,10);
+            TestEqual(TEXT("The shafts are the use target"),H->UCMCraft->TargetGuid,11);
+            S.bUseBusy=false;UseReceipt(10,11,H->UCMCraft->RequestedAt,0);
+            S.WorldObjects.Remove(10);S.WorldObjects.Remove(11);Item(12,Wrapped.Output,1000);
+            H->ExecuteUCMCraft(*UCM,Request);H->UCMCraft->ResultAt=FPlatformTime::Seconds()-1;H->ExecuteUCMCraft(*UCM,Request);
+            TestEqual(TEXT("Inventory confirms the batch and releases combat"),H->UCMCraft->Selected,INDEX_NONE);
+        }
+        H->Stop(UCM->Id,TEXT("Test complete"));
     }
     // Imported recipes are atomic, persistent and scoped to the observed server.
     {

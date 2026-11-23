@@ -17,6 +17,11 @@ void FACEClientModule::StartupModule()
 			Var->Set(Value, ECVF_SetByCode);
 		}
 	};
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
+	// The ACE connection and UCM need world/controller ticks even while another
+	// window is active. Idle mode skips them entirely, including route movement.
+	ForceInt(TEXT("t.IdleWhenNotForeground"), 0);
+#endif
 	ForceInt(TEXT("r.Shadow.Virtual.Enable"), 0);
 	ForceInt(TEXT("r.Shadow.CSM.Enable"), 1);
 	// UE 5.8 RendererScene initializes PrimitiveOctree with UE_OLD_HALF_WORLD_MAX

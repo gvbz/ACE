@@ -361,6 +361,7 @@ TSharedRef<SWidget> UACEPluginSubsystem::MakePanel(const FString& PluginId)
     if(PluginId==TEXT("ucmmicro"))return MakeUCMMicroPanel();
     if(PluginId==TEXT("actiondeck"))return GetGameInstance()->GetSubsystem<UACEActionDeckSubsystem>()->MakePanel();
     if(PluginId==TEXT("waypoint")||PluginId==TEXT("waypoint.map"))return MakeWaypointPanel(PluginId.EndsWith(TEXT(".map")),false,false);
+    if(PluginId==TEXT("waypoint.route"))return MakeWaypointRoutePanel();
     if(PluginId==TEXT("looteditor"))return MakeUCMPanel(TEXT("Standalone loot"),false);
     if(PluginId==TEXT("ucm"))return MakeUCMPanel(FString(),false);
     return SNew(ACEPluginPanelPrivate::SACEPlugins).Host(this).PluginId(PluginId);

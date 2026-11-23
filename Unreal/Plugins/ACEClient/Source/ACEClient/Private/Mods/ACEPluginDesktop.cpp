@@ -303,7 +303,7 @@ void SACEPluginDesktop::Resize(const FString& Id,FVector2D Delta,bool Save)
              FMath::Clamp(Size.Y-Chrome,40.,FMath::Max(40.,ViewSize.Y-Chrome)));
          Layout(*W);if(Save)Host->SavePluginWindowPosition(SizeKey(Id),W->Size);return;
      }
-     W->Size+=Delta;const double MinWidth=Id==TEXT("actiondeck")?360.:96.,MinHeight=64.;W->Size.X=FMath::Clamp(W->Size.X,MinWidth,FMath::Max(MinWidth,ViewSize.X));W->Size.Y=FMath::Clamp(W->Size.Y,MinHeight,FMath::Max(MinHeight,ViewSize.Y));Layout(*W);
+     W->Size+=Delta;const double MinWidth=Id==TEXT("actiondeck")?360.:Id==TEXT("waypoint.route")?280.:96.,MinHeight=Id==TEXT("waypoint.route")?180.:64.;W->Size.X=FMath::Clamp(W->Size.X,MinWidth,FMath::Max(MinWidth,ViewSize.X));W->Size.Y=FMath::Clamp(W->Size.Y,MinHeight,FMath::Max(MinHeight,ViewSize.Y));Layout(*W);
      if(Save&&Host.IsValid())Host->SavePluginWindowPosition(Id+TEXT(".size"),W->Size);}
 }
 void SACEPluginDesktop::Raise(const FString& Id)
@@ -353,6 +353,7 @@ bool SACEPluginDesktop::Open(const FString& RequestedId)
     TSharedPtr<FACEClientPlugin> Plugin;
     for(auto P:Host->Plugins)if((P->Id==Id || (Id.StartsWith(TEXT("waypoint."))&&P->Id==TEXT("waypoint")) || (Id==TEXT("ucm.log")&&P->Id==TEXT("ucm")))&&(P->Enabled||Id==TEXT("ucm.log")))Plugin=P;
     if(!Plugin&&!Manager)return false;
+    if(Id==TEXT("waypoint.route")&&Host->WaypointItinerary.IsEmpty())return false;
     FACEPluginStyle::Use(Host.Get());
     const bool Arrow=Id==TEXT("waypoint.arrow");
     if(Arrow&&!Host->ShouldShowWaypointArrow())return false;
@@ -375,10 +376,11 @@ bool SACEPluginDesktop::Open(const FString& RequestedId)
     if(Id==TEXT("ucmmicro"))W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(270,360));
     if(Id==TEXT("actiondeck"))W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(530,203));
     if(Id==TEXT("ucm.log"))W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(700,440));
+    if(Id==TEXT("waypoint.route"))W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(440,360));
     if(Manager)W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(740,600));
     if(Arrow)W.Size=FVector2D(290,225);
     if(Dungeon)W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(420,420));
-    W.Widget=SNew(SPluginFrame).Host(Host.Get()).WindowId(Id).Title_Lambda([Id,Manager,Arrow,Plugin](){return Manager?TEXT("Plugin Manager"):Id==TEXT("ucm.log")?TEXT("UCM Log"):Arrow?TEXT("Waypoint · drag when unlocked"):Id==TEXT("waypoint.map")?TEXT("Waypoint Map"):Plugin->DisplayTitle();})
+    W.Widget=SNew(SPluginFrame).Host(Host.Get()).WindowId(Id).Title_Lambda([Id,Manager,Arrow,Plugin](){return Manager?TEXT("Plugin Manager"):Id==TEXT("ucm.log")?TEXT("UCM Log"):Arrow?TEXT("Waypoint · drag when unlocked"):Id==TEXT("waypoint.map")?TEXT("Waypoint Map"):Id==TEXT("waypoint.route")?TEXT("Waypoint Route"):Plugin->DisplayTitle();})
         .Frameless(Arrow||Dungeon)
         .CompactWhenLocked(Ledger)
         .Locked_Lambda([H=Host,Id]{return H.IsValid()&&H->IsPluginWindowChromeHidden(Id);})
@@ -408,7 +410,8 @@ void SACEPluginDesktop::Refresh()
             &&Host->WasPluginWindowOpen(Id)&&!Windows.Contains(ResolveWindowId(Id)))Open(Id);
     if(Enabled.Contains(TEXT("waypoint")))
     {
-        Enabled.Add(TEXT("waypoint.map"));Enabled.Add(TEXT("waypoint.arrow"));Enabled.Add(TEXT("waypoint.dungeon"));
+        Enabled.Add(TEXT("waypoint.map"));Enabled.Add(TEXT("waypoint.arrow"));Enabled.Add(TEXT("waypoint.dungeon"));Enabled.Add(TEXT("waypoint.route"));
+        if(!Host->WaypointItinerary.IsEmpty()&&Host->WasPluginWindowOpen(TEXT("waypoint.route"))&&!Windows.Contains(TEXT("waypoint.route")))Open(TEXT("waypoint.route"));
         const bool Show=Host->ShouldShowWaypointArrow();
         if(Show && !IsOpen(TEXT("waypoint.arrow")))Toggle(TEXT("waypoint.arrow"));
         else if(!Show && IsOpen(TEXT("waypoint.arrow")))Hide(TEXT("waypoint.arrow"),false);

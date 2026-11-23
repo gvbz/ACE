@@ -35,6 +35,9 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Serialization/JsonSerializer.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
+#include "ACEGameEngine.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEPluginRequestsTest,"ACE.Plugins.RouteAndTellRequests",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
@@ -47,6 +50,21 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
     auto* GI=NewObject<UGameInstance>(GEngine);World->SetGameInstance(GI);
     Context.OwningGameInstance=GI;Context.SetCurrentWorld(World);GI->OnWorldChanged(nullptr,World);GI->Init();
     ON_SCOPE_EXIT {GI->Shutdown();GEngine->DestroyWorldContext(World);World->DestroyWorld(false);};
+    // Run the same host/packet regressions for casting, target switching, loot,
+    // recovery and navigation with the app inactive, not a separate mock policy.
+    const bool Background=FParse::Param(FCommandLine::Get(),TEXT("TestBackgroundClient"));
+    const bool WasActive=FSlateApplication::IsInitialized()&&FSlateApplication::Get().IsActive();
+    if(Background)
+    {
+        if(!TestTrue(TEXT("Background regression has Slate"),FSlateApplication::IsInitialized()))return false;
+        FSlateApplication::Get().ProcessApplicationActivationEvent(false);
+        TestFalse(TEXT("Host regression runs while alt-tabbed"),FSlateApplication::Get().IsActive());
+        TestTrue(TEXT("Play session retains background processing"),ACEBackgroundActivity::HasClientWorld(*GEngine));
+        TestFalse(TEXT("Play session is not CPU-throttled"),GEngine->ShouldThrottleCPUUsage());
+        TestEqual(TEXT("Engine idle mode cannot suspend world/controller ticks"),
+            IConsoleManager::Get().FindConsoleVariable(TEXT("t.IdleWhenNotForeground"))->GetInt(),0);
+    }
+    ON_SCOPE_EXIT {if(Background&&FSlateApplication::IsInitialized())FSlateApplication::Get().ProcessApplicationActivationEvent(WasActive);};
     auto* C=GI->GetSubsystem<UACEClientSubsystem>();auto* H=GI->GetSubsystem<UACEPluginSubsystem>();
     const FString ProfileRoot=FPaths::ProjectSavedDir()/TEXT("Automation/RouteAndTellProfiles")/FGuid::NewGuid().ToString(EGuidFormats::Digits);
     H->StorageRoot=ProfileRoot;H->Settings=MakeShared<FJsonObject>();H->Discover();

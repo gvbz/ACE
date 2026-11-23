@@ -108,10 +108,11 @@ bool FACEUCMRecoveryTest::RunTest(const FString&)
         Spell->SetObjectField(TEXT("scarabs"),Scarabs);Spells.Add(Name,Spell);
     }
     // Recovery-only must leave manual combat alone whenever no vital needs work.
-    for(int32 Mode:{1,2,4,8})for(bool Nearby:{false,true})
+    for(int32 Mode:{1,2,4,8})for(bool Nearby:{false,true})for(bool IdleBuffs:{false,true})
     {
         auto S=Snapshot(),P=Profile();S->SetNumberField(TEXT("combat_mode"),Mode);
         P->SetBoolField(TEXT("idle_peace"),false);P->SetBoolField(TEXT("item_mana"),false);
+        P->SetBoolField(TEXT("idle_buff_topoff"),IdleBuffs);
         S->SetArrayField(TEXT("spells"),{MakeShared<FJsonValueObject>(Spells[TEXT("Heal Self IV")])});
         if(Nearby)S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"id":500,"name":"Rat","distance":5,"identified":true,"line_of_sight":true})")))});
         FACEPluginVM VM;TestTrue(TEXT("Recovery-only policy loads"),VM.Load(Source,Error));
@@ -482,6 +483,30 @@ bool FACEUCMRecoveryTest::RunTest(const FString&)
         TestFalse(TEXT("UseDone alone cannot invent a restored vital"),Step(Priority,S,P)->HasField(TEXT("action")));
         S->SetNumberField(TEXT("mana"),100);S->SetNumberField(TEXT("time"),105);
         TestFalse(TEXT("Late vital replication completes the original mana operation"),Step(Priority,S,P)->HasField(TEXT("action")));
+    }
+    {
+        FACEPluginVM Policy;Policy.Load(Source,Error);auto S=Snapshot(),P=Profile();
+        P->SetStringField(TEXT("combat"),TEXT("melee"));
+        P->SetBoolField(TEXT("recovery_supplies_first"),true);
+        S->SetNumberField(TEXT("mana"),20);
+        S->SetArrayField(TEXT("inventory"),RecoveryJson(TEXT(R"({"items":[{"id":46,"wcid":46,"name":"Mana potion","type":32,"usable":true,"identified":true,"boost_vital":6,"boost":100,"count":10},{"id":47,"wcid":47,"name":"Sword","type":1,"equipped":true,"identified":true,"can_wield":true,"weapon_skill":47,"damage":10}]})"))->GetArrayField(TEXT("items")));
+        TestEqual(TEXT("Mana potion starts before combat"),Step(Policy,S,P)->GetNumberField(TEXT("item")),46.);
+        S->SetNumberField(TEXT("time"),101);
+        S->SetNumberField(TEXT("combat_mode"),2);
+        S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"id":500,"name":"Rat","distance":1,"identified":true,"line_of_sight":true})")))});
+        S->SetBoolField(TEXT("busy"),true);
+        TestFalse(TEXT("Combat waits for the native item-use lock"),Step(Policy,S,P)->HasField(TEXT("action")));
+        S->SetBoolField(TEXT("busy"),false);
+        S->SetNumberField(TEXT("action_serial"),1);
+        S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(RecoveryJson(TEXT(R"({"type":"use","source":46,"action_serial":1,"requested_at":100,"error":0})")))});
+        TestEqual(TEXT("Combat resumes while the mana update is still pending"),
+            Step(Policy,S,P)->GetStringField(TEXT("action")),FString(TEXT("attack")));
+        S->SetArrayField(TEXT("targets"),{});
+        S->SetNumberField(TEXT("time"),102);
+        TestEqual(TEXT("The finished attack is cleared while recovery is pending"),
+            Step(Policy,S,P)->GetStringField(TEXT("action")),FString(TEXT("cancel_attack")));
+        S->SetNumberField(TEXT("time"),103);
+        TestFalse(TEXT("Resumed combat does not cause a duplicate potion"),Step(Policy,S,P)->HasField(TEXT("action")));
     }
     {
         FACEPluginVM Priority;Priority.Load(Source,Error);auto S=Snapshot(),P=Profile();

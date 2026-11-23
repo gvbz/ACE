@@ -3,6 +3,7 @@
 #include "ACECombatTargeting.h"
 #include "VR/ACEVRLocomotion.h"
 #include "ACEInventoryRules.h"
+#include "ACEEquipmentRules.h"
 #include "ACEVendorPricing.h"
 #include "ACEProfiling.h"
 #include "ACERetailChat.h"
@@ -2075,7 +2076,11 @@ void FACESession::UpsertWorldObject(const FACEWorldObject& Object, bool bForceRe
         {
             Merged.WielderId = Existing->WielderId;
             Merged.CurrentWieldedLocation = Existing->CurrentWieldedLocation;
-            Merged.ClothingPriority = Existing->ClothingPriority;
+            if (!Merged.bHasClothingPriority && !Merged.ClothingPriority)
+            {
+                Merged.ClothingPriority = Existing->ClothingPriority;
+                Merged.bHasClothingPriority = Existing->bHasClothingPriority;
+            }
         }
 		if (Merged.MaterialType == 0 && Existing->MaterialType != 0)
 		{
@@ -2283,6 +2288,7 @@ void FACESession::HandleObjectCreate(FACEBinaryReader& Reader, bool bForceRecrea
 	Obj.PlacementId = Decoded.PlacementId;
 	Obj.bHasServerPhysicsDescription = Decoded.bHasPhysicsTimestamps;
 	Obj.ClothingPriority = Decoded.ClothingPriority;
+	Obj.bHasClothingPriority = Decoded.bHasClothingPriority;
 	Obj.CurrentWieldedLocation = static_cast<int64>(Decoded.CurrentWieldedLocation);
 	Obj.ValidLocations = static_cast<int64>(Decoded.ValidLocations);
 	Obj.ObjectDescriptionFlags = Decoded.ObjectDescriptionFlags;
@@ -5010,13 +5016,14 @@ void FACESession::SendTurbineChat(uint32 ChannelId, uint32 ChatType, const FStri
 	SendGameMessage(ACEOpcode::TurbineChat, W.GetData(), ACEQueue::LoginQueue);
 }
 
-int32 FACESession::FindContainerMergeTarget(int32 ItemGuid, int32 ContainerGuid, int32 Amount) const
+int32 FACESession::FindContainerMergeTarget(int32 ItemGuid, int32 ContainerGuid, int32 Amount, bool bIncludeSourcePack) const
 {
 	const auto* Item=WorldObjects.Find(ItemGuid);
 	const auto* Destination=WorldObjects.Find(ContainerGuid);
 	if (!Item || !ContainerGuid || ItemGuid==ContainerGuid || Amount<=0
 		|| !Item->WeenieClassId || Item->MaxStackSize<=1
-		|| Item->ContainerId==ContainerGuid || Item->WielderId || Item->ParentGuid || Item->CurrentWieldedLocation
+		|| (!bIncludeSourcePack && Item->ContainerId==ContainerGuid)
+		|| Item->WielderId || Item->ParentGuid || Item->CurrentWieldedLocation
 		|| Item->StackSize<0 || Amount>FMath::Max(1,Item->StackSize)
 		|| (Destination && !ACEInventoryRules::CheckHookStatus(*Item,*Destination))) return 0;
 	auto Offered=[&](int32 Guid)
@@ -5047,7 +5054,7 @@ int32 FACESession::FindContainerMergeTarget(int32 ItemGuid, int32 ContainerGuid,
 	return 0;
 }
 
-void FACESession::SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement)
+void FACESession::SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement, bool bAutoMerge)
 {
 	if (State != EACESessionState::InWorld || ItemGuid == 0 || ContainerGuid == 0)
 	{
@@ -5076,16 +5083,10 @@ void FACESession::SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, in
 			Placement = 0;
 		}
 		const int32 Amount=FMath::Max(1,Item->StackSize);
-		if(const int32 MergeTo=FindContainerMergeTarget(ItemGuid,ContainerGuid,Amount))
-		{SendStackableMerge(ItemGuid,MergeTo,Amount);return;}
-		int32 Count = 0;
-		for (const auto& Pair : WorldObjects)
-		{
-			const auto& Other = Pair.Value;
-			if (Other.Guid != ItemGuid && Other.ContainerId == ContainerGuid
-				&& IsPackSlotItem(Other) == IsPackSlotItem(*Item)) ++Count;
-		}
-		Placement = FMath::Clamp(Placement, 0, Count);
+		if(bAutoMerge)
+			if(const int32 MergeTo=FindContainerMergeTarget(ItemGuid,ContainerGuid,Amount))
+			{SendStackableMerge(ItemGuid,MergeTo,Amount);return;}
+		Placement = FMath::Clamp(Placement, 0, CountContainerSlots(ContainerGuid,IsPackSlotItem(*Item),ItemGuid));
 	}
 	FACEBinaryWriter W;
 	W.WriteUInt32(static_cast<uint32>(ItemGuid));
@@ -5114,9 +5115,7 @@ void FACESession::SendStackableSplitToContainer(int32 StackGuid, int32 Container
 	{
 		return;
 	}
-	TArray<FACEWorldObject> Destination;
-	GetPackItems(ContainerGuid, Destination);
-	Placement = FMath::Clamp(Placement, 0, Destination.Num());
+	Placement = FMath::Clamp(Placement, 0, CountContainerSlots(ContainerGuid,false));
 	FACEBinaryWriter W;
 	W.WriteUInt32(static_cast<uint32>(StackGuid));
 	W.WriteUInt32(static_cast<uint32>(ContainerGuid));
@@ -5334,8 +5333,8 @@ void FACESession::SendGetAndWieldItem(int32 Guid, int64 Loc)
 		| ACEEquipMask::TrinketOne | ACEEquipMask::Cloak | ACEEquipMask::SigilOne
 		| ACEEquipMask::SigilTwo | ACEEquipMask::SigilThree;
 	const bool bWeaponHand = (Loc & WeaponHand) != 0;
-	const uint32 NewCov = ACEInferClothingPriority(Loc, Obj.ItemType);
-	const bool bClothingOrArmor = NewCov != 0;
+	const uint32 NewCov = ACEEquipmentRules::ClothingCoverage(Obj, Loc);
+	const bool bClothingOrArmor = ACEInferClothingPriority(Loc, Obj.ItemType) != 0 || NewCov != 0;
 
 	for (const FACEWorldObject& Eq : Equipped)
 	{
@@ -5367,8 +5366,8 @@ void FACESession::SendGetAndWieldItem(int32 Guid, int64 Loc)
 		else if (bClothingOrArmor)
 		{
 			// Retail Creature_Equipment: Clothing conflicts use ClothingPriority, not EquipMask.
-			const uint32 EqCov = ACEInferClothingPriority(EqLoc, Eq.ItemType);
-			if (EqCov != 0)
+			const uint32 EqCov = ACEEquipmentRules::ClothingCoverage(Eq, EqLoc);
+			if (Eq.bHasClothingPriority || EqCov != 0)
 			{
 				bConflict = (NewCov & EqCov) != 0;
 			}
@@ -5381,7 +5380,7 @@ void FACESession::SendGetAndWieldItem(int32 Guid, int64 Loc)
 		{
 			bConflict = true;
 		}
-		else if ((EqLoc & Loc) != 0 && ACEInferClothingPriority(EqLoc, Eq.ItemType) == 0)
+		else if ((EqLoc & Loc) != 0 && ACEEquipmentRules::ClothingCoverage(Eq, EqLoc) == 0)
 		{
 			bConflict = true;
 		}
@@ -5519,9 +5518,9 @@ void FACESession::SendBuyItems(int32 VendorGuid, const TArray<TPair<int32, int32
 	W.WriteUInt32(VendorCurrencyWeenie);
 	if (VendorCurrencyWeenie && VendorReportedCurrencyWeenie == VendorCurrencyWeenie)
 	{
-		// Inventory currencies already reconcile each debit through stack updates.
+		// Purely physical currencies reconcile each debit through stack updates.
 		GetVendorCurrencyCount();
-		if (!bVendorCurrencyInInventory)
+		if (UsesReportedVendorCurrency())
 		{
 			int64 Cost = 0;
 			for (const auto& Row : Available)
@@ -5530,7 +5529,6 @@ void FACESession::SendBuyItems(int32 VendorGuid, const TArray<TPair<int32, int32
 				Cost += ACEVendorPricing::VendorSellCost(Stock, Row.Key, VendorSellRate);
 			}
 			PendingVendorCurrencyCost = int32(FMath::Min<int64>(Cost, MAX_int32));
-			VendorServerFunds -= PendingVendorCurrencyCost;
 			VendorPurseRevision = MAX_uint64;
 		}
 	}
@@ -6333,7 +6331,7 @@ void FACESession::HandleIdentifyObjectResponse(FACEBinaryReader& Reader)
 		// qualities below take precedence over these descriptor defaults.
 		Info.IntProperties.Add(9, static_cast<int32>(Known.ValidLocations));
 		Info.IntProperties.Add(50, Known.AmmoType);
-		Info.IntProperties.Add(4, Known.ClothingPriority);
+		if (Known.bHasClothingPriority || Known.ClothingPriority) Info.IntProperties.Add(4, Known.ClothingPriority);
 		Info.IntProperties.Add(51, Known.CombatUse);
 		// Material is public descriptor data even when the appraisal omits it.
 		// Preserve it so every examination title uses the same retail item name.
@@ -6612,6 +6610,12 @@ void FACESession::HandleIdentifyObjectResponse(FACEBinaryReader& Reader)
 	Info.Summary = (Header + Summary).TrimStartAndEnd();
 	if (Info.bSuccess) if (auto* Object = WorldObjects.Find(Info.ObjectGuid))
 	{
+		if (const int32* Coverage = Info.IntProperties.Find(4))
+		{
+			Object->ClothingPriority = *Coverage;
+			Object->bHasClothingPriority = true;
+		}
+		if (const int32* Locations = Info.IntProperties.Find(9)) Object->ValidLocations = static_cast<uint32>(*Locations);
 		// An empty stone may omit ItemCurMana. A successful full appraisal
 		// replaces the previous resource reading, including explicit absence.
 		const int32* Current = Info.IntProperties.Find(107), *Maximum = Info.IntProperties.Find(108);
@@ -6825,6 +6829,7 @@ void FACESession::HandleApproachVendor(FACEBinaryReader& Reader)
 	if (!SameVendor || VendorReportedCurrencyWeenie != VendorCurrencyWeenie)
 	{
 		bVendorCurrencyInInventory = false;
+		bVendorHasSupplementalCurrency = false;
 		PendingVendorCurrencyCost = 0;
 	}
 	VendorReportedCurrencyWeenie = VendorCurrencyWeenie;
@@ -6834,9 +6839,19 @@ void FACESession::HandleApproachVendor(FACEBinaryReader& Reader)
 	{
 		VendorCurrencyCount = int32(FMath::Min(Reader.ReadUInt32(), uint32(MAX_int32)));
 	}
-	// Retail trade_num includes the purchase currently completing (m_last_sale).
-	// This also supports server-managed currency without an inventory object.
-	VendorServerFunds = FMath::Max(0, VendorCurrencyCount - PendingVendorCurrencyCost);
+	// Retail supplies the total alternate balance in the vendor profile. Some
+	// servers expose a wallet in addition to physical tokens of the same WCID.
+	// On a fresh quote, detect that extra balance before replacing the old one.
+	if (VendorCurrencyWeenie && !PendingVendorCurrencyCost && !bVendorHasSupplementalCurrency)
+	{
+		VendorServerFunds = 0;
+		const int32 Carried = GetVendorCurrencyCount();
+		bVendorHasSupplementalCurrency = Carried > 0 && VendorCurrencyCount > Carried;
+	}
+	// ACE includes the cost of a purchase awaiting UseDone in this quote.
+	// Keep the quote intact so rejecting a reservation cannot increase it.
+	VendorServerFunds = VendorCurrencyCount;
+	VendorPurseRevision = MAX_uint64;
 	// altCurrency plural name (String16L)
 	if (Reader.CanRead(4))
 	{
@@ -6895,6 +6910,8 @@ void FACESession::HandleApproachVendor(FACEBinaryReader& Reader)
 		Obj.MaterialType = Decoded.MaterialType;
 		Obj.SalvageWorkmanship = Decoded.SalvageWorkmanship;
 		Obj.ValidLocations = static_cast<int64>(Decoded.ValidLocations);
+		Obj.ClothingPriority = Decoded.ClothingPriority;
+		Obj.bHasClothingPriority = Decoded.bHasClothingPriority;
 		Obj.ObjectDescriptionFlags = Decoded.ObjectDescriptionFlags;
 		Obj.PetOwnerId = Decoded.PetOwnerId;
 		Obj.ContainerId = VendorGuid;
@@ -7169,9 +7186,9 @@ void FACESession::HandleUseDone(FACEBinaryReader& Reader)
 {
 	if (!Reader.CanRead(4)) return;
 	const uint32 Err = Reader.ReadUInt32();
-	if (Err && PendingVendorCurrencyCost)
+	if (PendingVendorCurrencyCost)
 	{
-		VendorServerFunds = int32(FMath::Min<int64>(int64(VendorServerFunds) + PendingVendorCurrencyCost, MAX_int32));
+		if (!Err) VendorServerFunds = FMath::Max(0, VendorServerFunds - PendingVendorCurrencyCost);
 		VendorPurseRevision = MAX_uint64;
 	}
 	PendingVendorCurrencyCost = 0;
@@ -7212,7 +7229,7 @@ void FACESession::RemoveFromContainerLists(int32 ItemGuid)
 
 bool FACESession::IsPackSlotItem(const FACEWorldObject& Obj)
 {
-	return Obj.ItemsCapacity > 0 || Obj.ContainersCapacity > 0
+	return Obj.ItemsCapacity != 0 || Obj.ContainersCapacity != 0
 		|| (Obj.ItemType & ACEItemType::Container) != 0
 		|| (Obj.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot) != 0;
 }
@@ -7395,6 +7412,7 @@ void FACESession::ApplyPlayerInventoryProfile()
         Obj.WielderId = PlayerGuid;
         Obj.CurrentWieldedLocation = Entry.Value.Key;
         Obj.ClothingPriority = Entry.Value.Value;
+        Obj.bHasClothingPriority = true;
         Obj.PlacementPosition = INDEX_NONE;
     }
     LoginEquipment.Reset();
@@ -7752,7 +7770,6 @@ void FACESession::HandleInventoryServerSaveFailed(FACEBinaryReader& Reader)
 	// by a successful UseDone. Release the reservation on this explicit failure.
 	if (ItemGuid == PlayerGuid && PendingVendorCurrencyCost)
 	{
-		VendorServerFunds = int32(FMath::Min<int64>(int64(VendorServerFunds) + PendingVendorCurrencyCost, MAX_int32));
 		PendingVendorCurrencyCost = 0;
 		VendorPurseRevision = MAX_uint64;
 	}
@@ -7921,8 +7938,8 @@ int32 FACESession::GetVendorCurrencyCount() const
 	// Physical purses follow ownership/stack updates. Remember seeing one even
 	// after its last stack disappears, so the opening snapshot cannot revive it.
 	VendorPurseRevision = InventoryDataRevision; VendorPurseWeenie = VendorCurrencyWeenie;
-	if (VendorCurrencyWeenie && VendorReportedCurrencyWeenie == VendorCurrencyWeenie && !bVendorCurrencyInInventory)
-		return VendorPurseCount = FMath::Max(0, VendorServerFunds);
+	if (UsesReportedVendorCurrency())
+		return VendorPurseCount = FMath::Max(0, VendorServerFunds - PendingVendorCurrencyCost);
 	return VendorPurseCount = int32(FMath::Min<int64>(Count, MAX_int32));
 }
 
@@ -8057,7 +8074,9 @@ void FACESession::HandlePublicUpdatePropertyInt(FACEBinaryReader& Reader)
 		if (Prop == 4) // PropertyInt.ClothingPriority
 		{
 			Obj->ClothingPriority = Value;
+			Obj->bHasClothingPriority = true;
 		}
+		else if (Prop == 9) Obj->ValidLocations = static_cast<uint32>(Value);
 		else if (Prop == 151) Obj->HookType = static_cast<uint16>(Value);
 		else if (Prop == 152) Obj->HookItemTypes = static_cast<uint32>(Value);
 		else if (Prop == 10) // PropertyInt.CurrentWieldedLocation
@@ -8314,13 +8333,8 @@ const FACEWorldObject* FACESession::FindEquippedItem(int64 LocationMask, int32 I
 
 void FACESession::GetPackItemCounts(TMap<int32, int32>& InOutCounts) const
 {
-	auto IsPack = [](const FACEWorldObject& O)
-	{
-		return O.ItemsCapacity > 0 || O.ContainersCapacity > 0
-			|| (O.ItemType & ACEItemType::Container) != 0
-			|| (O.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot) != 0;
-	};
 	TSet<int32> MainSeen;
+	TSet<int32> SideSeen;
 	TSet<int32> ScanContainers;
 	for (auto& Count : InOutCounts)
 	{
@@ -8329,17 +8343,15 @@ void FACESession::GetPackItemCounts(TMap<int32, int32>& InOutCounts) const
 		const auto* Contents = ContainerContents.Find(Count.Key);
 		if (bMain || !Contents) ScanContainers.Add(Count.Key);
 		if (!Contents) continue;
+		SideSeen.Reset();
+		auto& Seen=bMain ? MainSeen : SideSeen;
 		for (const auto& Ref : *Contents)
 		{
+			if(Seen.Contains(Ref.ItemGuid))continue;
+			Seen.Add(Ref.ItemGuid);
 			if (Ref.ContainerType != 0) continue;
 			const auto* O = WorldObjects.Find(Ref.ItemGuid);
-			if (O)
-			{
-				if (bMain) MainSeen.Add(Ref.ItemGuid);
-				if (!IsPack(*O)) ++Count.Value;
-			}
-			// Side packs reserve a slot before ObjectCreate; main pack waits for it.
-			else if (!bMain) ++Count.Value;
+			if (!O || !IsPackSlotItem(*O)) ++Count.Value;
 		}
 	}
 	if (ScanContainers.IsEmpty()) return;
@@ -8348,24 +8360,9 @@ void FACESession::GetPackItemCounts(TMap<int32, int32>& InOutCounts) const
 	{
 		const auto& O = Pair.Value;
 		if (!ScanContainers.Contains(O.ContainerId)) continue;
-		if (O.ContainerId == PlayerGuid && (MainSeen.Contains(O.Guid) || IsPack(O))) continue;
+		if (IsPackSlotItem(O) || (O.ContainerId == PlayerGuid && MainSeen.Contains(O.Guid))) continue;
 		++InOutCounts.FindChecked(O.ContainerId);
 	}
-}
-
-namespace
-{
-    void SortInventoryGuidsByPlacement(TArray<int32>& Guids, const TMap<int32, FACEWorldObject>& Objects)
-    {
-        Guids.Sort([&Objects](int32 GuidA, int32 GuidB)
-        {
-            const auto* A = Objects.Find(GuidA);
-            const auto* B = Objects.Find(GuidB);
-            const int32 Pa = A && A->PlacementPosition >= 0 ? A->PlacementPosition : MAX_int32;
-            const int32 Pb = B && B->PlacementPosition >= 0 ? B->PlacementPosition : MAX_int32;
-            return Pa != Pb ? Pa < Pb : GuidA < GuidB;
-        });
-    }
 }
 
 void FACESession::GetPackItems(int32 ContainerGuid, TArray<FACEWorldObject>& Out) const
@@ -8391,115 +8388,13 @@ void FACESession::GetPlayerPacks(TArray<FACEWorldObject>& Out) const
     TArray<int32> Guids;
     GetPlayerPackGuids(Guids);
     Out.Reset(Guids.Num());
-    for (int32 Guid : Guids) Out.Add(WorldObjects.FindChecked(Guid));
+    for (int32 Guid : Guids)
+        if (const auto* Pack = WorldObjects.Find(Guid)) Out.Add(*Pack);
 }
 
 void FACESession::GetPackItemGuids(int32 ContainerGuid, TArray<int32>& Out) const
 {
-	Out.Reset();
-	TSet<int32> Seen;
-
-	auto IsPackObject = [](const FACEWorldObject& Obj) -> bool
-	{
-		return Obj.ItemsCapacity > 0 || Obj.ContainersCapacity > 0
-			|| (Obj.ItemType & ACEItemType::Container) != 0
-			|| (Obj.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot) != 0;
-	};
-
-	// Player main pack: PlayerDescription footer order is retail grid order (not TMap scan).
-	if (ContainerGuid == PlayerGuid)
-	{
-		if (const TArray<FACEContainerItemRef>* Contents = ContainerContents.Find(PlayerGuid))
-		{
-			for (const FACEContainerItemRef& Ref : *Contents)
-			{
-				if (Ref.ContainerType != 0)
-				{
-					continue;
-				}
-				const FACEWorldObject* Obj = WorldObjects.Find(Ref.ItemGuid);
-				if (!Obj)
-				{
-					continue;
-				}
-				if (IsPackObject(*Obj))
-				{
-					Seen.Add(Ref.ItemGuid);
-					continue;
-				}
-				Out.Add(Obj->Guid);
-				Seen.Add(Ref.ItemGuid);
-			}
-		}
-		// Append late creates directly, then sort the combined list only once.
-		for (const TPair<int32, FACEWorldObject>& Pair : WorldObjects)
-		{
-			const FACEWorldObject& Obj = Pair.Value;
-			if (Seen.Contains(Obj.Guid))
-			{
-				continue;
-			}
-			if (Obj.ContainerId == PlayerGuid && !IsPackObject(Obj))
-			{
-				Out.Add(Obj.Guid);
-			}
-		}
-		SortInventoryGuidsByPlacement(Out, WorldObjects);
-		return;
-	}
-
-	// ViewContents is authoritative for corpses / side packs.
-	if (const TArray<FACEContainerItemRef>* Contents = ContainerContents.Find(ContainerGuid))
-	{
-		for (const FACEContainerItemRef& Ref : *Contents)
-		{
-			if (const FACEWorldObject* Obj = WorldObjects.Find(Ref.ItemGuid))
-			{
-				const bool bIsPack = IsPackObject(*Obj) || Ref.ContainerType != 0;
-				if (bIsPack)
-				{
-					Seen.Add(Ref.ItemGuid);
-					continue;
-				}
-				Out.Add(Obj->Guid);
-			}
-			else if (Ref.ContainerType == 0)
-			{
-				Out.Add(Ref.ItemGuid);
-			}
-			Seen.Add(Ref.ItemGuid);
-		}
-		// ACCObjectMaint::ViewObjectContents preserves wire order in IDList.
-		// Missing descriptions still reserve their exact position; sorting by
-		// cached qualities would move those IDs as CreateObject packets arrive.
-		return;
-	}
-
-	// ObjectCreate ContainerId scan (main pack, or pack before ViewContents).
-	for (const TPair<int32, FACEWorldObject>& Pair : WorldObjects)
-	{
-		const FACEWorldObject& Obj = Pair.Value;
-		if (Seen.Contains(Obj.Guid))
-		{
-			continue;
-		}
-		// Physical attachment may arrive before the ordered wield receipt.
-		// Until then, match the authoritative list path above and retain this ID.
-		if (Obj.ContainerId == ContainerGuid)
-		{
-			const bool bIsPack = Obj.ItemsCapacity > 0 || Obj.ContainersCapacity > 0
-				|| (Obj.ItemType & ACEItemType::Container) != 0
-				|| (Obj.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot) != 0;
-			if (bIsPack && ContainerGuid == PlayerGuid)
-			{
-				continue;
-			}
-			Out.Add(Obj.Guid);
-		}
-	}
-
-	// Stable-sort ObjectCreate fallback (TMap iteration order is unstable).
-	SortInventoryGuidsByPlacement(Out, WorldObjects);
+	GetInventorySlotGuids(ContainerGuid,false,Out);
 }
 
 void FACESession::GetPlayerPackGuids(TArray<int32>& Out) const
@@ -8509,51 +8404,55 @@ void FACESession::GetPlayerPackGuids(TArray<int32>& Out) const
 
 void FACESession::GetContainerPackGuids(int32 ContainerGuid, TArray<int32>& Out) const
 {
+	GetInventorySlotGuids(ContainerGuid,true,Out);
+}
+
+int32 FACESession::CountContainerSlots(int32 ContainerGuid, bool bPackSlots, int32 Exclude) const
+{
+	TArray<int32> Guids;
+	GetInventorySlotGuids(ContainerGuid,bPackSlots,Guids);
+	return Guids.Num() - int32(Exclude && Guids.Contains(Exclude));
+}
+
+void FACESession::GetInventorySlotGuids(int32 ContainerGuid, bool bPackSlots, TArray<int32>& Out) const
+{
 	Out.Reset();
-	TSet<int32> Seen;
-	// Retail side slots = UseBackpackSlot items (Container + Foci) ordered by PlacementPosition.
-	// GameEventViewContents tags them with ContainerType 1/2. The inventory handlers
-	// reconcile PlacementPosition before these IDs are sorted for presentation.
-	constexpr int32 ContainerType_Container = 1;
-	constexpr int32 ContainerType_Foci = 2;
+	if(!ContainerGuid)return;
+	TMap<int32,int32> Listed;
 	if (const TArray<FACEContainerItemRef>* Contents = ContainerContents.Find(ContainerGuid))
 	{
 		for (const FACEContainerItemRef& Ref : *Contents)
 		{
-			if (Ref.ContainerType != ContainerType_Container && Ref.ContainerType != ContainerType_Foci)
-			{
-				continue;
-			}
 			const auto* Obj = WorldObjects.Find(Ref.ItemGuid);
-			if (!Obj)
-			{
-				continue;
-			}
-			if (Obj->CurrentWieldedLocation != 0)
-			{
-				continue;
-			}
-			Out.Add(Obj->Guid);
-			Seen.Add(Obj->Guid);
+			const bool bPack = Ref.ContainerType != 0 || (Obj && IsPackSlotItem(*Obj));
+			if(Listed.Contains(Ref.ItemGuid))continue;
+			Listed.Add(Ref.ItemGuid,bPack==bPackSlots ? Out.Add(Ref.ItemGuid) : INDEX_NONE);
 		}
+		// ACCObjectMaint::ViewObjectContents preserves order for the side pack
+		// or corpse even if some member descriptions are still missing.
+		if(!bPackSlots && ContainerGuid!=PlayerGuid)return;
 	}
-	for (const TPair<int32, FACEWorldObject>& Pair : WorldObjects)
+	for(const auto& Pair:WorldObjects)
 	{
 		const FACEWorldObject& Obj = Pair.Value;
-		if (Seen.Contains(Obj.Guid))
-		{
-			continue;
-		}
-		const bool bInContainer = Obj.ContainerId == ContainerGuid || Obj.ParentGuid == ContainerGuid;
-		const bool bIsPack = Obj.ItemsCapacity > 0 || Obj.ContainersCapacity > 0
-			|| (Obj.ItemType & ACEItemType::Container) != 0
-			|| (Obj.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot) != 0;
-		if (bInContainer && bIsPack && Obj.CurrentWieldedLocation == 0 && Obj.Guid != ContainerGuid)
-		{
+		const bool bInContainer=Obj.ContainerId==ContainerGuid
+			|| (bPackSlots && Obj.ParentGuid==ContainerGuid && !Obj.CurrentWieldedLocation);
+		if(bInContainer && Obj.Guid!=ContainerGuid && IsPackSlotItem(Obj)==bPackSlots && !Listed.Contains(Obj.Guid))
 			Out.Add(Obj.Guid);
-		}
 	}
-	SortInventoryGuidsByPlacement(Out, WorldObjects);
+	auto Placement=[&](int32 Guid)
+	{
+		if(const int32* Index=Listed.Find(Guid))return *Index;
+		const auto* Obj=WorldObjects.Find(Guid);
+		return Obj && Obj->PlacementPosition>=0 ? Obj->PlacementPosition : MAX_int32;
+	};
+	Out.Sort([&](int32 A,int32 B)
+	{
+		const int32 ASlot=Placement(A),BSlot=Placement(B);
+		if(ASlot!=BSlot)return ASlot<BSlot;
+		if(Listed.Contains(A)!=Listed.Contains(B))return Listed.Contains(A);
+		return A<B;
+	});
 }
 
 void FACESession::ApplyServerTime(double ServerTicks, double ReceivedAt, const TCHAR* Source)

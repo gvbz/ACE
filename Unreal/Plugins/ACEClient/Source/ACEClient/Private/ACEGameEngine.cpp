@@ -7,6 +7,18 @@
 #include "Misc/App.h"
 #include "Widgets/SWindow.h"
 
+bool ACEBackgroundActivity::HasClientWorld(const UEngine& Engine)
+{
+    for(const FWorldContext& Context:Engine.GetWorldContexts())
+    {
+        if(Context.WorldType!=EWorldType::Game&&Context.WorldType!=EWorldType::PIE)continue;
+        const auto* World=Context.World();
+        const auto* GI=World?World->GetGameInstance():nullptr;
+        if(GI&&GI->GetSubsystem<UACEClientSubsystem>())return true;
+    }
+    return false;
+}
+
 float ACEFrontendFrameRate::GetLimit(const UEngine& Engine,float GameplayLimit,bool Editor)
 {
     // A stereo headset already has compositor pacing. Never force its tracking
@@ -33,6 +45,8 @@ float ACEFrontendFrameRate::GetLimit(const UEngine& Engine,float GameplayLimit,b
 void UACEGameEngine::Init(IEngineLoop* InEngineLoop)
 {
     Super::Init(InEngineLoop);
+    // The remote server never pauses when this desktop window loses focus.
+    bPauseOnLossOfFocus=false;
     // Strip Unreal's development/RHI suffix before the login world starts.
     if(const auto Window=GameViewportWindow.Pin())
         Window->SetTitle(FText::FromString(ACEClientBuild::ProductName()));

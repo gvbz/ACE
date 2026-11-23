@@ -87,12 +87,12 @@ public:
         return Steps<=800 && Steps+1<=Remaining;
     }
 
-    bool Reachable(const FVector& From,const FVector& To,const FACEPluginSightQuery& Sight)
+    bool Reachable(const FVector& From,const FVector& To,const FACEPluginSightQuery& Sight,float Clearance=0.f)
     {
         TArray<FVector> Points;
         if (!Path(From,To,Points)) return false;
         for (int32 I=1;I<Points.Num();++I)
-            if (!Sight.Clear(Points[I-1]+FVector(0,0,60),Points[I]+FVector(0,0,60))) return false;
+            if (!Sight.Clear(Points[I-1]+FVector(0,0,60),Points[I]+FVector(0,0,60),Clearance)) return false;
         return true;
     }
 private:

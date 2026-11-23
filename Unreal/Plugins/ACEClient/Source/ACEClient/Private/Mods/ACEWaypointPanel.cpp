@@ -234,7 +234,7 @@ bool UACEPluginSubsystem::ImportWaypointLocations(const FString& FilePath)
     const bool Saved=FPlatformFileManager::Get().GetPlatformPhysical().MoveFile(*File,*Temp);
 #endif
     if(!Saved){Notice=TEXT("Could not replace the saved atlas. Existing locations were preserved.");return false;}
-    WaypointItinerary.Reset();bWaypointLocationsLoaded=false;++WaypointLocationsRevision;GetWaypointLocations();
+    SetWaypointItinerary({});bWaypointLocationsLoaded=false;++WaypointLocationsRevision;GetWaypointLocations();
     Notice=FString::Printf(TEXT("Imported %d locations."),Records.Num());
     if(Parsed.RetiredLocations)Notice+=FString::Printf(TEXT(" Skipped %d retired locations."),Parsed.RetiredLocations);
     if(Parsed.InvalidLocations)Notice+=FString::Printf(TEXT(" Skipped %d locations with invalid names or coordinates."),Parsed.InvalidLocations);
@@ -957,6 +957,10 @@ public:
         Input->AddSlot().AutoWidth().Padding(8,0)[WaypointButton(TEXT("Go"),[this]{Navigate(Entry->GetText().ToString());})];
         Input->AddSlot().AutoWidth().Padding(4,0)[WaypointButton(TEXT("Clear"),[this]{if(Host.IsValid())Host->ClearWaypoint();})];
         Body->AddSlot().AutoHeight().Padding(0,12)[Input];
+        auto ShowRoute=WaypointButton(TEXT("Show route"),[this]{if(Host.IsValid())Host->OpenPluginWindow(TEXT("waypoint.route"));});
+        ShowRoute->SetTag(TEXT("Waypoint.ShowRoute"));
+        ShowRoute->SetVisibility(TAttribute<EVisibility>::CreateLambda([H=Host]{return H.IsValid()&&!H->WaypointItinerary.IsEmpty()?EVisibility::Visible:EVisibility::Collapsed;}));
+        Body->AddSlot().AutoHeight().HAlign(HAlign_Left).Padding(0,0,0,4)[ShowRoute];
         if(A._Map)
         {
             auto Controls=SNew(SHorizontalBox);
@@ -978,7 +982,9 @@ public:
                 .Value_Lambda([this](){return Host.IsValid()?Host->WaypointMapOpacity():1.f;})
                 .OnValueChanged_Lambda([this](float Value){if(Host.IsValid())Host->SetWaypointMapOpacity(Value);})];
             Body->AddSlot().AutoHeight()[WaypointLabel(TEXT("The pinned map follows you and switches between overworld and interior layouts. Drag to pan or use the wheel to zoom, even while locked; the center-player icon resumes following. Click a numbered dot to choose a location. Unlock the UI to move using the top-left grip or resize. Uncheck Pin to hide it."),13)];
-            Body->AddSlot().AutoHeight().Padding(0,6)[SNew(SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).HintText(FText::FromString(TEXT("Filter locations by name"))).OnTextChanged_Lambda([this](const FText& T){if(Map)Map->SetSearch(T.ToString());})];
+            Body->AddSlot().AutoHeight().Padding(0,6)[SNew(SHorizontalBox)
+                +SHorizontalBox::Slot().FillWidth(1)[SNew(SACEPluginEditableTextBox).Tag(TEXT("Waypoint.MapFilter")).Style(&FACEPluginStyle::Current()->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).HintText(FText::FromString(TEXT("Filter map by name"))).OnTextChanged_Lambda([this](const FText& T){if(Map)Map->SetSearch(T.ToString());})]
+                +SHorizontalBox::Slot().AutoWidth().Padding(4,0)[SearchLocationsButton()]];
             Body->AddSlot().FillHeight(1).Padding(0,10)[SAssignNew(Map,SWaypointMap).Host(Host.Get())];
             Body->AddSlot().AutoHeight()[SNew(SHorizontalBox)
                 +SHorizontalBox::Slot().AutoWidth()[WaypointButton(TEXT("+"),[this]{Map->ChangeZoom(1.5,Map->GetCachedGeometry().GetLocalSize()*.5);})]
@@ -993,7 +999,7 @@ public:
             Body->AddSlot().AutoHeight()[WaypointLabel(TEXT("GoArrow / CoD atlas"),18)];
             Body->AddSlot().AutoHeight()[SAssignNew(AtlasPath,SACEPluginEditableTextBox).Tag(TEXT("Waypoint.AtlasPath")).Style(&PanelStyle->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).HintText(FText::FromString(TEXT("Full path to GoArrow or CoD XML")))];
             Body->AddSlot().AutoHeight().Padding(0,3)[WaypointLabel(TEXT("Browse for a GoArrow or CoD XML file, then choose Import locations."),13)];
-            auto Browse=WaypointButton(TEXT("Browse locations"),[this]{BrowseLocations();});
+            auto Browse=WaypointButton(TEXT("Browse XML file"),[this]{BrowseLocations();});
             Browse->SetTag(TEXT("Waypoint.BrowseLocations"));
             Browse->SetEnabled(TAttribute<bool>::CreateLambda([](){return !ACEWaypointFilePicker::IsOpen();}));
             Browse->SetToolTip(FACEPluginStyle::Tooltip(FText::FromString(TEXT("Choose an XML file from your computer. Import locations loads the selected file."))));
@@ -1008,10 +1014,8 @@ public:
             Body->AddSlot().AutoHeight().Padding(0,4)[SNew(SHorizontalBox)
                 +SHorizontalBox::Slot().AutoWidth()[Import]
                 +SHorizontalBox::Slot().AutoWidth().Padding(4,0)[Browse]];
-            auto ViewImported=WaypointButton(TEXT("View imported locations"),[this]{OpenAtlas(FString());});
-            ViewImported->SetTag(TEXT("Waypoint.ViewImportedLocations"));
             Body->AddSlot().AutoHeight().HAlign(HAlign_Left).Padding(0,4)
-                [ViewImported];
+                [SearchLocationsButton()];
             Body->AddSlot().AutoHeight()[SNew(SACEPluginText).Tag(TEXT("Waypoint.ImportStatus")).AutoWrapText(true).ColorAndOpacity(Accent)
                 .Text_Lambda([this]{return FText::FromString(Status);})];
             Body->AddSlot().AutoHeight()[SNew(SWaypointArrow).Host(Host.Get())];
@@ -1031,6 +1035,13 @@ public:
 private:
     TWeakObjectPtr<UACEPluginSubsystem> Host;TSharedPtr<SEditableTextBox> Entry,AtlasPath;TSharedPtr<SWaypointMap> Map;FString Status;bool ShowTitle=true;
     TSharedPtr<SWidget> SettingsContent;
+    TSharedRef<SButton> SearchLocationsButton()
+    {
+        auto Button=WaypointButton(TEXT("Search locations"),[this]{OpenAtlas(FString());});
+        Button->SetTag(TEXT("Waypoint.SearchLocations"));
+        Button->SetToolTip(FACEPluginStyle::Tooltip(FText::FromString(TEXT("Search the imported atlas by name or type, then point the arrow or find a route."))));
+        return Button;
+    }
     void BrowseLocations()
     {
         if(!Host.IsValid()||!AtlasPath)return;

@@ -1,5 +1,6 @@
 #include "ACERuntimeOptions.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/App.h"
 #include "HAL/IConsoleManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/UserInterfaceSettings.h"
@@ -63,6 +64,11 @@ void Set(const TCHAR* Key,float Value)
 void Apply()
 {
  bLegionsSky=Get(TEXT("LegionsSky"))>.5f;
+ // Windows/Linux apply this gain to the entire audio device after focus loss.
+ // Our emitter gains alone cannot override Unreal's default background mute.
+ const float BackgroundGain=Get(TEXT("ActiveSoundOnly"))>.5f?0.f:1.f;
+ FApp::SetUnfocusedVolumeMultiplier(BackgroundGain);
+ if(!FApp::HasFocus()) FApp::SetVolumeMultiplier(BackgroundGain);
  SoundSettingsFrame=MAX_uint64;
  PluginTextSettingsFrame=MAX_uint64;
  UACEWorldTextureMipProvider::RefreshQuality();

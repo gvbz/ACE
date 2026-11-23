@@ -213,6 +213,41 @@ bool FACEItemToolsTest::RunTest(const FString&)
             TestEqual(TEXT("Unowned target cannot be merged by Item Tools"),CountAction(ACEGameAction::StackableMerge),0);
             S.WorldObjects.Remove(19);S.WorldObjects[10].MaxStackSize=Item.MaxStackSize;++S.InventoryDataRevision;
         }
+        {
+            const auto SavedObjects=S.WorldObjects;
+            ON_SCOPE_EXIT
+            {
+                S.WorldObjects=SavedObjects;++S.InventoryDataRevision;S.CachedC2SPackets.Reset();
+                P->Profile->SetStringField(TEXT("mode"),TEXT("give"));
+            };
+            S.WorldObjects[10].MaxStackSize=100;
+            auto Target=S.WorldObjects[10];Target.Guid=19;Target.StackSize=90;S.WorldObjects.Add(Target.Guid,Target);
+            auto SourceStack=Target;SourceStack.Guid=21;SourceStack.StackSize=5;S.WorldObjects.Add(SourceStack.Guid,SourceStack);
+            S.CachedC2SPackets.Reset();
+            if(!TestTrue(TEXT("Merge starts through the Item Tools entry point"),H->StartItemTools(TEXT("merge"))))return false;
+            auto Wake=[&]()
+            {
+                FTSTicker::GetCoreTicker().RemoveTicker(H->DecisionWakeTicker);
+                H->RunDecisionWake(0.f);
+            };
+            TestTrue(TEXT("Starting merge schedules work immediately"),H->DecisionWakeTicker.IsValid());
+            Wake();
+            TestEqual(TEXT("Initial merge sends a single request"),CountAction(ACEGameAction::StackableMerge),1);
+            FACEBinaryWriter TargetUpdate;
+            TargetUpdate.WriteUInt32(ACEOpcode::SetStackSize);TargetUpdate.WriteUInt8(1);
+            TargetUpdate.WriteUInt32(19);TargetUpdate.WriteUInt32(93);TargetUpdate.WriteUInt32(0);
+            S.HandleGameMessage(TargetUpdate.GetData());
+            TestTrue(TEXT("Server stack update wakes Item Tools before its next poll"),H->DecisionWakeTicker.IsValid()&&P->NextDecision==0.);
+            Wake();
+            TestEqual(TEXT("Target receipt alone still holds the next merge"),CountAction(ACEGameAction::StackableMerge),1);
+            FACEBinaryWriter Removed;
+            Removed.WriteUInt32(ACEOpcode::InventoryRemoveObject);Removed.WriteUInt32(10);
+            S.HandleGameMessage(Removed.GetData());
+            TestTrue(TEXT("Source removal schedules another immediate check"),H->DecisionWakeTicker.IsValid()&&P->NextDecision==0.);
+            Wake();
+            TestEqual(TEXT("Both receipts dispatch the next merge on the wake"),CountAction(ACEGameAction::StackableMerge),2);
+            H->Stop(P->Id);
+        }
         auto Give=ITJson(TEXT(R"({"action":"it_give","item":10,"target":20,"amount":2})"));
         H->ExecuteItemTools(*P,Give);TestEqual(TEXT("Native giving uses retail GiveObject"),CountAction(ACEGameAction::GiveObjectRequest),1);
         S.CachedC2SPackets.Reset();S.WorldObjects[10].Bonded=1;H->ExecuteItemTools(*P,Give);
@@ -360,7 +395,7 @@ bool FACEItemToolsMergeTest::RunTest(const FString&)
     FString Source,Error;
     FFileHelper::LoadFileToString(Source,*(IPluginManager::Get().FindPlugin(TEXT("ACEClient"))->GetBaseDir()/TEXT("ClientMods/itemtools/main.lua")));
     auto Snapshot=[](){return ITJson(TEXT(R"({"time":100,"ready":true,"inventory":[{"id":11,"wcid":100,"name":"Gem","count":60,"max_stack":100,"container":1,"transferable":true},{"id":12,"wcid":100,"name":"Gem","count":70,"max_stack":100,"container":2,"transferable":true},{"id":13,"wcid":100,"name":"Renamed gem","count":50,"max_stack":100,"container":3,"transferable":true},{"id":14,"wcid":100,"name":"Gem","count":100,"max_stack":100,"transferable":true},{"id":15,"wcid":101,"name":"Gem","count":12,"max_stack":100,"transferable":true},{"id":16,"wcid":100,"name":"Gem","count":80,"max_stack":100,"transferable":false},{"id":17,"wcid":100,"name":"Gem","count":1,"max_stack":1,"transferable":true}]})"));};
-    auto P=ITJson(TEXT(R"({"mode":"merge","delay_ms":0})"));
+    auto P=ITJson(TEXT(R"({"mode":"merge","delay_ms":250})"));
     auto Step=[&](FACEPluginVM& VM,auto S){TSharedPtr<FJsonObject> I;TestTrue(*Error,VM.Step(S,P,I,Error));return I?I:MakeShared<FJsonObject>();};
     auto Action=[](auto I){return ACEItemTools::String(I,TEXT("action"));};
     for(bool TargetFirst:{false,true})
@@ -399,6 +434,19 @@ bool FACEItemToolsMergeTest::RunTest(const FString&)
         I=Step(VM,S);
         TestEqual(TEXT("Rejection or timeout stops without another merge"),Action(I),FString(TEXT("stop")));
         TestEqual(TEXT("Unconfirmed merges are not counted"),ACEItemTools::Number(I,TEXT("operations")),0.);
+    }
+    {
+        FACEPluginVM VM;VM.Load(Source,Error);auto S=Snapshot();
+        P->SetNumberField(TEXT("merge_delay_ms"),125);
+        Step(VM,S);
+        const auto& Inventory=S->GetArrayField(TEXT("inventory"));
+        Inventory[1]->AsObject()->SetNumberField(TEXT("count"),100);
+        Inventory[2]->AsObject()->SetNumberField(TEXT("count"),20);
+        const auto I=Step(VM,S);
+        TestTrue(TEXT("Optional pause waits after confirmation"),Action(I).IsEmpty());
+        TestEqual(TEXT("Merge requests a wake at the configured deadline"),ACEItemTools::Number(I,TEXT("merge_resume_at")),100.125);
+        S->SetNumberField(TEXT("time"),100.125);
+        TestEqual(TEXT("The next merge can dispatch at the deadline"),Action(Step(VM,S)),FString(TEXT("it_merge")));
     }
     return true;
 }

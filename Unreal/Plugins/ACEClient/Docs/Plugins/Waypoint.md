@@ -120,24 +120,31 @@ from live server objects, so custom portals use their server-provided placement.
 
 ### GoArrow destinations and directions
 
-Open **NAV** and use **Browse locations** to select a GoArrow or CoD atlas XML
+Open **NAV** and use **Browse XML file** to select a GoArrow or CoD atlas XML
 file from your computer. The Windows and Linux file pickers show XML files and
 fill the path field; click **Import locations** to load the selected file. You
 can also paste a full path, including Windows “Copy as path” quotes. A successful
 import opens the searchable list and shows how many locations were loaded. An
 error appears beside the import controls and leaves the previous atlas available.
-Use **View imported locations** to search the imported atlas or reopen it after
-restarting the client. If you imported
+Use **Search locations** in NAV or the full map to search the imported atlas,
+including after restarting the client. **Back** returns to the same settings or
+map view without losing the typed XML path or map filter. If you imported
 with v157 or earlier, import the XML once more to add its portal exits.
 
 Search by name or type and select a row. Each row shows its coordinates so you
 can distinguish places that share a name.
 
 - **Point arrow** aims the floating arrow directly at the selected location.
+  Double-clicking a result does the same thing.
 - **Find route** uses your current outdoor position and looks for the least walking
   distance through eligible one-way atlas transports. The arrow points to the
-  first step. After taking a portal, select the next step in the directions.
-  The current itinerary is available when you reopen the browser in the same session.
+  first step. On desktop, a separate **Waypoint Route** window opens with buttons
+  for each step. Close NAV, the map or Plugin Manager and keep using these buttons
+  while you travel. After taking a portal, click the next step to point the arrow.
+  The route window can be moved, resized and pinned like other plugin windows.
+- **Show route** reopens the current route without recalculating it. Finding a
+  new route updates and raises the same route window instead of creating duplicates.
+  Directions also remain available inside the atlas browser for embedded interfaces.
 
 Walking legs use straight-line distances within GoArrow's map regions and must
 be under 50 map units each. Directions use the imported exits. Personal recalls,

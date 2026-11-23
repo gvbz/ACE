@@ -205,7 +205,7 @@ private:
         {
             Heading(TEXT("Merge similar items"),TEXT("Combine matching partial stacks across your main backpack and all carried bags, up to each item's maximum stack size."));
             Add(Text(TEXT("Equipped, retained and offered items are excluded. Full stacks stay intact. Each merge waits for server confirmation; Stop cancels the remaining work."),14,Muted));
-            Quantity(TEXT("delay_ms"),TEXT("Pause between merges (milliseconds)"),250,5000);
+            Quantity(TEXT("merge_delay_ms"),TEXT("Pause between merges (milliseconds)"),0,5000);
             Start(TEXT("merge"),TEXT("Merge similar items"));
             Add(Text(TEXT("Chat command: /acueitems merge"),12,Muted));
         }

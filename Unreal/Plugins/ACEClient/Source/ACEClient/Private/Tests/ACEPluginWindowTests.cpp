@@ -4,6 +4,8 @@
 #include "Misc/Paths.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "HAL/FileManager.h"
 #include "ACEClientSubsystem.h"
 #include "ACEPlayerController.h"
@@ -18,6 +20,9 @@
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SVirtualWindow.h"
 
@@ -147,6 +152,67 @@ bool FACEPluginWindowTest::RunTest(const FString&)
     Host->TogglePluginWindow(Generic->Id);
     if(!Click(StandaloneManager,*Generic->Id))return false;
     TestTrue(TEXT("Ordinary plugin reopens with the same widget"),Dock->IsOpen(Generic->Id)&&Dock->Windows.FindChecked(Generic->Id).Widget==GenericWidget);
+
+    // Find route opens a distinct dock-owned window. Closing NAV/Map must not
+    // destroy its buttons or their ability to navigate, and replanning reuses it.
+    {
+        const FString Atlas=Root/TEXT("route.xml");
+        TestTrue(TEXT("Route window XML fixture is saved"),FFileHelper::SaveStringToFile(TEXT("<locations><loc name=\"Test portal\" type=\"Portal\" NS=\"0\" EW=\"1\" exitNS=\"0\" exitEW=\"55\"/><loc name=\"Test village\" type=\"Town\" NS=\"0\" EW=\"56\"/></locations>"),*Atlas));
+        if(!TestTrue(TEXT("Route window imports atlas"),Host->ImportWaypointLocations(Atlas)))return false;
+        FACEPosition Origin;Origin.CellId=0x7f7f0001;Origin.Location=FVector(84,84,0);Session.SetLocalPosition(Origin);
+        auto SearchButton=StaticCastSharedPtr<SButton>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.SearchLocations")));
+        if(!TestTrue(TEXT("Main map exposes atlas search"),SearchButton.IsValid()))return false;
+        SearchButton->SimulateClick();
+        auto Search=StaticCastSharedPtr<SEditableTextBox>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.AtlasSearch")));
+        auto Results=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.AtlasResults")));
+        auto Plan=StaticCastSharedPtr<SButton>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.FindRoute")));
+        if(!TestTrue(TEXT("Route planning controls exist in main window"),Search&&Results&&Plan))return false;
+        Search->SetText(FText::FromString(TEXT("Test village")));
+        if(!TestEqual(TEXT("Route destination is selectable"),Results->GetItems().Num(),1))return false;
+        Results->SetSelection(Results->GetItems()[0]);Plan->SimulateClick();
+        const double Timeout=FPlatformTime::Seconds()+5;
+        while(Host->WaypointItinerary.IsEmpty()&&FPlatformTime::Seconds()<Timeout)
+        {FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);FPlatformProcess::Sleep(.001f);}
+        if(!TestTrue(TEXT("Successful Find route automatically opens independent route window"),Host->WaypointItinerary.Num()==2&&Dock->IsOpen(TEXT("waypoint.route"))))return false;
+        const auto RouteFrame=Dock->Windows.FindChecked(TEXT("waypoint.route")).Widget;
+        auto RoutePanel=FindPluginControl(RouteFrame.ToSharedRef(),TEXT("Waypoint.RoutePanel"));
+        auto Step0=StaticCastSharedPtr<SButton>(FindPluginControl(RouteFrame.ToSharedRef(),TEXT("Waypoint.RouteStep.0")));
+        auto Step1=StaticCastSharedPtr<SButton>(FindPluginControl(RouteFrame.ToSharedRef(),TEXT("Waypoint.RouteStep.1")));
+        if(!TestTrue(TEXT("Detached route contains both navigation buttons"),RoutePanel&&Step0&&Step1))return false;
+        Host->TogglePluginWindow(TEXT("waypoint"));Host->CloseDesktopPluginManager();
+        TestTrue(TEXT("Closing primary Waypoint and manager leaves route usable"),!Dock->IsOpen(TEXT("waypoint"))&&Dock->IsOpen(TEXT("waypoint.route")));
+        FVector2D Destination;uint32 Dungeon=0;
+        Step0->SimulateClick();TestTrue(TEXT("Detached portal button points to entrance"),Host->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(1,0));
+        Step1->SimulateClick();TestTrue(TEXT("Detached destination button works with main window closed"),Host->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(56,0));
+        const auto RouteSize=Dock->Windows.FindChecked(TEXT("waypoint.route")).Size;
+        const auto RoutePosition=Dock->Windows.FindChecked(TEXT("waypoint.route")).Position;
+        const int32 WindowCount=Dock->Windows.Num();
+        const auto Order=Dock->Windows.FindChecked(TEXT("waypoint.route")).Slot->GetZOrder();
+        Host->SetWaypointItinerary({{FVector2D(23,9),TEXT("Replacement destination"),TEXT("Town"),{}}});
+        TestTrue(TEXT("Replanning raises the existing route window"),Dock->Windows.FindChecked(TEXT("waypoint.route")).Slot->GetZOrder()>Order);
+        TestTrue(TEXT("Replanning preserves route window identity, layout and main closed state"),Dock->Windows.Num()==WindowCount
+            &&Dock->Windows.FindChecked(TEXT("waypoint.route")).Widget==RouteFrame&&!Dock->IsOpen(TEXT("waypoint"))
+            &&Dock->Windows.FindChecked(TEXT("waypoint.route")).Size==RouteSize&&Dock->Windows.FindChecked(TEXT("waypoint.route")).Position==RoutePosition);
+        Host->ClearWaypoint();Step1->SimulateClick();
+        TestFalse(TEXT("An old button cannot navigate after the route was replaced"),Host->GetWaypoint(Destination,Dungeon));
+        RoutePanel->Tick(FGeometry(),0,0);
+        auto NewStep=StaticCastSharedPtr<SButton>(FindPluginControl(RouteFrame.ToSharedRef(),TEXT("Waypoint.RouteStep.0")));
+        if(!TestTrue(TEXT("New route replaces buttons in place"),NewStep&&!FindPluginControl(RouteFrame.ToSharedRef(),TEXT("Waypoint.RouteStep.1"))))return false;
+        NewStep->SimulateClick();TestTrue(TEXT("Updated route button uses new destination"),Host->GetWaypoint(Destination,Dungeon)&&Destination==FVector2D(23,9));
+        Host->TogglePluginWindow(TEXT("waypoint.route"));Host->OpenPluginWindow(TEXT("waypoint"));
+        TestFalse(TEXT("Reopening NAV does not reopen a deliberately closed route"),Dock->IsOpen(TEXT("waypoint.route")));
+        const auto Revision=Host->WaypointItineraryRevision;
+        auto ShowRoute=StaticCastSharedPtr<SButton>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.ShowRoute")));
+        if(!TestTrue(TEXT("Main window can reopen current route"),ShowRoute.IsValid()))return false;
+        ShowRoute->SimulateClick();
+        TestTrue(TEXT("Show route reuses window without recalculating"),Dock->IsOpen(TEXT("waypoint.route"))
+            &&Dock->Windows.FindChecked(TEXT("waypoint.route")).Widget==RouteFrame&&Host->WaypointItineraryRevision==Revision);
+        Host->SetWaypointItinerary({});Host->ClearWaypoint();NewStep->SimulateClick();RoutePanel->Tick(FGeometry(),0,0);
+        TestFalse(TEXT("Clearing a route invalidates old navigation callbacks"),Host->GetWaypoint(Destination,Dungeon));
+        TestFalse(TEXT("Cleared route removes its old step controls"),FindPluginControl(RouteFrame.ToSharedRef(),TEXT("Waypoint.RouteStep.0")).IsValid());
+        Host->TogglePluginWindow(TEXT("waypoint.route"));
+        TestFalse(TEXT("An empty route cannot reopen stale directions"),Host->OpenPluginWindow(TEXT("waypoint.route")));
+    }
 
     // Temporary presentation changes suspend the desktop surfaces rather than
     // marking the user's manager/window preferences as explicitly closed.

@@ -16,6 +16,18 @@ Regenerate Stage 2:
 dotnet run --project Unreal/diag/UIInventory/UIInventory.csproj -c Release -- "C:\Turbine\Asheron's Call" "Unreal/Plugins/ACEClient/Docs/UI"
 ```
 
+## Background audio and automation
+
+In Options > Sound Options, enable **Play Audio in Background** and click
+**Apply** to hear game sounds and plugin alerts while alt-tabbed. Reset discards
+an unapplied change. Existing sound preferences are preserved; new installs
+default to muting background audio.
+
+UCM continues processing combat, recovery, looting, and navigation regardless of
+the audio toggle. Desktop clients do not enter Unreal's inactive-window idle
+mode, and editor play sessions bypass the editor's background CPU throttle.
+The login FPS cap and saved gameplay frame limit remain in effect.
+
 ## Chat selection and fellowship rosters
 
 Drag across chat text to select exact characters, or double-click a word, then

@@ -42,6 +42,23 @@ bool FACEVTSettingsTest::RunTest(const FString&)
         auto Doors=ACEVTProfile::Convert(D,Issues);TestEqual(TEXT("Lockpick assistance imports without dropping entries"),Issues.Num(),0);
         TestEqual(TEXT("Imported lockpick retains category ten"),Doors->GetArrayField(TEXT("assist_items"))[0]->AsObject()->GetNumberField(TEXT("type")),10.);
         TestEqual(TEXT("Lockpick excess is skill units, not map distance"),Doors->GetNumberField(TEXT("door_lockpick_margin")),10.);
+        auto DefaultDoors=SettingsJSON(TEXT(R"({"format":"usd","tables":[]})"));
+        TestEqual(TEXT("Old vTank profiles inherit their signed Lockpick default"),
+            ACEVTProfile::Convert(DefaultDoors,Issues)->GetNumberField(TEXT("door_lockpick_margin")),-50.);
+        auto NegativeDoors=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"Settings","columns":["Setting","Value"],"rows":[["DoorLockpickDiffExcessThreshold",-75]]}]})"));
+        TestEqual(TEXT("Explicit negative Lockpick margin survives import"),
+            ACEVTProfile::Convert(NegativeDoors,Issues)->GetNumberField(TEXT("door_lockpick_margin")),-75.);
+        TestEqual(TEXT("Signed margins import without needing an adapter"),Issues.Num(),0);
+        auto WithMetadata=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"SettingsCategories","columns":["Setting","Category"],"rows":[["DoorOpenRange",1]]},{"name":"SettingsEnumInfo","columns":["Setting","Value","Name"],"rows":[["NavPriorityBoost",0,"Normal"]]},{"name":"Settings","columns":["Setting","Value"],"rows":[["NavPriorityBoost",true]]}]})"));
+        auto NativeSettings=ACEVTProfile::Convert(WithMetadata,Issues);
+        TestEqual(TEXT("Editor metadata needs no gameplay adapter"),Issues.Num(),0);
+        TestTrue(TEXT("A setting is still read from the behavior table"),NativeSettings->GetBoolField(TEXT("nav_priority")));
+        auto BuffLimits=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"Settings","columns":["Setting","Value"],"rows":[["BuffWithUntrained-Item",50],["BuffWithUntrained-Creature",100]]}]})"));
+        auto ImportedBuffs=ACEVTProfile::Convert(BuffLimits,Issues);
+        TestEqual(TEXT("Item and creature school limits import independently"),ImportedBuffs->GetNumberField(TEXT("untrained_item_buff_max_character_level")),50.);
+        TestEqual(TEXT("Creature school preserves its explicit limit"),ImportedBuffs->GetNumberField(TEXT("untrained_creature_buff_max_character_level")),100.);
+        TestEqual(TEXT("Missing school limit uses the vTank default"),ImportedBuffs->GetNumberField(TEXT("untrained_life_buff_max_character_level")),80.);
+        TestEqual(TEXT("Buff school limits are supported settings"),Issues.Num(),0);
     }
     {
         auto VoidDocument=SettingsJSON(TEXT(R"({"format":"usd","tables":[{"name":"MyMonsters","columns":["MonsterName","DamageType","Corruption"],"rows":[["<DEFAULT>",9,true]]}]})"));
@@ -249,8 +266,11 @@ bool FACEVTSettingsTest::RunTest(const FString&)
         auto Profile=SettingsJSON(TEXT(R"({"buffing":true,"auto_buffs":true,"recovery":false,"combat":"off","refresh_seconds":60,"idle_buff_topoff":true,"idle_buff_seconds":1200})"));
         auto S=Snapshot();S->SetNumberField(TEXT("health"),100);
         S->SetArrayField(TEXT("spells"),SettingsJSON(TEXT(R"({"v":[{"id":30,"name":"Strength Self","self_buff":true,"category":1,"power":50,"skill":300,"duration":3600,"caster_target":true,"beneficial":true}]})"))->GetArrayField(TEXT("v")));
-        S->SetArrayField(TEXT("enchantments"),SettingsJSON(TEXT(R"({"v":[{"id":30,"category":1,"power":50,"remaining":600}]})"))->GetArrayField(TEXT("v")));
-        FACEPluginVM Idle;Idle.Load(Script,Error);auto I=Step(Idle,S,Profile);TestEqual(TEXT("Idle topoff refreshes before regular threshold"),I->GetStringField(TEXT("action")),FString(TEXT("cast")));
+        S->SetArrayField(TEXT("enchantments"),SettingsJSON(TEXT(R"({"v":[{"id":30,"category":1,"power":50,"remaining":600,"duration":3600}]})"))->GetArrayField(TEXT("v")));
+        FACEPluginVM Idle;Idle.Load(Script,Error);
+        TestFalse(TEXT("Idle window cannot prematurely refresh a healthy long buff"),Step(Idle,S,Profile)->HasField(TEXT("action")));
+        S->GetArrayField(TEXT("enchantments"))[0]->AsObject()->SetNumberField(TEXT("remaining"),300);
+        auto I=Step(Idle,S,Profile);TestEqual(TEXT("Idle topoff still refreshes within the final tenth before the regular threshold"),I->GetStringField(TEXT("action")),FString(TEXT("cast")));
         Profile->SetBoolField(TEXT("idle_buff_topoff"),false);FACEPluginVM Normal;Normal.Load(Script,Error);TestFalse(TEXT("Disabling topoff retains regular expiry"),Step(Normal,S,Profile)->HasField(TEXT("action")));
     }
     {

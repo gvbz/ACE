@@ -96,7 +96,9 @@ bool FACEInventoryUICostTest::RunTest(const FString&)
     AddRef(202, 6003); AddRef(123, 6003);
     CheckCounts();
     TestEqual(TEXT("An authoritative empty pack stays empty"), Counts[201], 0);
-    TestEqual(TEXT("Fallback pack retains its existing nested-container slots"), Counts[203], 25);
+    TestEqual(TEXT("Fallback pack counts only ordinary item slots"), Counts[203], 24);
+    TArray<int32> NestedSlots;Session->GetContainerPackGuids(203,NestedSlots);
+    TestTrue(TEXT("The nested container remains in the separate pack row"),NestedSlots==TArray<int32>{6003});
     Session->WorldObjects.Add(6001, MakeItem(6001, 202, 26)); CheckCounts();
     Session->WorldObjects[6001].ObjectDescriptionFlags = ACEObjectDescFlag::RequiresPackSlot; CheckCounts();
     Session->WorldObjects[6000].CurrentWieldedLocation = ACEEquipMask::Held;

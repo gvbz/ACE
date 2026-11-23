@@ -63,7 +63,7 @@ private:
  UPROPERTY() TMap<FName,TObjectPtr<USlider>> ValueSliders;
  UPROPERTY() TMap<FString,TObjectPtr<UCheckBox>> FarTerrainChecks;
  UPROPERTY() TMap<int32,TObjectPtr<UCheckBox>> CharacterChecks;
- UPROPERTY() TObjectPtr<UCheckBox> ActiveSoundOnly;
+ UPROPERTY() TObjectPtr<UCheckBox> BackgroundAudio;
  UPROPERTY() TObjectPtr<UCheckBox> CameraAlignToSlope;
  UPROPERTY() TObjectPtr<UComboBoxString> Filtering;
  UPROPERTY() TObjectPtr<UComboBoxString> Resolution;

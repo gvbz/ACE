@@ -10,6 +10,12 @@ namespace ACEFrontendFrameRate
     ACECLIENT_API float GetLimit(const UEngine& Engine,float GameplayLimit,bool Editor);
 }
 
+/** Used by editor previews to retain the same background behavior as the game. */
+namespace ACEBackgroundActivity
+{
+    ACECLIENT_API bool HasClientWorld(const UEngine& Engine);
+}
+
 UCLASS()
 class ACECLIENT_API UACEGameEngine : public UGameEngine
 {

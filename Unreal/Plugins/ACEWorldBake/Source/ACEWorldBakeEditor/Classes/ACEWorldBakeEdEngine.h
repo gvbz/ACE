@@ -44,6 +44,7 @@ class UACEWorldBakeEdEngine : public UUnrealEdEngine
 
 	virtual void Tick(float DeltaSeconds, bool bIdleMode) override;
 	virtual float GetMaxTickRate(float DeltaTime, bool bAllowFrameRateSmoothing = true) const override;
+	virtual bool ShouldThrottleCPUUsage() const override;
 
 private:
 	bool ProcessOneBlueprintImport();

@@ -33,17 +33,34 @@ bool FACEInteriorSamplingTest::RunTest(const FString&)
   auto* Room=World->SpawnActor<AACEEnvCellActor>();
   TestTrue(TEXT("Actual room uploads its split draw sections"),Room->LoadEnvCell(Id,FVector(0,134400,0),100));
   TSet<UMaterialInterface*> Expected;
+  const auto Actual=Room->CellMesh->GetMaterials();
+  const auto SameSampler=[](UMaterialInterface* A,UMaterialInterface* B)
+  {
+   if(A==B)return true;
+   if(!A||!B||A->GetMaterial()!=B->GetMaterial())return false;
+   UTexture *TextureA=nullptr,*TextureB=nullptr;
+   return A->GetTextureParameterValue(TEXT("ACETexture"),TextureA)
+    && B->GetTextureParameterValue(TEXT("ACETexture"),TextureB) && TextureA==TextureB;
+  };
   for(const auto& Section:Mesh->Sections)
   {
    if(Section.IsEmpty() || Section.bFullyTransparent)continue;
-   auto* Material=Dat->GetOrCreateEnvCellMaterial(Section.SurfaceId,Section.bWrapTexture);
+   auto* Material=Dat->GetOrCreateEnvCellMaterial(Section.SurfaceId,Section.bWrapTexture,!Mesh->CanSeeOutside());
+   if(!Material)Material=Dat->GetVertexColorMaterial();
    Expected.Add(Material);
    if(Section.bWrapTexture)++RepeatingSections;
    for(const auto& Normal:Section.Normals)if(Normal.Z<-.35f){++Ceilings;break;}
-   TestTrue(TEXT("Floor/wall/ceiling split preserves the authored material sampler"),Room->CellMesh->GetMaterials().Contains(Material));
+   // Entrance lighting can instance the material per room. Verify what is
+   // sampled, including the wrap-specific texture, independently of identity.
+   TestTrue(TEXT("Floor/wall/ceiling split preserves the authored material sampler"),
+    Actual.ContainsByPredicate([&](auto* Candidate){return SameSampler(Material,Candidate);}));
   }
-  for(auto* Material:Room->CellMesh->GetMaterials())
-   TestTrue(TEXT("Every emitted room section uses a source sampler variant"),Expected.Contains(Material));
+  for(auto* Material:Actual)
+  {
+   bool Found=false;
+   for(auto* Candidate:Expected)if(SameSampler(Material,Candidate)){Found=true;break;}
+   TestTrue(TEXT("Every emitted room section uses a source sampler variant"),Found);
+  }
   AddInfo(FString::Printf(TEXT("Town Network %08X: %d source sections, %d rendered sections"),Id,Mesh->Sections.Num(),Room->CellMesh->GetNumSections()));
   Room->Destroy();
  }

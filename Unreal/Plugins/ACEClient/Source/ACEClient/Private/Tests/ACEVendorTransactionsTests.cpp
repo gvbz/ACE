@@ -189,7 +189,7 @@ bool FACEVendorTransactionsTest::RunTest(const FString&)
     TestTrue(TEXT("Ordinary vendor remains pyreal-based with a nonempty label"), Session.VendorUsesPyreals());
     TestFalse(TEXT("Stale stock is not partially purchased"), UI->SubmitVendorPurchase({{1, Book.Guid}, {1, 999}})); NoPurchase();
 
-    auto AbilityPointOffer = [&](uint32 Balance)
+    auto AbilityPointOffer = [&](uint32 Balance, int32 ItemPrice = 1)
     {
         FACEBinaryWriter W;
         W.WriteUInt32(Vendor); W.WriteUInt32(MAX_uint32);
@@ -197,7 +197,7 @@ bool FACEVendorTransactionsTest::RunTest(const FString&)
         W.WriteFloat(1); W.WriteFloat(1); W.WriteUInt32(76543);
         W.WriteUInt32(Balance); W.WriteString16L(TEXT("Class Ability Points")); W.WriteUInt32(0);
         FACEBinaryReader R(W.GetData()); Session.HandleApproachVendor(R);
-        Book.Value=1; Session.VendorMerchandise={Book};
+        Book.Value=ItemPrice; Session.VendorMerchandise={Book};
     };
     AbilityPointOffer(1);
     TestEqual(TEXT("Server-managed points need no inventory token"),Session.GetVendorPurchaseFunds(),1);
@@ -229,6 +229,24 @@ bool FACEVendorTransactionsTest::RunTest(const FString&)
     TestEqual(TEXT("Physical currencies still follow inventory"),Session.GetVendorPurchaseFunds(),2);
     Session.WorldObjects.Remove(Coins.Guid); ++Session.InventoryDataRevision;
     TestEqual(TEXT("Removing the last currency stack cannot resurrect the opening balance"),Session.GetVendorPurchaseFunds(),0);
+
+    // A physical token can coexist with a larger balance advertised by the
+    // same vendor. The quote is a total and already includes any usable tokens.
+    Coins.StackSize=1; Session.UpsertWorldObject(Coins);
+    AbilityPointOffer(3,2);
+    TestEqual(TEXT("Carrying a token does not hide the larger quoted balance"),Session.GetVendorPurchaseFunds(),3);
+    TestTrue(TEXT("The quoted balance can fund a token priced above the carried balance"),UI->SubmitVendorPurchase({{1,Book.Guid}}));
+    CheckWire(ACEGameAction::Buy,{{1,Book.Guid}},76543);
+    TestEqual(TEXT("A mixed-wallet purchase reserves the quoted funds"),Session.GetVendorPurchaseFunds(),1);
+    AbilityPointOffer(0);
+    Complete(1);
+    TestEqual(TEXT("Rejection cannot restore funds above a newer lower quote"),Session.GetVendorPurchaseFunds(),0);
+    AbilityPointOffer(3);
+    TestTrue(TEXT("Refreshed mixed balance is usable"),UI->SubmitVendorPurchase({{1,Book.Guid}}));
+    CheckWire(ACEGameAction::Buy,{{1,Book.Guid}},76543);
+    AbilityPointOffer(3);
+    Complete(0);
+    TestEqual(TEXT("Successful purchase debits the mixed wallet once"),Session.GetVendorPurchaseFunds(),2);
     return true;
 }
 #endif

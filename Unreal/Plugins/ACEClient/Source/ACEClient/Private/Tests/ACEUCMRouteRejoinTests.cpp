@@ -172,6 +172,41 @@ bool FACEUCMRouteRejoinTest::RunTest(const FString&)
         TestTrue(TEXT("Rejoined route continues in the same decision"),I->GetStringField(TEXT("status")).StartsWith(TEXT("Waypoint ")));
     }
 
+    for(bool Clear:{false,true})
+    {
+        FACEPluginVM VM;VM.Load(Script,Error);auto S=Snapshot(),P=Profile();
+        auto Destination=P->GetArrayField(TEXT("route"))[1]->AsObject();
+        Destination->SetStringField(TEXT("kind"),TEXT("pause"));
+        S->SetObjectField(TEXT("route_visible"),Json(TEXT(R"({"1":false,"2":true})")));
+        S->SetBoolField(TEXT("route_shortcuts"),true);
+        Step(VM,S,P);
+        auto Target=Json(TEXT(R"({"id":50,"name":"Rat","identified":true,"distance":20,"cell":30998795,"x":36,"y":10,"z":0,"line_of_sight":true})"));
+        S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(Target)});Step(VM,S,P);
+        At(S,30,6);Target->SetNumberField(TEXT("distance"),10);Step(VM,S,P);
+        At(S,36,10);Target->SetNumberField(TEXT("distance"),0);Step(VM,S,P);
+        S->SetArrayField(TEXT("targets"),{});Step(VM,S,P);
+        auto I=Step(VM,S,P);
+        TestEqual(TEXT("Recovery requests visibility from the actual departure"),I->GetNumberField(TEXT("route_shortcut_x")),30.);
+        TestEqual(TEXT("Recovery retains the pending pause waypoint"),I->GetNumberField(TEXT("route_point")),2.);
+        S->SetBoolField(TEXT("route_shortcut_checked"),true);
+        if(Clear)S->SetObjectField(TEXT("route_shortcut"),Json(TEXT(R"({"cell":30998795,"x":36,"y":0,"z":0})")));
+        I=Step(VM,S,P);
+        S->RemoveField(TEXT("route_shortcut_checked"));S->RemoveField(TEXT("route_shortcut"));
+        TestEqual(TEXT("Only a verified shortcut displaces the breadcrumb"),I->GetNumberField(TEXT("x")),Clear?36.:30.);
+        TestEqual(TEXT("Recovery selects the projected point or the visited corner"),I->GetNumberField(TEXT("y")),Clear?0.:6.);
+        if(Clear)
+        {
+            At(S,36,0);I=Step(VM,S,P);
+            TestEqual(TEXT("Projection leads to the same ordered waypoint"),I->GetNumberField(TEXT("x")),45.);
+            Destination->SetNumberField(TEXT("x"),49);
+            P->SetNumberField(TEXT("route_position_revision"),1);
+            I=Step(VM,S,P);
+            TestEqual(TEXT("A live edit redirects the current waypoint"),I->GetNumberField(TEXT("x")),49.);
+            At(S,49,0);
+            TestEqual(TEXT("The edited waypoint still performs its action"),Step(VM,S,P)->GetStringField(TEXT("status")),FString(TEXT("Pausing on route")));
+        }
+    }
+
     const auto Values=UWorld::InitializationValues().AllowAudioPlayback(false).RequiresHitProxies(false)
         .CreatePhysicsScene(true).CreateNavigation(false).CreateAISystem(false);
     auto* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Values);
@@ -217,6 +252,19 @@ bool FACEUCMRouteRejoinTest::RunTest(const FString&)
     Box(FVector(0,0,-50),FVector(60000,60000,50));
     Box(FVector(-29000,0,100),FVector(100,500,100));
     FACEPluginSightQuery Sight(*World,nullptr);
+    {
+        FACEPosition From=Pos,End=Pos;
+        From.Location=FVector(10,10,0);End.Location=FVector(30,0,0);
+        auto Direct=Host->FindRouteShortcut(From,Pos,End,Sight);
+        TestTrue(TEXT("Open ground allows steering directly to the waypoint"),Direct&&Direct->Location.Equals(End.Location));
+        Box(FVector(-2000,500,100),FVector(100,100,100));
+        auto Join=Host->FindRouteShortcut(From,Pos,End,Sight);
+        TestTrue(TEXT("A blocked diagonal can rejoin a clear section of the leg"),Join&&Join->Location.Equals(FVector(10,0,0),.01));
+        Box(FVector(-2000,500,100),FVector(1800,100,100));
+        TestFalse(TEXT("A wall across both paths leaves the breadcrumb in control"),Host->FindRouteShortcut(From,Pos,End,Sight).IsSet());
+        From.Location=FVector(0,20,0);End.Location=FVector(10,20,6);
+        TestFalse(TEXT("An upstairs route needs a continuous walkable connection"),Host->FindRouteShortcut(From,Pos,End,Sight).IsSet());
+    }
     auto S=Snapshot(),P=Profile();P->SetStringField(TEXT("combat"),TEXT("off"));At(S,0,0);
     TArray<TSharedPtr<FJsonValue>> Points;
     for(int32 Index=0;Index<17;++Index)

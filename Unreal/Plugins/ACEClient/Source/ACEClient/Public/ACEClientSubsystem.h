@@ -18,6 +18,12 @@ struct FACEBufferedChatMessage
 	TOptional<FLinearColor> Color;
 };
 
+struct FACEInventoryPickup
+{
+	int32 Container = 0;
+	int32 MergeTarget = 0;
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FACESessionStateChangedDyn, EACESessionState, NewState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FACECharacterListDyn, const TArray<FACECharacterInfo>&, Characters, const FString&, ServerName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FACEEnteredWorldDyn, int32, PlayerGuid, const FACEPosition&, SpawnPosition);
@@ -359,7 +365,7 @@ public:
 
 	/** Drag & drop: move an item into a pack/container at Placement (0 = front). */
 	UFUNCTION(BlueprintCallable, Category = "ACE|Inventory")
-	void SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement);
+	void SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement, bool bAutoMerge = true);
 
 	/** Merge stackable items (GameAction 0x0054). Amount of MergeFromGuid into MergeToGuid. */
 	UFUNCTION(BlueprintCallable, Category = "ACE|Inventory")
@@ -757,6 +763,8 @@ public:
 	/** Retail pickup preference/fallback; explicit inventory drops do not use this.
 	 * Amount == 0 means the whole stack. An existing mergeable stack takes priority. */
 	int32 ResolvePickupContainer(int32 ItemGuid, int32 OpenPackGuid, int32 Amount = 0) const;
+	FACEInventoryPickup PlanInventoryPickup(int32 ItemGuid, int32 OpenPackGuid, int32 Amount = 0, bool bAutoMerge = true) const;
+	void SendInventoryPickup(int32 ItemGuid, int32 OpenPackGuid, int32 Amount = 0);
 	/** Same retail search, but returns zero when no owned container can accept the item. */
 	int32 FindPickupContainer(int32 ItemGuid, int32 OpenPackGuid, int32 Amount = 0) const;
 

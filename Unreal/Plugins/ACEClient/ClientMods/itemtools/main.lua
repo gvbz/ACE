@@ -33,14 +33,14 @@ local function issue(s,p,action,item,amount,target,kind)
   failure_serial=s.it_failure_serial or 0,
   target=target,currency=s.it_currency or 0,
   funding=action=='it_sell' and (p.mode=='restock' or (p.mode=='shop' and (p.buy_name or '')~='')),
-  owned=item and count(s.inventory,item.name,item.wcid) or 0}
+  owned=item and action~='it_merge' and count(s.inventory,item.name,item.wcid) or 0}
  if action=='it_give' then
   local recipient=find(s.it_objects,target)
   pending.recipient_name=recipient and recipient.name
  end
  if action=='it_merge' then pending.target_before=find(s.inventory,target).count end
  local r=status((action=='it_give' and 'Giving ' or action=='it_buy' and 'Buying ' or action=='it_sell' and 'Selling ' or action=='it_pickup' and 'Taking ' or action=='it_merge' and 'Merging ' or action=='it_split' and 'Splitting ' or action=='it_key' and 'Unlocking with ' or 'Opening ')..(item and item.name or 'chest'),action)
- r.item=item and item.id;r.amount=amount;r.target=target;r.vendor=s.vendor;r.delay_ms=p.delay_ms or 250
+ r.item=item and item.id;r.amount=amount;r.target=target;r.vendor=s.vendor
  return r
 end
 local function evaluate(s,rules,item,scope)
@@ -105,7 +105,8 @@ end
 return function(s,p)
  count_cache=nil
  local inv=s.inventory or {}
- if not baseline then baseline={};for _,i in ipairs(inv) do baseline[i.id]=i.count or 1 end end
+ local mode=p.mode or 'give'
+ if not baseline and mode=='chest' then baseline={};for _,i in ipairs(inv) do baseline[i.id]=i.count or 1 end end
  if pending then
   local q=pending;local i=find(inv,q.id);local done=false
   local given=math.min(q.amount,math.max(0,q.before-(i and (i.count or 1) or 0)))
@@ -157,7 +158,8 @@ return function(s,p)
      local n=math.min(left,extra);received[v.id]=(received[v.id] or 0)+n;left=left-n
     end end
    end
-   pending=nil;next_at=s.time+math.max(0,math.min(5000,p.delay_ms or 250))/1000
+   local delay=q.kind=='it_merge' and (p.merge_delay_ms or 0) or (p.delay_ms or 250)
+   pending=nil;next_at=s.time+math.max(0,math.min(5000,delay))/1000
   elseif (s.it_failure_serial or 0)~=q.failure_serial and (s.it_failure_item==q.id or (q.kind=='it_merge' and s.it_failure_item==q.target)) then
    local err=s.it_failure_error or 0
    -- ACE sends an item-specific rejection (often error 0) while an NPC
@@ -174,7 +176,11 @@ return function(s,p)
   elseif s.time>=q.deadline then return stop('Transfer was not confirmed. Check recipient, range and space before restarting.')
   else return status('Waiting for confirmation: '..(q.name or 'chest')) end
  end
- if s.time<next_at or s.ready==false or s.busy or s.portal_space then return status(give_retry and 'Waiting to retry gift: '..give_retry.name or 'Waiting for game action') end
+ if s.time<next_at or s.ready==false or s.busy or s.portal_space then
+  local wait=status(give_retry and 'Waiting to retry gift: '..give_retry.name or 'Waiting for game action')
+  if mode=='merge' and s.time<next_at then wait.merge_resume_at=next_at end
+  return wait
+ end
  if give_retry then
   local q=give_retry;local item=find(inv,q.id);local recipient=find(s.it_objects,q.target)
   if not usable(item) or item.name~=q.name or item.wcid~=q.wcid or item.count~=q.before then return stop('Item changed during gift retry; review inventory before restarting.') end
@@ -182,7 +188,6 @@ return function(s,p)
   give_retry=nil;return issue(s,p,'it_give',item,q.amount,q.target)
  end
  if split and split.id then local i=find(inv,split.id);split=nil;if not usable(i) then return stop('Split item changed; sale cancelled.') end;return issue(s,p,'it_sell',i,i.count,s.vendor) end
- local mode=p.mode or 'give'
  if mode=='merge' then
   -- Keep full stacks intact. Fill the fullest partial stack from the smallest
   -- matching one, then rebuild from server-confirmed inventory on the next step.

@@ -85,6 +85,13 @@ Manual command: `/acueitems restock`. The original `/it recomp` spelling is also
 accepted. Other commands are `/acueitems give`, `/acueitems shop`, `/acueitems profile`,
 `/acueitems chest`, and `/acueitems stop`.
 
+## Merge
+
+**Merge similar items** fills matching partial stacks across your carried bags.
+Item Tools starts the next merge as soon as the server confirms both stack
+updates. **Pause between merges** is independent of the Give tab's transfer
+pause and defaults to 0 milliseconds.
+
 ## Coordination and validation
 
 Item Tools temporarily pauses UCM's actions during a job, including inventory

@@ -21,6 +21,7 @@
 #include "ACERuntimeOptions.h"
 #include "ACEDisplayView.h"
 #include "SceneViewExtension.h"
+#include "Framework/Application/SlateApplication.h"
 #include "UI/ACEVideoSettingsWidget.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEDisplaySettingsTest,"ACE.Rendering.DisplaySettings",
@@ -56,6 +57,40 @@ bool FACEDisplaySettingsTest::RunTest(const FString&)
     ON_SCOPE_EXIT { GI->Shutdown(); GEngine->DestroyWorldContext(World); World->DestroyWorld(false); };
 
     auto* Options=CreateWidget<UACEVideoSettingsWidget>(GI); Options->TakeWidget();
+    {
+        auto* Audio=Cast<UCheckBox>(Options->WidgetTree->FindWidget(TEXT("BackgroundAudio")));
+        if(!TestNotNull(TEXT("Background audio toggle exists in Sound Options"),Audio))return false;
+        TestFalse(TEXT("New installs retain the previous background-mute default"),Audio->IsChecked());
+        Audio->SetIsChecked(true);Audio->OnCheckStateChanged.Broadcast(true);
+        TestTrue(TEXT("Background audio enables Apply"),Options->HasPendingChanges());
+        TestEqual(TEXT("Audio checkbox does not save before Apply"),ACERuntimeOptions::Get(TEXT("ActiveSoundOnly")),1.f);
+        Options->ResetVideo();TestFalse(TEXT("Reset discards the audio draft"),Audio->IsChecked());
+        Audio->SetIsChecked(true);Options->ApplyRuntimeOptions();
+        TestEqual(TEXT("Apply removes the engine-level background mute"),FApp::GetUnfocusedVolumeMultiplier(),1.f);
+        FConfigFile SavedAudio;SavedAudio.Read(GGameUserSettingsIni);float LegacyMute=1;
+        TestTrue(TEXT("Background audio persists using the existing inverse preference"),
+            SavedAudio.GetFloat(TEXT("ACE.Presentation"),TEXT("ActiveSoundOnly"),LegacyMute)&&LegacyMute==0.f);
+        auto* ReopenedAudio=CreateWidget<UACEVideoSettingsWidget>(GI);ReopenedAudio->TakeWidget();
+        TestTrue(TEXT("Reopening preserves background audio / legacy opt-out of active-only"),
+            Cast<UCheckBox>(ReopenedAudio->WidgetTree->FindWidget(TEXT("BackgroundAudio")))->IsChecked());
+        Options->DefaultsVideo();TestFalse(TEXT("Defaults stages background mute"),Audio->IsChecked());
+        TestEqual(TEXT("Defaults does not mute audio before Apply"),FApp::GetUnfocusedVolumeMultiplier(),1.f);
+        Options->ResetVideo();TestTrue(TEXT("Reset restores the saved background preference"),Audio->IsChecked());
+        if(FSlateApplication::IsInitialized())
+        {
+            auto& App=FSlateApplication::Get();const bool WasActive=App.IsActive();
+            ON_SCOPE_EXIT {App.ProcessApplicationActivationEvent(WasActive);ACERuntimeOptions::Apply();};
+            App.ProcessApplicationActivationEvent(false);ACERuntimeOptions::Apply();
+            TestFalse(TEXT("Audio regression runs with the application inactive"),App.IsActive());
+            TestEqual(TEXT("Background effects and plugin alerts remain audible"),ACERuntimeOptions::SoundGain(false),1.f);
+            TestEqual(TEXT("Background ambient sounds remain audible"),ACERuntimeOptions::SoundGain(true),1.f);
+            Audio->SetIsChecked(false);Options->ApplyRuntimeOptions();
+            TestEqual(TEXT("Disabling background audio restores engine mute"),FApp::GetUnfocusedVolumeMultiplier(),0.f);
+            TestEqual(TEXT("Inactive emitter/alert gain follows the disabled toggle"),ACERuntimeOptions::SoundGain(false),0.f);
+            App.ProcessApplicationActivationEvent(true);ACERuntimeOptions::Apply();
+            TestEqual(TEXT("Foreground sounds resume with background audio disabled"),ACERuntimeOptions::SoundGain(false),1.f);
+        }
+    }
     // Send the same change notifications as a click or drag. A control that
     // writes in its change handler would bypass both Apply and Reset.
     const TCHAR* TerrainKeys[] = {TEXT("PersonalFarTerrain"),TEXT("PersonalFarScenery"),TEXT("PersonalFarSceneryFog"),

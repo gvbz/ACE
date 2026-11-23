@@ -134,7 +134,10 @@ TSharedRef<SWidget> UACEVideoSettingsWidget::RebuildWidget()
  };
  Section(TEXT("Sound Options"));
  for (const TCHAR* Key:{TEXT("MasterVolume"),TEXT("EffectsVolume"),TEXT("AmbientVolume")}) AddValue(Key);
- ActiveSoundOnly=WidgetTree->ConstructWidget<UCheckBox>(); ActiveSoundOnly->SetWidgetStyle(RoundToggle); ActiveSoundOnly->SetContent(Label(TEXT("Play Sounds Only When Active"))); Box->AddChild(Fixed(ActiveSoundOnly,272,20));
+ BackgroundAudio=WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(),TEXT("BackgroundAudio"));
+ BackgroundAudio->SetWidgetStyle(RoundToggle); BackgroundAudio->SetContent(Label(TEXT("Play Audio in Background")));
+ BackgroundAudio->SetToolTipText(FText::FromString(TEXT("Keep game sounds audible while using another application.")));
+ Box->AddChild(Fixed(BackgroundAudio,272,20));
  Section(TEXT("Camera Options"));
  for (const TCHAR* Key:{TEXT("CameraStiffness"),TEXT("CameraAdjustment"),TEXT("PersonalCameraHeight"),TEXT("FieldOfViewDegrees")}) AddValue(Key); // personal: camera
  Box->AddChild(Fixed(UPersonalOptionCheckBox::Make(WidgetTree,RoundToggle,Label(TEXT("Save Camera Position")),TEXT("PersonalCameraSave"),TEXT("Keep the camera distance and pitch between sessions. Changes apply and save immediately.")),272,20)); // personal: camera
@@ -381,7 +384,7 @@ void UACEVideoSettingsWidget::ResetVideo()
  ChangeScreenBrightness(ValueSliders[TEXT("ScreenBrightness")]->GetValue());
  ChangeScreenContrast(ValueSliders[TEXT("Contrast")]->GetValue());
  ChangeEffectLightLimit(ValueSliders[TEXT("EffectLightLimit")]->GetValue());
- ActiveSoundOnly->SetIsChecked(ACERuntimeOptions::Get(TEXT("ActiveSoundOnly"))>.5f);
+ BackgroundAudio->SetIsChecked(ACERuntimeOptions::Get(TEXT("ActiveSoundOnly"))<=.5f);
  CameraAlignToSlope->SetIsChecked(ACERuntimeOptions::Get(TEXT("CameraAlignToSlope"))>.5f);
  Filtering->SetSelectedIndex(FMath::Clamp(FMath::FloorLog2(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("Anisotropy")))),0,4));
  if(auto* GI=GetGameInstance()) if(auto* Client=GI->GetSubsystem<UACEClientSubsystem>()) for(auto& P:CharacterChecks)P.Value->SetIsChecked(Client->IsCharacterOptionSet(P.Key));
@@ -453,7 +456,7 @@ bool UACEVideoSettingsWidget::HasPendingChanges() const
  for(int32 I=0;I<QualityLevels.Num();++I) if(QualityLevels[I]->GetSelectedIndex()!=Levels[I]) return true;
  for(const auto& P:ValueSliders) if(!FMath::IsNearlyEqual(P.Value->GetValue(),ACERuntimeOptions::Get(*P.Key.ToString()))) return true;
  for(const auto& P : FarTerrainChecks) if(P.Value->IsChecked() != SavedFarTerrainCheck(P.Key)) return true;
- if(ActiveSoundOnly->IsChecked()!=(ACERuntimeOptions::Get(TEXT("ActiveSoundOnly"))>.5f)
+ if(BackgroundAudio->IsChecked()!=(ACERuntimeOptions::Get(TEXT("ActiveSoundOnly"))<=.5f)
   || Filtering->GetSelectedIndex()!=FMath::Clamp(FMath::FloorLog2(FMath::RoundToInt(ACERuntimeOptions::Get(TEXT("Anisotropy")))),0,4)) return true;
  if(auto* GI=GetGameInstance()) if(auto* Client=GI->GetSubsystem<UACEClientSubsystem>())
   for(const auto& P:CharacterChecks) if(P.Value->IsChecked()!=Client->IsCharacterOptionSet(P.Key)) return true;
@@ -518,7 +521,8 @@ void UACEVideoSettingsWidget::ApplyRuntimeOptions()
  if(bHadExtendedHorizon != PersonalSkyHorizon::IsEnabled()) PersonalSkyHorizon::RebuildSky();
  ACERuntimeOptions::Set(TEXT("DynamicLightingQuality"),DynamicLighting->GetSelectedIndex());
  ApplyInterfaceOptions();
- ACERuntimeOptions::Set(TEXT("ActiveSoundOnly"),ActiveSoundOnly->IsChecked()?1:0);
+ // Preserve existing profiles: the legacy key is the inverse of this toggle.
+ ACERuntimeOptions::Set(TEXT("ActiveSoundOnly"),BackgroundAudio->IsChecked()?0:1);
  ACERuntimeOptions::Set(TEXT("CameraAlignToSlope"),CameraAlignToSlope->IsChecked()?1:0);
  ACERuntimeOptions::Set(TEXT("Anisotropy"),float(1<<FMath::Clamp(Filtering->GetSelectedIndex(),0,4)));
  if(auto* GI=GetGameInstance()) if(auto* Client=GI->GetSubsystem<UACEClientSubsystem>()) for(auto& P:CharacterChecks)Client->SendSetSingleCharacterOption(P.Key,P.Value->IsChecked());
@@ -706,7 +710,7 @@ void UACEVideoSettingsWidget::DefaultsVideo()
  ChangeFieldOfView(GetPreviewFieldOfView());
  ChangeScreenBrightness(ValueSliders[TEXT("ScreenBrightness")]->GetValue());
  ChangeScreenContrast(ValueSliders[TEXT("Contrast")]->GetValue());
- ActiveSoundOnly->SetIsChecked(true); Filtering->SetSelectedIndex(4);
+ BackgroundAudio->SetIsChecked(false); Filtering->SetSelectedIndex(4);
  CameraAlignToSlope->SetIsChecked(true);
  for(UComboBoxString* C:QualityLevels)C->SetSelectedIndex(2);
  DynamicLighting->SetSelectedIndex(2);

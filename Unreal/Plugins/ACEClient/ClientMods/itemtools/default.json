@@ -1,1 +1,1 @@
-{"mode":"give","delay_ms":250,"give_limit":0,"buy_limit":0,"restock":[],"auto_restock":false,"redeem_notes":true,"server_bank":false,"chest_cycles":1,"chest_delay":3,"profile_rules":[],"chest_rules":[],"mule1_rules":[],"mule2_rules":[]}
+{"mode":"give","delay_ms":250,"merge_delay_ms":0,"give_limit":0,"buy_limit":0,"restock":[],"auto_restock":false,"redeem_notes":true,"server_bank":false,"chest_cycles":1,"chest_delay":3,"profile_rules":[],"chest_rules":[],"mule1_rules":[],"mule2_rules":[]}

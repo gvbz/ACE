@@ -79,9 +79,14 @@ J VTSettings(const J& D,TArray<FString>& Issues)
     Out->SetStringField(TEXT("protection_custom"),TEXT("ALL"));Out->SetStringField(TEXT("bane_custom"),TEXT("ALL"));
     Out->SetArrayField(TEXT("weapons"),{});Out->SetArrayField(TEXT("consumables"),{});Out->SetArrayField(TEXT("excluded_buffs"),{});
     Out->SetNumberField(TEXT("radius"),5);Out->SetNumberField(TEXT("approach_range"),0);
+    // vTank attempts doors up to 50 difficulty above current Lockpick by default.
+    Out->SetNumberField(TEXT("door_lockpick_margin"),-50);
     Out->SetNumberField(TEXT("health_threshold"),75);Out->SetNumberField(TEXT("stamina_threshold"),50);Out->SetNumberField(TEXT("mana_threshold"),50);
     Out->SetNumberField(TEXT("idle_health_threshold"),1);Out->SetNumberField(TEXT("idle_stamina_threshold"),1);Out->SetNumberField(TEXT("idle_mana_threshold"),1);
     Out->SetNumberField(TEXT("refresh_seconds"),300);Out->SetNumberField(TEXT("buff_skill_margin"),5);
+    for(const TCHAR* Key:{TEXT("untrained_life_buff_max_character_level"),
+        TEXT("untrained_item_buff_max_character_level"),TEXT("untrained_creature_buff_max_character_level")})
+        Out->SetNumberField(Key,80);
     auto AddDefaultHandler=[&](int Vital,int Stance,const TCHAR* Name,int Max=100)
     {auto H=MakeShared<FJsonObject>();H->SetNumberField(TEXT("vital"),Vital);H->SetNumberField(TEXT("stance"),Stance);H->SetStringField(TEXT("handler"),Name);H->SetNumberField(TEXT("min"),0);H->SetNumberField(TEXT("max"),Max);Handlers.Add(Obj(H));};
     for(int Stance:{1,2})
@@ -99,6 +104,9 @@ J VTSettings(const J& D,TArray<FString>& Issues)
     for(const auto& Entry:D->GetArrayField(TEXT("tables")))
     {
         const auto Table=Entry->AsObject();const FString Name=S(Table,TEXT("name"));
+        // These tables describe vTank's settings editor categories and enum
+        // labels. The actual setting values come from the Settings table.
+        if(Name==TEXT("SettingsCategories")||Name==TEXT("SettingsEnumInfo"))continue;
         for(const auto& Row:VTSettingsRows(Table,Issues))
         {
             if(Name==TEXT("Settings"))

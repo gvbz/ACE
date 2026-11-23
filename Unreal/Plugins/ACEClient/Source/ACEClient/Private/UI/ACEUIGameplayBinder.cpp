@@ -5521,9 +5521,17 @@ bool UACEUIGameplayBinder::TryFinishInventoryDrag(FVector2D CanvasLocalPos)
 	{
 		FACEWorldObject SourceBag;
         const bool HaveSourceBag = Client->GetWorldObject(Guid, SourceBag);
-		if (DragPackSlot != INDEX_NONE || (HaveSourceBag && ((SourceBag.ItemType & ACEItemType::Container) != 0
+		if (DragPackSlot != INDEX_NONE || (HaveSourceBag && (ACEInventoryRules::IsContainer(SourceBag)
+			|| (SourceBag.ItemType & ACEItemType::Container) != 0
             || (SourceBag.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot) != 0)))
 		{
+			FACEWorldObject TargetPack;
+			if(PackGuid && PackGuid!=Client->GetPlayerGuid() && Client->GetWorldObject(PackGuid,TargetPack)
+				&& TargetPack.ContainersCapacity!=0)
+			{
+				if(PackGuid!=Guid)MoveInventoryAmount(Guid,PackGuid,0,Amount);
+				return true;
+			}
 			int32 DestPlacement = 0;
 			for (int32 i = 0; i < PackSlots.Num() && i < PackSlotGuids.Num(); ++i)
 			{
@@ -5574,8 +5582,7 @@ bool UACEUIGameplayBinder::TryFinishInventoryDrag(FVector2D CanvasLocalPos)
 			LastInvClickTime = 0.0;
 			return true;
 		}
-		const int32 Container = SelectedPackGuid != 0 ? SelectedPackGuid
-			: (SourcePack != 0 ? SourcePack : Client->GetPlayerGuid());
+		const int32 Container = SelectedPackGuid != 0 ? SelectedPackGuid : Client->GetPlayerGuid();
 		const int32 InsertSlot = ResolveInventoryDropPlacement(Guid, Amount, Container, DestGuid);
 		const auto FinishLootPut = [&]()
 		{
@@ -5584,8 +5591,8 @@ bool UACEUIGameplayBinder::TryFinishInventoryDrag(FVector2D CanvasLocalPos)
 				PlayLocalPickupMotion(PlayerController);
 			}
 		};
-		if (InsertSlot != INDEX_NONE && !MergeInventoryAmount(Guid, DestGuid, Amount))
-			MoveInventoryAmount(Guid, Container, InsertSlot, Amount);
+		if (!MergeInventoryAmount(Guid, DestGuid, Amount) && InsertSlot != INDEX_NONE)
+			MoveInventoryAmount(Guid, Container, InsertSlot, Amount,false);
 		FinishLootPut();
 		return true;
 	}

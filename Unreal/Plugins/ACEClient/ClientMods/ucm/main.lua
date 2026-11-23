@@ -4,6 +4,7 @@ local targeting_status
 local route_direction=1
 local route_join_pending,route_join_scan=true,nil
 local route_trail,route_walking,route_returning={},false,false
+local route_shortcut,route_position_revision=nil,nil
 local route_teleport,route_revision,blocked_serial=nil,nil,nil
 local route_blocks=0
 local navigation_paused,door_attempts=nil,{}
@@ -115,7 +116,7 @@ local function result(a,status) return {action=a,status=status} end
 local function loot_progress(status) return {status=status,continue_work=true} end
 local function pause_navigation(reason)
  navigation_paused='Navigation paused: '..reason..'. UCM remains active; enable Follow route to retry'
- route_pending=nil;route_trail={};route_returning=false;route_walking=false
+ route_pending=nil;route_trail={};route_returning=false;route_walking=false;route_shortcut=nil
  route_join_pending=true;route_join_scan=nil
  return result('pause_navigation',navigation_paused)
 end
@@ -328,7 +329,10 @@ local function buff_refresh_window(s,p,duration)
  local refresh=math.max(10,p.refresh_seconds or 300)
  -- VT fz/gw: after starting a buff, include near-expiring neighbours for 30s.
  if s.time<buff_recast_until then refresh=refresh+30 end
- return duration and duration>0 and math.min(refresh,duration*.5) or refresh
+ -- Idle maintenance must not top off a short bane halfway through its life
+ -- just because the configured window is longer than the spell itself.
+ local fraction=p.idle_buff_topoff and .1 or .5
+ return duration and duration>0 and math.min(refresh,duration*fraction) or refresh
 end
 local function timed_buff(e)
  -- VT gz.cs sends only positive-duration enchantments to BuffController.
@@ -360,14 +364,22 @@ local function compute_buff(s,p)
  local item_targets=p.item_buff_targets and #p.item_buff_targets>0
  local margin=p.buff_skill_margin or p.skill_margin or 30
  local tiers={[2]=p.life_buff_level or 0,[3]=p.item_buff_level or 0,[4]=p.creature_buff_level or 0}
+ -- Imported limits refer to character level when the magic school is untrained.
+ local untrained_limits={[2]=p.untrained_life_buff_max_character_level,
+  [3]=p.untrained_item_buff_max_character_level,[4]=p.untrained_creature_buff_max_character_level}
+ local school_allowed={}
+ for school=2,4 do
+  local limit=untrained_limits[school]
+  school_allowed[school]=limit==nil or trained[combat_school_skill[school]] or (s.level or 0)<=limit
+ end
  for _,v in ipairs(catalog_groups.buffs) do
-  if item_targets and v.known~=false and v.beneficial and v.school==3 and (v.duration or 0)>0 and (v.skill or 0)>=v.power+margin and buff_tier(v,p) and not excluded[v.category] then
+  if item_targets and school_allowed[3] and v.known~=false and v.beneficial and v.school==3 and (v.duration or 0)>0 and (v.skill or 0)>=v.power+margin and buff_tier(v,p) and not excluded[v.category] then
    if not item_best[v.category] or item_best[v.category].power<v.power then
     if s.time<(unavailable_spells[v.id] or 0) or not catalog_supplied[v.id] then item_blocked[v.category]=true
     else item_best[v.category]=v end
    end
   end
-  if v.known~=false and (v.school~=3 or p.item_buffs_enabled~=false) and (v.self_buff or (v.beneficial and v.school==3 and (v.duration or 0)>0
+  if school_allowed[v.school]~=false and v.known~=false and (v.school~=3 or p.item_buffs_enabled~=false) and (v.self_buff or (v.beneficial and v.school==3 and (v.duration or 0)>0
    and (v.caster_target or band(v.target_type,0x8107)~=0))) then
   local eligible=eligibility[v.category]
   if eligible==nil then
@@ -468,6 +480,10 @@ end
 local buff_plan
 local function next_buff(s,p)
  local keys={'auto_buffs','item_buffs_enabled','buffs','excluded_buffs','excluded_buff_spells','item_buff_targets','buff_items','skill_margin','buff_skill_margin','refresh_seconds','creature_buff_level','life_buff_level','item_buff_level','protection_profile','bane_profile','protection_custom','bane_custom'}
+ keys[#keys+1]='idle_buff_topoff'
+ keys[#keys+1]='untrained_life_buff_max_character_level'
+ keys[#keys+1]='untrained_item_buff_max_character_level'
+ keys[#keys+1]='untrained_creature_buff_max_character_level'
  local same=buff_plan and buff_plan.snapshot==s
  if same then for _,k in ipairs(keys) do if buff_plan.options[k]~=p[k] then same=false;break end end end
  if not same then
@@ -903,7 +919,7 @@ local function meta_action(a,s,p)
  elseif t==3 then for _,c in ipairs(a.children) do local e=meta_action(c,s,p);if e then return e end end
  elseif t==4 then
   meta.route=a.route;meta.route_profile=a.route_profile;point=1;route_direction=1;route_pending=nil;route_join_pending=true;route_join_scan=nil;meta.route_revision=meta.route_revision+1;meta.route_changed=true
-  route_trail={};route_returning=false;route_walking=false
+  route_trail={};route_returning=false;route_walking=false;route_shortcut=nil
  elseif t==5 then
   if #meta.stack>=128 then return 'Meta call stack exceeds 128 entries' end
   meta.stack[#meta.stack+1]=q.ret;meta_state(q.st,s)
@@ -1016,7 +1032,7 @@ local function meta_tick(s,p)
   if not first and p.vt_loaded_kind=='met' then meta={name='Default',fired={},stack={},options=meta.options,queue={},profile_revision=p.vt_revision,route_revision=0};meta_vars={};meta_state('Default',s) end
   if not first and (p.vt_loaded_kind=='nav' or p.vt_loaded_kind=='met') then
    point=1;route_direction=1;route_pending=nil;route_join_pending=true;route_join_scan=nil;meta.route=nil;meta.route_changed=false
-   route_trail={};route_returning=false;route_walking=false
+   route_trail={};route_returning=false;route_walking=false;route_shortcut=nil
   end
   meta.loading=false
   meta.awaiting_load=false
@@ -1590,10 +1606,16 @@ local function fellowship_work(s,p)
 end
 
 local function craft_work(s,p,phase)
- if not p.auto_craft or not activity_ready('crafting') then return end
+ if not (p.auto_craft or p.auto_craft_ammo) then return end
  local c=s.crafting or {}
- if c.pending then return {action='craft',activity='crafting',status='Crafting '..(c.name or 'supplies')} end
- for _,v in ipairs(c.candidates or {}) do if v.phase==phase then return {action='craft',activity='crafting',recipe=v.recipe,status='Preparing '..v.name} end end
+ if c.pending then
+  if activity_ready('crafting') then return {action='craft',activity='crafting',status='Crafting '..(c.name or 'supplies')} end
+  return
+ end
+ if not p.auto_craft then return end
+ for _,v in ipairs(c.candidates or {}) do
+  if v.phase==phase and activity_ready('crafting') then return {action='craft',activity='crafting',recipe=v.recipe,status='Preparing '..v.name} end
+ end
 end
 
 local function tick(s,p)
@@ -1936,8 +1958,8 @@ local function tick(s,p)
   end
   if meta.route_changed then return result(nil,'Loading route geometry') end
   local route=p.route or {};if #route==0 then return result(nil,'Record a route to begin navigation') end
-  -- Return along positions actually traversed during combat/looting. Picking
-  -- the nearest waypoint after a chase can cut across an adjacent room wall.
+  -- Keep the ordered leg and its walked detour until a shortcut is confirmed
+  -- and reached. A nearby point on a later leg could skip a portal or action.
   if route_walking then route_trail={} end
   -- Loot can be directly ahead on the leg already being followed. Once back
   -- on that same segment, continue toward its pending waypoint instead of
@@ -1949,7 +1971,28 @@ local function tick(s,p)
    local dx,dy,dz=bx-ax,by-ay,bz-az;local length=dx*dx+dy*dy+dz*dz
    local t=length>0 and ((x-ax)*dx+(y-ay)*dy+(z-az)*dz)/length or -1
    local radius=math.min(option('waypoint_radius',.8),.8)
-   if t>=0 and t<=1 and (x-ax-t*dx)^2+(y-ay-t*dy)^2+(z-az-t*dz)^2<=radius^2 then route_trail={} end
+   if t>=0 and t<=1 and (x-ax-t*dx)^2+(y-ay-t*dy)^2+(z-az-t*dz)^2<=radius^2 then
+    route_trail={};route_shortcut=nil
+   elseif s.route_shortcuts then
+    route_shortcut=route_shortcut or {}
+    if s.route_shortcut_checked then
+     route_shortcut.checked=s.position
+     route_shortcut.goal=s.route_shortcut
+    end
+    local goal=route_shortcut.goal
+    if goal then
+     if distance(s.position,goal)<=radius then route_trail={};route_shortcut=nil
+     else
+      route_returning=true
+      return {action='move',cell=goal.cell,x=goal.x,y=goal.y,z=goal.z,arrival_radius=radius,status='Rejoining route'}
+     end
+    elseif not route_shortcut.checked or distance(s.position,route_shortcut.checked)>=4 then
+     local anchor=route_trail[1]
+     route_returning=true
+     return {status='Checking route shortcut',continue_work=true,route_shortcut_cell=anchor.cell,
+      route_shortcut_x=anchor.x,route_shortcut_y=anchor.y,route_shortcut_z=anchor.z}
+    end
+   end
   end
   while #route_trail>0 do
    local back=route_trail[#route_trail]
@@ -2321,8 +2364,11 @@ local function tick(s,p)
    or recovery(6,mp,not target and math.max(option('idle_mana_threshold',0),option('mana_threshold',45)) or option('mana_threshold',45))
   if action then return action end
  end
- if recovery_pending and next(recovery_pending) then return result(nil,'Waiting for recovery result') end
- recovery_pending=nil
+ -- The native action gate above still protects an in-flight use or cast.
+ -- Once it opens, an outstanding vital update only holds recovery attempts.
+ -- Keep the receipt record while combat, route and loot decisions proceed.
+ local waiting_for_recovery=recovery_pending and next(recovery_pending)
+ if not waiting_for_recovery then recovery_pending=nil end
  local craft=craft_work(s,p,'critical');if craft then return craft end
  -- Vendor waits never outrank VT's vital recovery. Keep the route at the
  -- vendor until restocking finishes, so a later Close Vendor cannot race Buy.
@@ -2417,6 +2463,9 @@ local function tick(s,p)
  local mana_action=equipment_mana(s,p,inventory,option,assess);if mana_action then return mana_action end
  local function buffs(refresh)
  if health_critical or not activity_ready('buffs') then return end
+ -- Idle applies to ordinary maintenance too, not just the optional top-off
+ -- pass after combat. Ignored/blacklisted monsters still make an area unsafe.
+ if not forced_buff and option('idle_buff_topoff',false) and (nearby_monsters or target) then return end
  if forced_buff or option('buffing',true) then
   -- Consumable buffs require an observed enchantment, not merely UseDone.
   -- Failed uses rotate to the next item instead of consuming a whole stack.
@@ -3024,6 +3073,15 @@ local function tick(s,p)
   end
   return false
  end
+ local bundle_candidates={}
+ if p.auto_craft_ammo then
+  for _,v in ipairs((s.crafting or {}).candidates or {}) do
+   if v.phase=='ammunition' then
+    local list=bundle_candidates[v.ammo_type] or {};bundle_candidates[v.ammo_type]=list;list[#list+1]=v
+   end
+  end
+ end
+ local ammo_minimum=math.max(1,math.min(1000,tonumber(p.craft_ammo_minimum) or 25))
  local function combat_plan(target,target_rule)
   local target_combat=target_rule and target_rule.combat or combat
   local requested=target_rule and target_rule.weapon
@@ -3149,22 +3207,40 @@ local function tick(s,p)
    local key=tostring(v.ammo_type)..':'..tostring(requested or 0)..':'..tostring(base_damage)
    if ammo_cache[key] then return table.unpack(ammo_cache[key]) end
    local best_ammo,best_rank,best_e,unknown
+   local counts={}
+   local function mask_for(a) return a.damage_type==0x10000000 and base_damage or a.damage_type or 0 end
    for _,a in ipairs(ammo_by_kind[v.ammo_type] or {}) do
-    if not equipment_known(a) then unknown=a
-    elseif a.can_wield then
-     -- Prismatic (retail Base bit) inherits the launcher's damage, not the
-     -- monster's preferred element. A neutral bow still fires piercing prisms.
-     local mask=a.damage_type==0x10000000 and base_damage or a.damage_type
-     if not requested or requested==0 or band(mask,requested)~=0 then
-      local e=requested and requested~=0 and requested or preferred_damage(target,mask)
-      local rank={element_preference(target,e),(a.damage or 0)*resistance(target,e),a.equipped and 1 or 0}
-      if better(rank,best_rank) then best_ammo=a;best_rank=rank;best_e=e end
+    if a.ammo_available~=false and (a.count or 1)>0 then
+     if not equipment_known(a) then unknown=a
+     elseif a.can_wield then
+      -- Prismatic ammunition inherits the launcher's damage. A neutral bow
+      -- still fires piercing prisms against an elemental weakness.
+      local mask=mask_for(a)
+      counts[mask]=(counts[mask] or 0)+(a.count or 1)
+      if not requested or band(mask,requested)~=0 then
+       local e=requested or preferred_damage(target,mask)
+       local rank={element_preference(target,e),(a.damage or 0)*resistance(target,e),a.equipped and 1 or 0}
+       if better(rank,best_rank) then best_ammo=a;best_rank=rank;best_e=e end
+      end
      end
     end
    end
-   ammo_cache[key]={best_ammo or false,best_e or 0,unknown or false}
-   return best_ammo,best_e,unknown
+   local craft,craft_rank,craft_e
+   if not unknown then for _,recipe in ipairs(bundle_candidates[v.ammo_type] or {}) do
+    local mask=mask_for(recipe)
+    local desired=requested or best_e
+    local e=desired or preferred_damage(target,mask)
+    if e~=0 and band(mask,e)~=0 then
+     local count=0
+     for damage,total in pairs(counts) do if band(damage,e)~=0 then count=count+total end end
+     local rank={element_preference(target,e),resistance(target,e),recipe.quality or 0}
+     if count<ammo_minimum and better(rank,craft_rank) then craft,craft_rank,craft_e=recipe,rank,e end
+    end
+   end end
+   ammo_cache[key]={best_ammo or false,best_e or 0,unknown or false,craft or false,craft_e or 0}
+   return table.unpack(ammo_cache[key])
   end
+  local planned_craft,fallback_craft,fallback_rank
   for _,v in ipairs(combat_inventory) do
    local melee=band(v.type,1)~=0;local missile=band(v.type,0x100)~=0 and band(v.slots,0x800000)==0;local caster=band(v.type,0x8000)~=0
    local allowed=explicit and v.id==explicit.id or (not explicit or strict_damage) and weapon_allowed(v)
@@ -3189,7 +3265,7 @@ local function tick(s,p)
     local e=strict_damage and damage_override or rend~=0 and rend or preferred_damage(target,damage)
     if not strict_damage and not caster and not launcher and band(damage,e)==0 then e=preferred_damage(target,damage) end
     local spells=initial_spells
-    local ammo,unknown
+    local ammo,unknown,craft,craft_e
     if caster then
      if not strict_damage and rend==0 and damage==0 then e=casting_attack and element(casting_attack) or 0 end
      -- A deliberately selected spell remains authoritative. Otherwise an
@@ -3202,7 +3278,7 @@ local function tick(s,p)
      end
     elseif launcher then
      local requested=strict_damage and damage_override or rend~=0 and rend or nil
-     ammo,e,unknown=ammunition(v,requested)
+     ammo,e,unknown,craft,craft_e=ammunition(v,requested)
      unassessed_ammo=unknown or unassessed_ammo
     end
     local resist=resistance(target,e)
@@ -3224,7 +3300,13 @@ local function tick(s,p)
     local requested=explicit and v.id==explicit.id or not explicit and melee and main_hand>0 and v.id==main_hand or false
     local rank={requested and 1 or 0,tier(v,e,rend,bonus,launcher,caster),element_preference(target,e),bonus,skill,value,
      v.equipped and band(v.equipped_slot,0x200000)==0 and 1 or 0}
-    if value>=0 and better(rank,best) then weapon=v;best=rank;best_spells=spells;best_ammo=ammo;best_element=e end
+    if value>=0 and better(rank,best) then
+     weapon=v;best=rank;best_spells=spells;best_ammo=ammo;best_element=e;planned_craft=craft
+    elseif value<0 and craft then
+     local craft_rank={requested and 1 or 0,tier(v,craft_e,rend,bonus,true,false),
+      element_preference(target,craft_e),bonus,skill,craft.quality or 0,v.equipped and 1 or 0}
+     if better(craft_rank,fallback_rank) then fallback_craft,fallback_rank=craft,craft_rank end
+    end
    end
   end
   if best_spells then attack=best_spells.attack;dot_attack=best_spells.dot;casting_attack=best_spells.casting end
@@ -3234,6 +3316,7 @@ local function tick(s,p)
   local confirmed=effect_index[target.id] or {}
   local needs=missing_debuff(target,categories)
   return {attack=attack,dot_only=not attack and dot_attack~=nil,missing_attack=usable_caster and not casting_attack and (target_combat=='auto' or target_combat=='magic'),weapon=weapon,unassessed=unassessed,unassessed_ammo=unassessed_ammo,mode=mode,categories=categories,confirmed=confirmed,needs=needs,damage=damage_override,attack_element=best_element,ammo=best_ammo,priority=tier,
+   craft_ammo=(weapon and planned_craft) or (not weapon and fallback_craft),
    blocked_reason=blocked and ((blocked.name or tostring(blocked.id))..': '..blocked_reason) or nil}
  end
  -- Keep an in-flight debuff on its recipient until the server answers. A new
@@ -3285,6 +3368,10 @@ local function tick(s,p)
   if not target.identified and not target.appraisal_recent and s.targets and s.time>=(until_time['id'..target.id] or 0) then
    until_time['id'..target.id]=s.time+30;return {action='identify',item=target.id,status='Assessing '..target.name,continue_work=true} end
   local plan=combat_plan(target,target_rule)
+  if plan.craft_ammo and monster_damage_attacks(target_rule or {},p) and activity_ready('crafting') then
+   return {action='craft',activity='crafting',phase='ammunition',recipe=plan.craft_ammo.recipe,
+    status='Preparing '..plan.craft_ammo.name,continue_work=true}
+  end
   local attack,weapon,mode,damage_override=plan.attack,plan.weapon,plan.mode,plan.damage
   local categories,confirmed=plan.categories,plan.confirmed
   local missing_attack_status='No usable attack spell; check learned spells, skill buffer, components, selected element and enabled Void curses/rings'
@@ -3532,7 +3619,7 @@ local function tick(s,p)
  if target and option('combat','off')~='off' and activity_pauses.combat and activity_pause_reasons.combat then
   return result(nil,'Combat paused: '..activity_pause_reasons.combat..'. Retrying in '..math.max(1,math.ceil(activity_pauses.combat-s.time))..' seconds')
  end
- return result(nil,navigation_paused or (meta.pending and 'Waiting for meta interaction') or (route_pending and (route_pending.kind=='pause' and 'Pausing on route' or 'Waiting for route action')) or (health_critical and 'Health critical; recovery unavailable, UCM remains active') or (loot_full and 'Looting paused: inventory full; other activities remain active') or 'Ready - waiting for enabled activities')
+ return result(nil,navigation_paused or (meta.pending and 'Waiting for meta interaction') or (route_pending and (route_pending.kind=='pause' and 'Pausing on route' or 'Waiting for route action')) or (waiting_for_recovery and 'Waiting for recovery result') or (health_critical and 'Health critical; recovery unavailable, UCM remains active') or (loot_full and 'Looting paused: inventory full; other activities remain active') or 'Ready - waiting for enabled activities')
 end
 
 local function pause_activity(s,name,reason)
@@ -3693,9 +3780,17 @@ local function run(s,p)
   end
  else follow_path={};follow_target=nil end
  local route=effective.route or {}
+ local edit_revision=p.route_position_revision or 0
+ if route_position_revision~=edit_revision then
+  if route_position_revision~=nil then
+   route_shortcut=nil;route_join_scan=nil;route_blocks=0
+   if meta.route and p.route_position_sync then meta.route.route=p.route;effective.route=p.route;route=p.route or {} end
+  end
+  route_position_revision=edit_revision
+ end
  local route_changed=route_teleport~=s.teleport_sequence or route_revision~=(effective.vt_revision or 0)
  if not effective.navigation or route_changed then
-  route_trail={};route_returning=false;route_walking=false
+  route_trail={};route_returning=false;route_walking=false;route_shortcut=nil
  end
  if route_teleport~=s.teleport_sequence or route_revision~=(effective.vt_revision or 0) then route_blocks=0 end
  route_teleport=s.teleport_sequence;route_revision=effective.vt_revision or 0
@@ -3704,6 +3799,7 @@ local function run(s,p)
   -- Keep that departure position too; join-pending must not erase a chase.
   if route_walking or (#route_trail==0 and not route_returning) then
    route_trail={{cell=s.position.cell,x=s.position.x,y=s.position.y,z=s.position.z}}
+   route_shortcut=nil
   elseif not route_returning and #route_trail>0 then
    -- A delayed combat/loot acknowledgment can span more than 15m of ordinary
    -- travel. Only an actual teleport/revision invalidates the return trail.
@@ -3739,7 +3835,9 @@ local function run(s,p)
   if effective.navigation then
    route_blocks=route_blocks+1
    if route_blocks>2 then return pause_navigation('route obstructed after two recovery attempts') end
-   if route_returning then return pause_navigation('return path is blocked') end
+   if route_shortcut and route_shortcut.goal then
+    route_shortcut.goal=nil;route_shortcut.checked=s.position
+   elseif route_returning then return pause_navigation('return path is blocked') end
   end
   if locked_target then monster_blacklist[locked_target]=s.time+30;locked_target=nil end
   if #route_trail==0 then route_join_pending=true;route_join_scan=nil end
@@ -3751,15 +3849,21 @@ local function run(s,p)
  if not intent and meta.route_changed then intent=result(nil,'Navigation route updated') end
  if intent then
   intent.services_profile={}
-  for _,key in ipairs({'auto_craft','auto_fellowship','craft_confirm','assist_items','buff_items','craft_targets','craft_health_kits','craft_health_food','craft_stamina_kits','craft_stamina_food','craft_mana_kits','craft_mana_food'}) do if effective.auto_craft then intent.services_profile[key]=effective[key] end end
+  for _,key in ipairs({'craft_confirm','craft_ammo_minimum','assist_items','buff_items','craft_targets','craft_health_kits','craft_health_food','craft_stamina_kits','craft_stamina_food','craft_mana_kits','craft_mana_food'}) do
+   if effective.auto_craft or effective.auto_craft_ammo then intent.services_profile[key]=effective[key] end
+  end
   intent.services_profile.random_helper_buffs=effective.random_helper_buffs==true
   intent.services_profile.grenade_catalog=effective.grenade_catalog
   intent.services_profile.assist_items=effective.assist_items
-  intent.services_profile.auto_craft=effective.auto_craft==true;intent.services_profile.auto_fellowship=effective.auto_fellowship==true
+  intent.services_profile.auto_craft=effective.auto_craft==true;intent.services_profile.auto_craft_ammo=effective.auto_craft_ammo==true
+  intent.services_profile.auto_fellowship=effective.auto_fellowship==true
   if fellow_manager then intent.fellowship_status=intent.fellowship_status or fellow_manager.status end
   intent.targeting_status=targeting_status
   route_walking=intent.status and (intent.status:sub(1,9)=='Waypoint ' or intent.status=='Route complete') or false
-  if intent.status~='Returning to route' then route_returning=false end
+  if intent.status~='Returning to route' and intent.status~='Rejoining route' and intent.status~='Checking route shortcut' then
+   if route_shortcut and route_shortcut.goal then route_shortcut=nil end
+   route_returning=false
+  end
   if intent.action=='cast' then intent.fast_cast=effective.fast_cast_buffs~=false end
   if intent.action=='cast' or intent.action=='cast_item' then intent.cast_jiggle=effective.cast_jiggle==true;intent.jump_out_wand=effective.jump_out_wand==true end
   intent.helper_updates=effective.recovery~=false and ((effective.helper_health_threshold or 0)>0 or (effective.helper_stamina_threshold or 0)>0 or (effective.helper_mana_threshold or 0)>0)
@@ -3793,7 +3897,7 @@ return function(s,p)
   if meta.entered then meta.entered=s.time end
   entered=s.time;locked_target=nil;route_blocks=0;blocked_serial=nil
   route_join_pending=true;route_join_scan=nil
-  route_trail={};route_returning=false;route_walking=false
+  route_trail={};route_returning=false;route_walking=false;route_shortcut=nil
   local loads={}
   if meta.profile_load and (p.vt_revision or 0)==meta.profile_revision then loads[#loads+1]=meta.profile_load end
   for _,command in ipairs(meta.queue) do if command.op=='load' then loads[#loads+1]=command end end
@@ -3828,7 +3932,7 @@ return function(s,p)
    intent=pause_activity(s,intent.activity,intent.status)
    -- Isolating a failed combat/recovery action must not discard a meta's
    -- already-decided route update (especially an empty route) or live status.
-   for _,key in ipairs({'runtime_route','runtime_route_profile','runtime_loop_route','runtime_reverse_route','meta_state','meta_status','route_point','route_join_pending','route_track_movement','targeting_status','helper_updates'}) do
+   for _,key in ipairs({'runtime_route','runtime_route_profile','runtime_loop_route','runtime_reverse_route','meta_state','meta_status','route_point','route_join_pending','route_track_movement','targeting_status','helper_updates','services_profile'}) do
     if original[key]~=nil then intent[key]=original[key] end
    end
   end

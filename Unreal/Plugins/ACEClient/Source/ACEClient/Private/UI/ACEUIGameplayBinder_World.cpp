@@ -44,6 +44,25 @@ namespace
 		return Pos.IsValid() && (static_cast<uint32>(Pos.CellId) & 0xFFFF) < 0x100;
 	}
 
+	bool HouseMapLocation(const FACEHouseInfo& House, FIntPoint& Cell)
+	{
+		// gmHouseUI::GetHouseLocation resolves Position::get_outside_cell_id
+		// before displaying coordinates. A landscape house can be in a building
+		// cell; rejecting all interiors hides both its location and its map pin.
+		const auto& Pos = House.Position;
+		const uint32 Local = static_cast<uint32>(Pos.CellId) & 0xFFFF;
+		if (!House.bOwned || House.HouseType == 4 || !Pos.IsValid()
+			|| !((Local >= 1 && Local <= 64) || (Local >= 0x100 && Local <= 0xFFFD) || Local == 0xFFFF)
+			|| !FMath::IsFinite(Pos.Location.X) || !FMath::IsFinite(Pos.Location.Y)) return false;
+		FACEPosition Outside = Pos;
+		if (FMath::Abs(Outside.Location.X) < 0.0002) Outside.Location.X = 0;
+		if (FMath::Abs(Outside.Location.Y) < 0.0002) Outside.Location.Y = 0;
+		const FVector2D Global = GlobalMetersFrom(Outside);
+		if (Global.X < 0 || Global.Y < 0 || Global.X >= DerethExtentMeters || Global.Y >= DerethExtentMeters) return false;
+		Cell = FIntPoint(FMath::FloorToInt(Global.X / 24.), FMath::FloorToInt(Global.Y / 24.));
+		return true;
+	}
+
 	FString FormatUnixDate(int64 UnixSeconds)
 	{
 		if (UnixSeconds <= 0)
@@ -257,9 +276,10 @@ void UACEUIGameplayBinder::RefreshWorldMapPage(const TSharedPtr<FACEUIElement>& 
 	if (TSharedPtr<FACEUIElement> Pin = Manager->FindElementUnder(TEXT("MapPage"),
 		TEXT("Map_HousePosition_Icon")))
 	{
-		if (HouseInfo.bOwned && IsOutdoorCell(HouseInfo.Position))
+		FIntPoint HouseCell;
+		if (HouseMapLocation(HouseInfo, HouseCell))
 		{
-			const FVector2D G = GlobalMetersFrom(HouseInfo.Position);
+			const FVector2D G((HouseCell.X + .5) * 24., (HouseCell.Y + .5) * 24.);
 			Pin->bVisible = true;
 			Pin->X = FMath::RoundToInt((6.f + G.X / DerethExtentMeters * 242.f) * Map->Width / 257.f) - Pin->Width / 2;
 			Pin->Y = FMath::RoundToInt((8.f + (1.f - G.Y / DerethExtentMeters) * 251.f) * Map->Height / 267.f) - Pin->Height / 2;
@@ -328,8 +348,15 @@ void UACEUIGameplayBinder::RefreshWorldHousePage(const TSharedPtr<FACEUIElement>
 			[](const FACEHousePayment& Cost) { return Cost.Paid < Cost.Required; });
 		Add(TEXT("This maintenance period ends: ") + FormatUnixDate(Info.RentTime + Interval));
 		Add(TEXT("Maintenance is next due: ") + FormatUnixDate(Info.RentTime + Interval * (Paid ? 2 : 1)));
-		const FString Coords = FormatMapCoords(Info.Position);
-		if (Info.HouseType != 4 && !Coords.IsEmpty()) Add(TEXT("Location: ") + Coords);
+		FIntPoint HouseCell;
+		if (HouseMapLocation(Info, HouseCell))
+		{
+			// Retail displays the resolved outdoor cell, not the player's exact
+			// floating-point map coordinates (which use a different rounding rule).
+			Add(FString::Printf(TEXT("Location: %.1f%s, %.1f%s"),
+				FMath::Abs((HouseCell.Y - 1024) * .1 + .5), HouseCell.Y < 1024 ? TEXT("S") : TEXT("N"),
+				FMath::Abs((HouseCell.X - 1024) * .1 + .5), HouseCell.X < 1024 ? TEXT("W") : TEXT("E")));
+		}
 		Add(Paid ? TEXT("The maintenance has already been paid for this period. You may not prepay next period's maintenance.")
 			: FString::Printf(TEXT("Warning!  You have not paid your maintenance costs for the last %d day maintenance period.  Please pay these costs by this deadline or you will lose your house, and all your items within it."), Info.HouseType == 4 ? 90 : 30),
 			Paid ? FLinearColor::Green : FLinearColor::Yellow);

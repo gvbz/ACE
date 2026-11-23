@@ -63,6 +63,7 @@ struct ACECLIENT_API FACEDecodedObject
 	uint32 CurrentWieldedLocation = 0; // ACE.Entity.Enum.EquipMask
 	uint32 ValidLocations = 0;         // ACE.Entity.Enum.EquipMask
 	int32 ClothingPriority = 0;
+	bool bHasClothingPriority = false;
 	int32 PhysicsState = 0;
 	float UseRadius = 0.6f;
 	/** PublicWeenieDesc AmmoType flags (Arrow/Bolt/Atlatl). */

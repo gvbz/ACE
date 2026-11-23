@@ -215,7 +215,33 @@ J VTCommand(const FString& Source,TArray<FString>& Issues)
             Out->SetStringField(TEXT("op"),TEXT("option"));Out->SetStringField(TEXT("key"),Key==TEXT("enablecombat")?TEXT("combat"):Bools[Key]);
             if(Key==TEXT("enablecombat"))Out->SetStringField(TEXT("value"),Value==TEXT("true")?TEXT("auto"):TEXT("off"));else Out->SetBoolField(TEXT("value"),Value==TEXT("true"));return Out;
         }
-        const TMap<FString,FString> Numbers={{TEXT("attackdistance"),TEXT("radius")},{TEXT("approachdistance"),TEXT("approach_range")},{TEXT("navclosestoprange"),TEXT("waypoint_radius")},{TEXT("rebufftimeremainingseconds"),TEXT("refresh_seconds")},{TEXT("defaultmeleeattackheight"),TEXT("height")},{TEXT("recharge-norm-mana"),TEXT("mana_threshold")},{TEXT("recharge-norm-hitp"),TEXT("health_threshold")},{TEXT("recharge-norm-stam"),TEXT("stamina_threshold")},{TEXT("dooropenrange"),TEXT("door_range")},{TEXT("doorlockpickdiffexcessthreshold"),TEXT("door_lockpick_margin")}};
+        if(Key==TEXT("doorlockpickdiffexcessthreshold"))
+        {
+            int32 Margin=0;
+            if(LexTryParseString(Margin,*Value))
+            {
+                Out->SetStringField(TEXT("op"),TEXT("option"));
+                Out->SetStringField(TEXT("key"),TEXT("door_lockpick_margin"));
+                Out->SetNumberField(TEXT("value"),Margin);
+                return Out;
+            }
+        }
+        const TMap<FString,FString> UntrainedBuffLimits={
+            {TEXT("buffwithuntrained-life"),TEXT("untrained_life_buff_max_character_level")},
+            {TEXT("buffwithuntrained-item"),TEXT("untrained_item_buff_max_character_level")},
+            {TEXT("buffwithuntrained-creature"),TEXT("untrained_creature_buff_max_character_level")}};
+        if(const FString* Setting=UntrainedBuffLimits.Find(Key))
+        {
+            int32 Level=0;
+            if(LexTryParseString(Level,*Value)&&Level>=0)
+            {
+                Out->SetStringField(TEXT("op"),TEXT("option"));
+                Out->SetStringField(TEXT("key"),*Setting);
+                Out->SetNumberField(TEXT("value"),Level);
+                return Out;
+            }
+        }
+        const TMap<FString,FString> Numbers={{TEXT("attackdistance"),TEXT("radius")},{TEXT("approachdistance"),TEXT("approach_range")},{TEXT("navclosestoprange"),TEXT("waypoint_radius")},{TEXT("rebufftimeremainingseconds"),TEXT("refresh_seconds")},{TEXT("defaultmeleeattackheight"),TEXT("height")},{TEXT("recharge-norm-mana"),TEXT("mana_threshold")},{TEXT("recharge-norm-hitp"),TEXT("health_threshold")},{TEXT("recharge-norm-stam"),TEXT("stamina_threshold")},{TEXT("dooropenrange"),TEXT("door_range")}};
         double Number=0;
         if(Numbers.Contains(Key)&&LexTryParseString(Number,*Value)&&FMath::IsFinite(Number)&&Number>=0)
         {

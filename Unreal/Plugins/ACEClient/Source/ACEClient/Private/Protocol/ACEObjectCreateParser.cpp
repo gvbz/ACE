@@ -491,7 +491,7 @@ bool FACEObjectCreateParser::ParseWeenieHeader(FACEBinaryReader& Reader, FACEDec
 			// Clothing/armor/cloak and unloaded ammo keep ParentLocation.None (0).
 		}
 	}
-	if (WeenieFlags & Priority) { if (!Need(4)) return false; Out.ClothingPriority = Reader.ReadUInt32(); }
+	if (WeenieFlags & Priority) { if (!Need(4)) return false; Out.ClothingPriority = Reader.ReadUInt32(); Out.bHasClothingPriority = true; }
 	if (WeenieFlags & RadarBlipColor)
 	{
 		if (!Need(1)) return false;

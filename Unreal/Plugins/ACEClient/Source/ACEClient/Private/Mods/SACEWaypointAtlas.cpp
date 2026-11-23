@@ -5,6 +5,7 @@
 #include "Async/Async.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Views/SListView.h"
@@ -16,6 +17,66 @@ FString Describe(const FACEWaypointLandmark& Location)
 {
     return FString::Printf(TEXT("%s  ·  %s  ·  %s"),*Location.Name,*Location.Type,*ACEWaypoint::Format(Location.Coordinates));
 }
+
+class SWaypointRoute : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SWaypointRoute){} SLATE_ARGUMENT(UACEPluginSubsystem*,Host) SLATE_END_ARGS()
+    void Construct(const FArguments& Args)
+    {
+        Host=Args._Host;Style=FACEPluginStyle::Use(Args._Host,TEXT("waypoint.route"));
+        SetTag(TEXT("Waypoint.RoutePanel"));
+        ChildSlot[SNew(SBorder).BorderImage(&Style->Background).Padding(10)
+            [SNew(SVerticalBox)
+                +SVerticalBox::Slot().AutoHeight()[SNew(SACEPluginText).Tag(TEXT("Waypoint.RouteTitle"))
+                    .Font(FACEPluginStyle::NativeFont("Bold",16)).AutoWrapText(true).Text_Lambda([this]{return FText::FromString(Title);})]
+                +SVerticalBox::Slot().AutoHeight().Padding(0,4)[SNew(SACEPluginText).Tag(TEXT("Waypoint.RouteStatus"))
+                    .Font(FACEPluginStyle::NativeFont("Regular",13)).AutoWrapText(true).Text_Lambda([this]{return FText::FromString(Status);})]
+                +SVerticalBox::Slot().FillHeight(1)[SAssignNew(Scroll,SScrollBox)+SScrollBox::Slot()[SAssignNew(Steps,SVerticalBox)]]]];
+        RefreshRoute();
+    }
+    virtual void Tick(const FGeometry& Geometry,double Time,float Delta)override
+    {
+        SCompoundWidget::Tick(Geometry,Time,Delta);
+        if(Host.IsValid()&&Revision!=Host->WaypointItineraryRevision)RefreshRoute();
+    }
+private:
+    TWeakObjectPtr<UACEPluginSubsystem> Host;
+    TSharedPtr<FACEPluginStyle> Style;
+    TSharedPtr<SVerticalBox> Steps;
+    TSharedPtr<SScrollBox> Scroll;
+    FString Title,Status;
+    uint64 Revision=0;
+    void RefreshRoute()
+    {
+        Steps->ClearChildren();Scroll->ScrollToStart();
+        if(!Host.IsValid())return;
+        Revision=Host->WaypointItineraryRevision;
+        const auto& Route=Host->WaypointItinerary;
+        Title=Route.IsEmpty()?TEXT("No active route"):TEXT("Route to ")+Route.Last().Name;
+        Status=Route.IsEmpty()?TEXT("Use Find route in Waypoint to choose a destination.")
+            :TEXT("Click a step to point the arrow. Travel and use portals yourself.");
+        for(int32 Index=0;Index<Route.Num();++Index)
+        {
+            const auto& Step=Route[Index];
+            FString Label=FString::Printf(TEXT("%d. %s %s at %s"),Index+1,Step.TravelExit?TEXT("Use"):TEXT("Reach"),*Step.Name,*ACEWaypoint::Format(Step.Coordinates));
+            if(Step.TravelExit)Label+=TEXT(" to ")+ACEWaypoint::Format(Step.TravelExit.GetValue());
+            Steps->AddSlot().AutoHeight().Padding(0,2)[SNew(SACEPluginButton).Tag(FName(*FString::Printf(TEXT("Waypoint.RouteStep.%d"),Index)))
+                .ButtonStyle(&Style->Button).ContentPadding(FMargin(FACEPluginStyle::ButtonPadding)).IsFocusable(false)
+                .IsEnabled_Lambda([H=Host]{return H.IsValid()&&H->IsWaypointEnabled();})
+                .OnClicked_Lambda([this,Index,ExpectedRevision=Revision]
+                {
+                    // A hidden window can receive a new route before its next
+                    // Slate tick. Never navigate using an obsolete step button.
+                    if(!Host.IsValid()||!Host->IsWaypointEnabled()||Host->WaypointItineraryRevision!=ExpectedRevision
+                        ||!Host->WaypointItinerary.IsValidIndex(Index))return FReply::Handled();
+                    const auto& Current=Host->WaypointItinerary[Index];Host->SetWaypoint(Current.Coordinates);
+                    Status=TEXT("Arrow set to ")+Current.Name+TEXT(" at ")+ACEWaypoint::Format(Current.Coordinates);
+                    return FReply::Handled();
+                })[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",16)).AutoWrapText(true).Text(FText::FromString(Label))]];
+        }
+    }
+};
 
 class SWaypointAtlas : public SCompoundWidget
 {
@@ -33,27 +94,33 @@ public:
         Body->AddSlot().AutoHeight()[SNew(SHorizontalBox)
             +SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)[SNew(SACEPluginText).Text(FText::FromString(TEXT("Atlas locations"))).Font(FACEPluginStyle::NativeFont("Bold",18))]
             +SHorizontalBox::Slot().AutoWidth()[Button(TEXT("Back"),Args._Back)]];
-        Body->AddSlot().AutoHeight().Padding(0,4)[SNew(SACEPluginText).Tag(TEXT("Waypoint.AtlasStatus")).AutoWrapText(true).Text_Lambda([this]{return FText::FromString(Status);})];
+        Body->AddSlot().AutoHeight().Padding(0,4)[SNew(SACEPluginText).Tag(TEXT("Waypoint.AtlasStatus")).Font(FACEPluginStyle::NativeFont("Regular",13)).AutoWrapText(true).Text_Lambda([this]{return FText::FromString(Status);})];
         Body->AddSlot().AutoHeight()[SNew(SACEPluginEditableTextBox).Tag(TEXT("Waypoint.AtlasSearch")).Style(&Style->Edit).HintText(FText::FromString(TEXT("Search by name or type")))
             .OnTextChanged_Lambda([this](const FText& Value){Filter=Value.ToString().TrimStartAndEnd();FilterRows();})];
-        Body->AddSlot().AutoHeight().Padding(0,3)[SNew(SACEPluginText).Text_Lambda([this]
+        Body->AddSlot().AutoHeight().Padding(0,3)[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",13)).Text_Lambda([this]
             {return FText::FromString(FString::Printf(TEXT("%d of %d locations"),Rows.Num(),Locations.Num()));})];
+        Body->AddSlot().AutoHeight()[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",13)).AutoWrapText(true)
+            .Text(FText::FromString(TEXT("Select a location and choose Point arrow or Find route. Double-click a result to point the arrow.")))];
         Body->AddSlot().FillHeight(1)[SAssignNew(List,SListView<FLocation>).Tag(TEXT("Waypoint.AtlasResults")).ListItemsSource(&Rows).SelectionMode(ESelectionMode::Single)
             .OnSelectionChanged_Lambda([this](FLocation Value,ESelectInfo::Type){Selected=Value;CancelSearch();})
+            .OnMouseButtonDoubleClick_Lambda([this](FLocation Value){Selected=Value;PointArrow();})
             .OnGenerateRow_Lambda([Style](FLocation Value,const TSharedRef<STableViewBase>& Owner)
-            {return SNew(STableRow<FLocation>,Owner).Style(&Style->ComboRow).Padding(FMargin(4,2))
-                [SNew(SACEPluginText).Text(FText::FromString(Describe(*Value))).AutoWrapText(true)];})];
+            {return SNew(STableRow<FLocation>,Owner).Style(&Style->ComboRow).Padding(FMargin(4,3))
+                [SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",15)).Text(FText::FromString(Describe(*Value))).AutoWrapText(true)];})];
         auto Actions=SNew(SHorizontalBox).IsEnabled_Lambda([this]{return Selected.IsValid()&&Host.IsValid()&&Host->IsWaypointEnabled();});
-        Actions->AddSlot().AutoWidth()[Button(TEXT("Point arrow"),FSimpleDelegate::CreateLambda([this]
-        {
-            if(!Selected||!Host.IsValid())return;
-            CancelSearch();
-            Host->SetWaypoint(Selected->Coordinates);
-            Status=TEXT("Arrow set to ")+Selected->Name+TEXT(" at ")+ACEWaypoint::Format(Selected->Coordinates);
-        }))];
-        Actions->AddSlot().AutoWidth().Padding(4,0)[Button(TEXT("Find route"),FSimpleDelegate::CreateSP(this,&SWaypointAtlas::Plan))];
+        Actions->AddSlot().AutoWidth()[Button(TEXT("Point arrow"),FSimpleDelegate::CreateSP(this,&SWaypointAtlas::PointArrow))];
+        auto FindRoute=Button(TEXT("Find route"),FSimpleDelegate::CreateSP(this,&SWaypointAtlas::Plan));
+        FindRoute->SetTag(TEXT("Waypoint.FindRoute"));
+        Actions->AddSlot().AutoWidth().Padding(4,0)[FindRoute];
         Body->AddSlot().AutoHeight().Padding(0,4)[Actions];
-        Body->AddSlot().AutoHeight().MaxHeight(160)[SNew(SScrollBox)+SScrollBox::Slot()[SAssignNew(Directions,SVerticalBox)]];
+        auto ShowRoute=Button(TEXT("Show route"),FSimpleDelegate::CreateLambda([H=Host]{if(H.IsValid())H->OpenPluginWindow(TEXT("waypoint.route"));}));
+        ShowRoute->SetTag(TEXT("Waypoint.ShowRoute"));
+        ShowRoute->SetEnabled(TAttribute<bool>::CreateLambda([H=Host]{return H.IsValid()&&H->IsWaypointEnabled()&&!H->WaypointItinerary.IsEmpty();}));
+        Body->AddSlot().AutoHeight().HAlign(HAlign_Left)[ShowRoute];
+        // Keep an inline view for embedded/VR surfaces that have no desktop dock.
+        Body->AddSlot().AutoHeight()[SNew(SBox).HeightOverride(160)
+            .Visibility_Lambda([H=Host]{return H.IsValid()&&!H->WaypointItinerary.IsEmpty()?EVisibility::Visible:EVisibility::Collapsed;})
+            [Host->MakeWaypointRoutePanel()]];
         ChildSlot[SNew(SBorder).BorderImage(&Style->Background).Padding(10)[Body]];
         RefreshAtlas();
     }
@@ -69,15 +136,14 @@ private:
     FLocation Selected;
     FString Filter,Status;
     TSharedPtr<SListView<FLocation>> List;
-    TSharedPtr<SVerticalBox> Directions;
     TSharedPtr<TAtomic<bool>> Cancel;
     uint64 Revision=0;
-    static TSharedRef<SButton> Button(const FString& Label,FSimpleDelegate Action)
+    static TSharedRef<SButton> Button(const FString& Label,FSimpleDelegate Action,bool Wrap=false)
     {
         return SNew(SACEPluginButton).ButtonStyle(&FACEPluginStyle::Current()->Button)
-            .ContentPadding(FMargin(FACEPluginStyle::CompactButtonPadding)).IsFocusable(false)
+            .ContentPadding(FMargin(FACEPluginStyle::ButtonPadding)).IsFocusable(false)
             .OnClicked_Lambda([Action]{Action.ExecuteIfBound();return FReply::Handled();})
-            [SNew(SACEPluginText).AutoWrapText(true).Text(FText::FromString(Label))];
+            [SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",16)).AutoWrapText(Wrap).Text(FText::FromString(Label))];
     }
     void RefreshAtlas()
     {
@@ -92,10 +158,10 @@ private:
         });
         Revision=Host->WaypointLocationsRevision;
         if(Locations.IsEmpty())
-            Status=TEXT("No locations imported. Select Back, use Browse locations to choose a GoArrow or CoD XML file, then choose Import locations.");
+            Status=TEXT("No locations imported. Select Back, use Browse XML file in Waypoint settings to choose a GoArrow or CoD XML file, then choose Import locations.");
         else if(!Host->bWaypointAtlasHasRoutingData)
             Status=TEXT("Reimport your GoArrow or CoD XML file to include portal exits in routes.");
-        FilterRows();ShowDirections();
+        FilterRows();
     }
     void FilterRows()
     {
@@ -104,29 +170,16 @@ private:
             if(Filter.IsEmpty()||Place->Name.Contains(Filter)||Place->Type.Contains(Filter))Rows.Add(Place);
         List->RequestListRefresh();List->ScrollToTop();
     }
-    void ShowDirections()
-    {
-        Directions->ClearChildren();
-        const auto& Steps=Host->WaypointItinerary;
-        if(Steps.IsEmpty())return;
-        Directions->AddSlot().AutoHeight()[SNew(SACEPluginText).AutoWrapText(true)
-            .Text(FText::FromString(TEXT("Route to ")+Steps.Last().Name+TEXT(" · Select a step to point the arrow")))];
-        for(int32 I=0;I<Steps.Num();++I)
-        {
-            const auto& Step=Steps[I];
-            FString Label=FString::Printf(TEXT("%d. %s %s at %s"),I+1,Step.TravelExit?TEXT("Use"):TEXT("Reach"),*Step.Name,*ACEWaypoint::Format(Step.Coordinates));
-            if(Step.TravelExit)Label+=TEXT(" → ")+ACEWaypoint::Format(Step.TravelExit.GetValue());
-            Directions->AddSlot().AutoHeight()[Button(Label,FSimpleDelegate::CreateLambda([this,Step]
-            {
-                if(!Host.IsValid()||!Host->IsWaypointEnabled())return;
-                CancelSearch();Host->SetWaypoint(Step.Coordinates);
-                Status=TEXT("Arrow set to ")+Step.Name+TEXT(" at ")+ACEWaypoint::Format(Step.Coordinates);
-            }))];
-        }
-    }
     void CancelSearch()
     {
         if(Cancel){Cancel->Store(true);Cancel.Reset();Status.Reset();}
+    }
+    void PointArrow()
+    {
+        if(!Selected||!Host.IsValid()||!Host->IsWaypointEnabled())return;
+        CancelSearch();
+        Host->SetWaypoint(Selected->Coordinates);
+        Status=TEXT("Arrow set to ")+Selected->Name+TEXT(" at ")+ACEWaypoint::Format(Selected->Coordinates);
     }
     void Plan()
     {
@@ -154,7 +207,7 @@ private:
                 if(!Self||Token->Load()||!Self->Host.IsValid()||!Self->Host->IsWaypointEnabled()||
                     Self->Host->WaypointLocationsRevision!=ExpectedRevision)return;
                 Self->Cancel.Reset();
-                Self->Host->WaypointItinerary=MoveTemp(Steps);Self->ShowDirections();
+                Self->Host->SetWaypointItinerary(MoveTemp(Steps));
                 const auto& Route=Self->Host->WaypointItinerary;
                 if(Route.IsEmpty())Self->Status=TEXT("No route found using this atlas. Point arrow gives the direct bearing.");
                 else
@@ -170,4 +223,13 @@ private:
 TSharedRef<SWidget> MakeWaypointAtlas(UACEPluginSubsystem* Host,FString ImportStatus,FSimpleDelegate Back)
 {
     return SNew(SWaypointAtlas).Host(Host).Status(ImportStatus).Back(Back);
+}
+TSharedRef<SWidget> UACEPluginSubsystem::MakeWaypointRoutePanel()
+{
+    return SNew(SWaypointRoute).Host(this);
+}
+void UACEPluginSubsystem::SetWaypointItinerary(TArray<FACEWaypointLandmark> Steps)
+{
+    WaypointItinerary=MoveTemp(Steps);++WaypointItineraryRevision;
+    if(!WaypointItinerary.IsEmpty())OpenPluginWindow(TEXT("waypoint.route"));
 }

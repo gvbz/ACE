@@ -4,6 +4,7 @@
 #include "ACEClientSubsystem.h"
 #include "ACESession.h"
 #include "ACEInventoryRules.h"
+#include "ACEEquipmentRules.h"
 #include "UI/ACEUIGameplayBinder.h"
 #include "Engine/GameInstance.h"
 #include "Protocol/ACEBinaryReader.h"
@@ -45,10 +46,10 @@ bool FACERetailInventoryOrderTest::RunTest(const FString& Parameters)
         FACEBinaryWriter W; W.WriteUInt32(Id); W.WriteUInt32(Container); W.WriteInt32(Place); W.WriteInt32(Pack ? 1 : 0);
         FACEBinaryReader R(W.GetData()); Session.HandleInventoryPutObjInContainer(R);
     };
-    auto Send=[&](int32 Id,int32 Container,int32 Position)
+    auto Send=[&](int32 Id,int32 Container,int32 Position,bool bAutoMerge=true)
     {
         Session.CachedC2SPackets.Reset();
-        Session.SendPutItemInContainer(Id,Container,Position);
+        Session.SendPutItemInContainer(Id,Container,Position,bAutoMerge);
         uint32 Sequence=0; for(const auto& Pair:Session.CachedC2SPackets) Sequence=FMath::Max(Sequence,Pair.Key);
         if(!TestTrue(TEXT("Inventory drag sends reliable server action"),Sequence!=0))return;
         FACEBinaryReader Wire(Session.CachedC2SPackets[Sequence].Payload); Wire.Skip(16);
@@ -90,6 +91,7 @@ bool FACERetailInventoryOrderTest::RunTest(const FString& Parameters)
             TestEqual(TEXT("Merge full pickup quantity"),R.ReadUInt32(),12u);
         }
         TestEqual(TEXT("Merge waits for authoritative stack update"),Session.WorldObjects[501].StackSize,50);
+        Send(500,100,2,false); // Explicit cell drop has no automatic search through other bags.
         Session.WorldObjects[500].StackSize=0;
         Session.CachedC2SPackets.Reset(); Session.SendPutItemInContainer(500,100,0);
         Last=0; for(const auto& P:Session.CachedC2SPackets) Last=FMath::Max(Last,P.Key);
@@ -258,6 +260,91 @@ bool FACERetailInventoryOrderTest::RunTest(const FString& Parameters)
         TestFalse(TEXT("Recall clears nested loot lists"),Session.ContainerContents.Contains(700)||Session.ContainerContents.Contains(701));
         TestEqual(TEXT("Recall preserves items already picked up"),Session.WorldObjects[704].ContainerId,100);
         Session.OnCloseGroundContainer.Remove(CloseHandle);Session.OnPlayerTeleportStarted.Remove(PortalHandle);
+    }
+    // Reduced armor retains a broad wield mask on some servers. Only actual
+    // ClothingPriority coverage may evict another piece, regardless of which
+    // protocol message delivered the updated reduction.
+    for(const auto Slots : {TPair<int64,int64>(ACEEquipMask::ChestArmor,ACEEquipMask::UpperArmArmor),
+        {ACEEquipMask::AbdomenArmor,ACEEquipMask::LowerArmArmor},{ACEEquipMask::UpperLegArmor,ACEEquipMask::LowerLegArmor}})
+    for(int Source=0;Source<5;++Source)
+    {
+        Session.ClearWorldState();Session.PlayerGuid=100;Session.State=EACESessionState::InWorld;
+        const int64 OriginalSlots=Slots.Key|Slots.Value;
+        const uint32 ReducedCoverage=ACEInferClothingPriority(Slots.Key,ACEItemType::Armor);
+        auto New=Item(900,100,0);New.ItemType=ACEItemType::Armor;New.ValidLocations=OriginalSlots;
+        Session.UpsertWorldObject(New);
+        auto Old=Item(901,0,-1);Old.ItemType=ACEItemType::Armor;Old.WielderId=100;Old.CurrentWieldedLocation=Slots.Key;
+        Old.bHasClothingPriority=true;Old.ClothingPriority=ReducedCoverage;Session.UpsertWorldObject(Old);
+        auto Keep=Old;Keep.Guid=902;Keep.CurrentWieldedLocation=Slots.Value;
+        Keep.ClothingPriority=ACEInferClothingPriority(Slots.Value,ACEItemType::Armor);Session.UpsertWorldObject(Keep);
+        if(Source==0){Session.WorldObjects[900].ClothingPriority=ReducedCoverage;Session.WorldObjects[900].bHasClothingPriority=true;}
+        if(Source==1)
+        {
+            for(const auto Property:{TPair<int32,int32>(4,ReducedCoverage),{9,int32(OriginalSlots)}})
+            {
+                FACEBinaryWriter W;W.WriteUInt8(1);W.WriteUInt32(900);W.WriteUInt32(Property.Key);W.WriteInt32(Property.Value);
+                FACEBinaryReader R(W.GetData());Session.HandlePublicUpdatePropertyInt(R);
+            }
+        }
+        if(Source==2)
+        {
+            FACEBinaryWriter W;W.WriteUInt32(900);W.WriteUInt32(1);W.WriteUInt32(1); // successful integer appraisal
+            W.WriteUInt16(2);W.WriteUInt16(2);W.WriteUInt32(4);W.WriteUInt32(ReducedCoverage);W.WriteUInt32(9);W.WriteUInt32(uint32(OriginalSlots));
+            FACEBinaryReader R(W.GetData());Session.HandleIdentifyObjectResponse(R);
+        }
+        if(Source==3)
+        {
+            FACEBinaryWriter W;W.WriteUInt32(900);W.WriteUInt8(0x11);W.WriteUInt8(0);W.WriteUInt8(0);W.WriteUInt8(0);
+            W.WriteUInt32(1);W.WriteUInt32(0);W.WriteUInt32(0x02000001); // minimal physics/setup
+            for(int I=0;I<9;++I)W.WriteUInt16(1);W.Align();
+            W.WriteUInt32(0x54000);W.WriteString16L(TEXT("Reduced armor"));W.WriteUInt16(1);W.WriteUInt16(1);
+            W.WriteUInt32(ACEItemType::Armor);W.WriteUInt32(0);W.Align();
+            W.WriteUInt32(100);W.WriteUInt32(uint32(OriginalSlots));W.WriteUInt32(ReducedCoverage);W.Align();
+            FACEBinaryReader R(W.GetData());Session.HandleObjectCreate(R);
+        }
+        TestEqual(TEXT("Reduced coverage reaches equipment checks from each server path"),
+            ACEEquipmentRules::ClothingCoverage(Session.WorldObjects[900],OriginalSlots),
+            Source==4?ACEInferClothingPriority(OriginalSlots,ACEItemType::Armor):ReducedCoverage);
+        Session.CachedC2SPackets.Reset();Session.SendGetAndWieldItem(900,OriginalSlots);
+        TestEqual(TEXT("Reduced armor removes only a genuinely overlapping piece; legacy descriptions retain fallback"),Session.PendingEquipmentRemovals.Num(),Source==4?2:1);
+        TestTrue(TEXT("The truly overlapping armor must be stowed"),Session.PendingEquipmentRemovals.Contains(901));
+        TestEqual(TEXT("The released armor slot is preserved"),Session.PendingEquipmentRemovals.Contains(902),Source==4);
+        // Complete every server acknowledgement and check the actual wire, not
+        // just the predicted conflict list, before the replacement is wielded.
+        for(int I=0;I<3&&!Session.PendingEquipmentRemovals.IsEmpty();++I)Contains(Session.PendingEquipmentRemovals[0],100,1);
+        TestTrue(TEXT("All expected armor removals receive their acknowledgements"),Session.PendingEquipmentRemovals.IsEmpty());
+        TArray<uint32> Sequence;Session.CachedC2SPackets.GetKeys(Sequence);Sequence.Sort();
+        for(uint32 Seq:Sequence)
+        {
+            FACEBinaryReader R(Session.CachedC2SPackets[Seq].Payload);R.Skip(24);
+            const uint32 Action=R.ReadUInt32(),Id=R.ReadUInt32();
+            if(Source!=4 && Action==ACEGameAction::PutItemInContainer)TestEqual(TEXT("No removal packet targets retained armor"),Id,901u);
+        }
+        TestTrue(TEXT("Acknowledged removal releases the requested armor equip"),Session.bPendingEquipmentWieldSent);
+        if(Source!=4)TestEqual(TEXT("Retained piece remains equipped throughout swap"),Session.WorldObjects[902].WielderId,100);
+        // Reverse the equip order: a reduced piece already worn must also keep
+        // its place when armor for one of the released slots is equipped.
+        Session.ClearWorldState();Session.PlayerGuid=100;Session.State=EACESessionState::InWorld;
+        Old.CurrentWieldedLocation=OriginalSlots;Session.UpsertWorldObject(Old);
+        New.ValidLocations=Slots.Value;New.bHasClothingPriority=true;New.ClothingPriority=Keep.ClothingPriority;Session.UpsertWorldObject(New);
+        Session.SendGetAndWieldItem(900,Slots.Value);
+        TestTrue(TEXT("Equipping into a reduced piece's former slot needs no dequip"),Session.PendingEquipmentRemovals.IsEmpty()&&Session.bPendingEquipmentWieldSent);
+    }
+    {
+        Session.ClearWorldState();Session.PlayerGuid=100;
+        auto Stub=Item(910,0,-1);Stub.ItemType=ACEItemType::Armor;Stub.WielderId=100;
+        Stub.CurrentWieldedLocation=ACEEquipMask::ChestArmor|ACEEquipMask::UpperArmArmor;
+        Stub.bHasClothingPriority=true;Stub.ClothingPriority=ACEInferClothingPriority(Stub.CurrentWieldedLocation,Stub.ItemType);
+        Session.UpsertWorldObject(Stub);
+        auto Description=Item(910,0,-1);Description.ItemType=ACEItemType::Armor;Description.bHasClothingPriority=true;
+        Description.ClothingPriority=ACECoverageMask::OuterwearChest;Session.UpsertWorldObject(Description);
+        TestEqual(TEXT("Later description replaces login stub coverage without losing wield state"),Session.WorldObjects[910].ClothingPriority,int32(ACECoverageMask::OuterwearChest));
+        TestEqual(TEXT("Reduced description keeps its known owner"),Session.WorldObjects[910].WielderId,100);
+        Description.ClothingPriority=0;Session.UpsertWorldObject(Description);
+        TestEqual(TEXT("Explicit empty coverage is distinct from an omitted property"),ACEEquipmentRules::ClothingCoverage(Session.WorldObjects[910],Stub.CurrentWieldedLocation),0u);
+        FACEBinaryWriter W;W.WriteUInt8(1);W.WriteUInt32(910);W.WriteUInt32(9);W.WriteUInt32(uint32(ACEEquipMask::ChestArmor));
+        FACEBinaryReader R(W.GetData());Session.HandlePublicUpdatePropertyInt(R);
+        TestEqual(TEXT("Live reduction also updates valid wield locations"),Session.WorldObjects[910].ValidLocations,ACEEquipMask::ChestArmor);
     }
     // Stance changes delay dequipping on both ACE and GDLE. Only ContainID is the
     // completion event; the earlier public property update must not release Wield.
@@ -543,6 +630,7 @@ bool FACERetailInventoryOrderTest::RunTest(const FString& Parameters)
     Check(100,{4002,4004,4003,4005});
     Session.GetPackItemGuids(100,CurrentItems);
     TestEqual(TEXT("Self drop cancels by ID even after source slot changed"),ACEInventoryRules::DropInsertionIndex(CurrentItems,4003,4003,true),INDEX_NONE);
+    TestEqual(TEXT("Dropping immediately before the next item keeps the original slot"),ACEInventoryRules::DropInsertionIndex(CurrentItems,4003,4005,true),INDEX_NONE);
     TestEqual(TEXT("A disappeared destination cancels safely"),ACEInventoryRules::DropInsertionIndex(CurrentItems,4003,4000,true),INDEX_NONE);
     TestEqual(TEXT("Empty-cell drop appends after source removal"),ACEInventoryRules::DropInsertionIndex(CurrentItems,4003,0,true),3);
     TestEqual(TEXT("Partial stack keeps its source slot"),ACEInventoryRules::DropInsertionIndex(CurrentItems,4003,4005,false),3);
@@ -576,6 +664,23 @@ bool FACERetailInventoryOrderTest::RunTest(const FString& Parameters)
         const int32 Position=ACEInventoryRules::DropInsertionIndex(Ordered,Bag*10+3,Bag*10+9,true);
         Send(Bag*10+3,Bag,Position);Contains(Bag*10+3,Bag,Position);
         Check(Bag,{Bag*10+7,Bag*10+3,Bag*10+9});
+    }
+    Session.ContainerContents.Add(100,{{10,1},{77,2},{20,1},{300,0},{301,0}});
+    Session.ApplyPlayerInventoryProfile();
+    TArray<int32> MainSlots,PackSlots;
+    Session.GetPackItemGuids(100,MainSlots);Session.GetPlayerPackGuids(PackSlots);
+    TestTrue(TEXT("Undescribed contents hold their ordinary slots"),MainSlots==TArray<int32>{300,301});
+    TestTrue(TEXT("An undescribed focus holds its side-pack slot"),PackSlots==TArray<int32>{10,77,20});
+    Session.UpsertWorldObject(Item(302,0,INDEX_NONE));
+    Send(302,100,2);
+    Contains(302,100,2);
+    Check(100,{300,301,302});
+    {
+        Session.UpsertWorldObject(Item(330,100,0,true));
+        auto Inner=Item(331,330,0,true);Inner.ItemsCapacity=-1;Session.UpsertWorldObject(Inner);
+        Session.UpsertWorldObject(Item(332,330,0));
+        Session.GetPackItemGuids(330,MainSlots);Session.GetContainerPackGuids(330,PackSlots);
+        TestTrue(TEXT("An unopened nested pack occupies only a pack slot"),MainSlots==TArray<int32>{332}&&PackSlots==TArray<int32>{331});
     }
     // Manual unequip uses the same room checks as automatic weapon swaps.
     // ACE may otherwise remove equipment and silently restore it on failure.

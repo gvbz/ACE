@@ -95,7 +95,13 @@ namespace
                 {double V=0;if(!Pair.Value->AsObject()->TryGetNumberField(Key,V)||!FMath::IsFinite(V)||V<0||V>MAX_int32||FMath::FloorToDouble(V)!=V)return false;}
             }
         }
-        for(const TCHAR* Key:{TEXT("auto_craft"),TEXT("auto_fellowship"),TEXT("craft_confirm"),TEXT("fellowship_open"),TEXT("fellowship_votes"),TEXT("random_helper_buffs"),TEXT("cast_jiggle"),TEXT("jump_out_wand")})if(O->HasField(Key)&&!O->HasTypedField<EJson::Boolean>(Key))return false;
+        for(const TCHAR* Key:{TEXT("auto_craft"),TEXT("auto_craft_ammo"),TEXT("auto_fellowship"),TEXT("craft_confirm"),TEXT("fellowship_open"),TEXT("fellowship_votes"),TEXT("random_helper_buffs"),TEXT("cast_jiggle"),TEXT("jump_out_wand")})if(O->HasField(Key)&&!O->HasTypedField<EJson::Boolean>(Key))return false;
+        if(O->HasField(TEXT("craft_ammo_minimum")))
+        {
+            double Count=0;
+            if(!O->TryGetNumberField(TEXT("craft_ammo_minimum"),Count)||!FMath::IsFinite(Count)||Count<1
+                ||Count>ACEAutoCraft::MaxAmmoMinimum||Count!=FMath::FloorToDouble(Count))return false;
+        }
         for(const TCHAR* Key:{TEXT("craft_health_kits"),TEXT("craft_health_food"),TEXT("craft_stamina_kits"),TEXT("craft_stamina_food"),TEXT("craft_mana_kits"),TEXT("craft_mana_food"),TEXT("fellowship_capacity"),TEXT("random_helper_interval"),TEXT("debuff_selection")})if(O->HasField(Key))
         {
             const FString Name(Key);const double Low=Name==TEXT("fellowship_capacity")?2:Name==TEXT("random_helper_interval")||Name==TEXT("debuff_selection")?1:0;
@@ -267,6 +273,11 @@ namespace
     {
         for(const TCHAR* Key:{TEXT("give_limit"),TEXT("buy_limit"),TEXT("delay_ms"),TEXT("chest_cycles"),TEXT("chest_delay")})
             if(O->HasField(Key)){double N=0;if(!O->TryGetNumberField(Key,N)||!FMath::IsFinite(N)||N<0||N>100000||FMath::FloorToDouble(N)!=N)return false;}
+        if(O->HasField(TEXT("merge_delay_ms")))
+        {
+            const double Delay=Number(O,TEXT("merge_delay_ms"),-1);
+            if(Delay<0||Delay>5000||FMath::FloorToDouble(Delay)!=Delay)return false;
+        }
         for(const TCHAR* Key:{TEXT("auto_restock"),TEXT("redeem_notes")})if(O->HasField(Key)&&O->Values[Key]->Type!=EJson::Boolean)return false;
         for(const TCHAR* Key:{TEXT("give"),TEXT("buy"),TEXT("sell"),TEXT("key"),TEXT("target"),TEXT("chest"),TEXT("mule1"),TEXT("mule2")})
             for(const TCHAR* Suffix:{TEXT("_name"),TEXT("_file")}){const FString K=FString(Key)+Suffix;if(O->HasField(K)&&(O->Values[*K]->Type!=EJson::String||O->Values[*K]->AsString().Len()>256))return false;}
@@ -636,7 +647,7 @@ bool UACEPluginSubsystem::Start(const FString& Id)
     P->CombatTransitionIntent.Reset();P->Running = true; P->ActivityFailure.Reset(); P->Player = C->GetPlayerGuid(); P->Server = C->GetServerName();
     if(P->IsPolicy()){IdleManaVM.Reset();IdleManaOwner.Empty();IdleManaFailed=false;bRouteJoinRequested=true;RouteVisibilityOffset=0;
         bTrackRouteMovement=false;RouteMovementSamples.Reset();bRouteMovementOverflow=false;}
-    if(P->IsPolicy()){CombatTarget=0;PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();CombatOutcomes.Empty();ClearBuffRequests();if(!Resume){RuntimeRoute.Reset();RoutePoint=1;}RouteRebuiltAt=0;}
+    if(P->IsPolicy()){CombatTarget=0;PhysicalAttackTarget=0;PhysicalAttackOwner.Empty();CombatOutcomes.Empty();ClearBuffRequests();RouteShortcutAnchor.Reset();if(!Resume){RuntimeRoute.Reset();RoutePoint=1;}RouteRebuiltAt=0;}
     CachedSpells.Reset();
     P->LoggedActivity.Empty();P->LoggedRouteStatus.Empty();
     LogUCMEvent(*P,Resume?TEXT("UCM resumed"):TEXT("UCM started"));
@@ -1254,6 +1265,38 @@ void UACEPluginSubsystem::RecordWaypoint(const FString& Id, const TSharedPtr<FJs
     Points.Add(MakeShared<FJsonValueObject>(Point)); P->Profile->SetArrayField(TEXT("route"), Points);
     SaveCurrentProfile(Id,true);
 }
+
+bool UACEPluginSubsystem::UpdateUCMRoutePointPosition(int32 Index,const TSharedPtr<FJsonObject>& Expected,const FACEPosition& NewPosition)
+{
+    auto P=Find(TEXT("ucm"));
+    const TArray<TSharedPtr<FJsonValue>>* Old=nullptr;
+    if(!P||!Expected||!P->Profile->TryGetArrayField(TEXT("route"),Old)||!Old->IsValidIndex(Index)||(*Old)[Index]->AsObject()!=Expected)
+    {Notice=TEXT("The route changed. Open the waypoint again to edit its position.");return false;}
+    if(!NewPosition.IsValid()||NewPosition.Location.ContainsNaN())
+    {Notice=TEXT("Enter a valid waypoint position.");return false;}
+
+    auto Candidate=MakeShared<FJsonObject>(*P->Profile);
+    auto Points=*Old;
+    auto Replacement=MakeShared<FJsonObject>(*Expected);
+    const auto Coordinates=Position(NewPosition);
+    for(const auto& Field:Coordinates->Values)Replacement->SetField(Field.Key,Field.Value);
+    Points[Index]=MakeShared<FJsonValueObject>(Replacement);
+    Candidate->SetArrayField(TEXT("route"),Points);
+    if(!SaveProfileData(P->Id,P->ProfileName,Candidate,false))return false;
+
+    const FString RuntimeProfile=RuntimeRoute?String(RuntimeRoute,TEXT("profile")):FString();
+    if(!RuntimeRoute||(!RuntimeProfile.IsEmpty()&&RuntimeProfile==UCMSectionName(TEXT("Routes"))))
+    {
+        if(RuntimeRoute)RuntimeRoute->SetArrayField(TEXT("route"),P->Profile->GetArrayField(TEXT("route")));
+        ++RoutePositionRevision;
+        RouteRebuiltAt=0;RouteVisibilityOffset=0;RouteShortcutAnchor.Reset();
+        if(bMovingAlongRoute&&MovementOwner==P->Id){MovementOwner.Empty();MoveExpires=0;}
+        P->NextDecision=0;ScheduleDecisionWake(FPlatformTime::Seconds());
+    }
+    else Notice=TEXT("Point saved. The running meta is using a different route.");
+    return true;
+}
+
 void UACEPluginSubsystem::AddBuff(const FString& Id, int32 SpellId)
 {
     auto P = Find(Id); if (!P) return;
@@ -1664,6 +1707,12 @@ bool UACEPluginSubsystem::Tick(float)
         TSharedPtr<FJsonObject> Intent; FString Error;
         auto TickProfile=MakeShared<FJsonObject>(*P->Profile);TickProfile->RemoveField(TEXT("vt_library"));
         if(P->IsPolicy()){TickProfile->SetArrayField(TEXT("ucm_commands"),UCMCommands);TickProfile->SetBoolField(TEXT("ucm_command_only"),bUCMCommandOnly);UCMCommands.Reset();}
+        if(P->Id==TEXT("ucm"))
+        {
+            TickProfile->SetNumberField(TEXT("route_position_revision"),RoutePositionRevision);
+            const FString RuntimeProfile=RuntimeRoute?String(RuntimeRoute,TEXT("profile")):FString();
+            TickProfile->SetBoolField(TEXT("route_position_sync"),!RuntimeProfile.IsEmpty()&&RuntimeProfile==UCMSectionName(TEXT("Routes")));
+        }
         TickProfile->SetBoolField(TEXT("ucm_resume"),P->ResumeMetaPending);P->ResumeMetaPending=false;
         if(P->ActivityFailure){TickProfile->SetObjectField(TEXT("ucm_activity_failure"),P->ActivityFailure);if(P->Api<2)P->ActivityFailure.Reset();}
         if(P->Id==TEXT("itemtools"))
@@ -1698,10 +1747,13 @@ bool UACEPluginSubsystem::Tick(float)
         // appraisal or closing a corpse) can continue on the very next frame.
         // Polls with no new action stay bounded; receipts wake them immediately.
         const bool WorkDispatched=ContinueWork&&Intent&&!String(Intent,TEXT("action")).IsEmpty();
-        P->NextDecision=FPlatformTime::Seconds()+(WorkDispatched?0.:ContinueWork||CombatTarget?.05:.25);
+        const double DecisionTime=FPlatformTime::Seconds();
+        P->NextDecision=DecisionTime+(WorkDispatched?0.:ContinueWork||CombatTarget?.05:.25);
+        const double MergeResumeAt=P->Id==TEXT("itemtools")&&Intent?Number(Intent,TEXT("merge_resume_at")):0.;
+        if(MergeResumeAt>0)P->NextDecision=FMath::Clamp(MergeResumeAt,DecisionTime,DecisionTime+5.);
         // Keep idle acquisition at the policy's own cadence (VT polls at 293ms),
         // rather than silently falling back to the 500ms maintenance ticker.
-        if(P->IsPolicy()||ContinueWork||CombatTarget||!PhysicalAttackOwner.IsEmpty())ScheduleDecisionWake(FMath::Max(P->NextDecision,P->NextAction));
+        if(P->IsPolicy()||ContinueWork||MergeResumeAt>0||CombatTarget||!PhysicalAttackOwner.IsEmpty())ScheduleDecisionWake(FMath::Max(P->NextDecision,P->NextAction));
     }
     return true;
 }
@@ -1759,7 +1811,10 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
         {
             UCMServicesProfile=*Services;bool Enabled=false;
             UCMServicesProfile->TryGetBoolField(TEXT("auto_fellowship"),Enabled);if(!Enabled){FellowshipTells.Reset();FellowshipManagerStatus.Empty();}
-            Enabled=false;UCMServicesProfile->TryGetBoolField(TEXT("auto_craft"),Enabled);if(!Enabled)UCMCraft.Reset();
+            bool Supplies=false,Ammo=false;
+            UCMServicesProfile->TryGetBoolField(TEXT("auto_craft"),Supplies);
+            UCMServicesProfile->TryGetBoolField(TEXT("auto_craft_ammo"),Ammo);
+            if(!Supplies&&!Ammo)UCMCraft.Reset();
         }
     }
     if(InventoryInteractionPending())return;
@@ -1774,6 +1829,17 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
         bTrackRouteMovement=false;I->TryGetBoolField(TEXT("route_track_movement"),bTrackRouteMovement);
     }
     if(P.IsPolicy() && I->HasField(TEXT("route_point")))RoutePoint=FMath::Clamp(int32(Number(I,TEXT("route_point"),1)),1,2049);
+    if(P.Id==TEXT("ucm"))
+    {
+        RouteShortcutAnchor.Reset();
+        const double Cell=Number(I,TEXT("route_shortcut_cell"));
+        if(Cell>=1&&Cell<=MAX_uint32)
+        {
+            FACEPosition Anchor;Anchor.CellId=int32(uint32(Cell));
+            Anchor.Location=FVector(Number(I,TEXT("route_shortcut_x")),Number(I,TEXT("route_shortcut_y")),Number(I,TEXT("route_shortcut_z")));
+            if(!Anchor.Location.ContainsNaN())RouteShortcutAnchor=Anchor;
+        }
+    }
     if(P.IsPolicy()&&I->HasField(TEXT("runtime_route")))
     {
         const TArray<TSharedPtr<FJsonValue>>* Route=nullptr;
@@ -1788,7 +1854,8 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
             {ReportActivityFailure(P,I,Notice);return;}
             P.Profile=Updated;P.ProfileLinks=Links;P.ProfileBaseline=ACEUCMProfiles::Copy(Updated);
         }
-        RuntimeRoute=MakeShared<FJsonObject>();RuntimeRoute->SetArrayField(TEXT("route"),*Route);RouteRebuiltAt=0;MovementOwner.Empty();MoveExpires=0;
+        RuntimeRoute=MakeShared<FJsonObject>();RuntimeRoute->SetArrayField(TEXT("route"),*Route);RuntimeRoute->SetStringField(TEXT("profile"),RouteProfile);
+        RouteRebuiltAt=0;MovementOwner.Empty();MoveExpires=0;
         bool Loop=false,Reverse=false;I->TryGetBoolField(TEXT("runtime_loop_route"),Loop);I->TryGetBoolField(TEXT("runtime_reverse_route"),Reverse);
         RuntimeRoute->SetBoolField(TEXT("loop_route"),Loop);RuntimeRoute->SetBoolField(TEXT("reverse_route"),Reverse);
     }
@@ -2052,6 +2119,7 @@ void UACEPluginSubsystem::Execute(FACEClientPlugin& P, const TSharedPtr<FJsonObj
         // Between decisions, latch arrival so a small correction cannot turn
         // the player back toward the waypoint that was just reached.
         bMoveArrived=false;
+        bMovingAlongRoute=P.Id==TEXT("ucm")&&(Status.StartsWith(TEXT("Waypoint "))||Status==TEXT("Returning to route")||Status==TEXT("Rejoining route"));
         FaceHeading.Reset();MovementOwner = P.Id; MoveTarget = Dest; MoveExpires = Now + 1.5; return;
     }
     MovementOwner.Empty(); MoveExpires = 0;

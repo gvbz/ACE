@@ -1,5 +1,40 @@
 # Retail client replacement: acceptance and evidence
 
+## Retail compatibility verification (2026-11-22)
+
+Reviewed the wire and gameplay behavior already supported by AC:Unreal against the
+local retail reference and ACE server handlers. The automated pass covers world
+entry, transport, movement and combat, keyboard and UI actions, inventory and
+transactions, characters, social features, housing, weather, terrain, and the
+shared desktop, VR, and mobile paths.
+
+- Retail `gmVendorUI::BuySingleItem` and `VendorBuyUI::UpdateTotalValue` use
+  the vendor's quoted alternate balance, with an adjustment for the purchase
+  in progress. A carried token no longer hides a larger quoted balance.
+  Rejection clears the reservation against the latest quote. Success debits
+  once. Physical-only wallets still update with their inventory stacks.
+  The same funds feed manual purchase and UCM restocking.
+- Room-sampling checks compare the material and sampled texture when entrance
+  lighting creates a separate material instance. Solid-color material tests
+  read the uploaded texture after Unreal releases its temporary CPU bytes.
+- The broad Windows Editor run passed 348 of 355 tests, including the full
+  set of 104 reported indoor portal destinations. All 15 focused checks passed
+  after the rebuild. The separate rendering suite passed 39 of 41. Particle
+  blend and prefix captures pass in isolation but fail after other rendering
+  suites run in the same process. Synchronous pipeline compilation and material
+  uniform updates did not resolve those failures in the test process.
+- The character creation fixture for the ranged Olthoi reproduces an eye-color
+  preview issue. The local retail `ACCharGenData` reference applies indices
+  256 through 319. The authored head mesh samples 448 texels in that range,
+  and all 448 changed in the decoded AC:Unreal texture. Neither the full model
+  nor the isolated head changed pixels at the four tested headings. This
+  leaves a preview rendering issue open while preserving the retail palette.
+
+See the [UCM verification record](Plugins/VirindiCompatibility.md#ucm-compatibility-verification-2026-11-22)
+for the automation and profile import changes. The reports are under
+`TestOutput/Parity-Nov22`. Native platform binaries and live retail-to-Unreal
+sessions require separate verification.
+
 Vendor affordability follow-up (2026-11-13): normal vendor single-item, cart-row
 and Buy All actions now check the full retail purchase price before sending Buy.
 The pyreal purse comes from player `CoinValue` (int quality 20), as in retail
@@ -1896,6 +1931,21 @@ simulated pointer held in place for screenshots. The Linux build caught misleadi
 the pending UCM Micro start/stop callback; explicit braces fix it without a
 behavior change. These checks verify behavior and eliminate a demonstrated
 rebuild path; they do not establish frame times on the reporter's GPU/driver.
+
+## Pickup destination and pack slots
+
+`CPlayerSystem::PlaceInBackpack` and `ItemHolder::AttemptToPlaceInContainer`
+prioritize a whole-quantity merge in main-pack and side-pack list order. If no
+stack fits the selected amount, pickup tries the preferred open bag, the main
+pack, then side packs in their displayed order. Manual pickup, corpse looting
+and Item Tools chest pickup use the same destination and target selection.
+Ingredient and funding splits reserve a free slot for the new stack.
+
+`UIElement_ItemList::PlaceItem` attempts a direct merge with the item under the
+cursor. Other grid drops use the requested insertion position. Dropping a whole
+stack at its current position produces no move. `ACCObjectMaint::ViewObjectContents`
+keeps listed items and packs in order while descriptions arrive, so an unknown
+item or focus still reserves its slot for capacity checks and outgoing moves.
 
 ## F-key stack overflow consolidation: 2026-10-12
 

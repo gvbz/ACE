@@ -327,7 +327,41 @@ bool FACEHousingTest::RunTest(const FString&)
 	S.House.bQueried=true;S.House.bOwned=true;S.House.HouseType=1;
 	S.House.Buy=S.HouseOffer.Buy;S.House.Rent={{1000,100,273,TEXT("Pyreal"),TEXT("Pyreals")}};
 	S.House.BuyTime=1700000000;S.House.RentTime=1750000000;
+	S.House.Position.CellId=static_cast<int32>(0xA9A10100u);S.House.Position.Location=FVector(84,132,0);
 	Binder->ShowPanelPage(TEXT("WorldPanel_Field"));Binder->SyncWorldPanelTab(TEXT("HousePage"));Draw(TEXT("HousingTab"));
+	const auto HouseLocationPage=Manager->FindElementByName(TEXT("HousePage"));
+	const auto MapPage=Manager->FindElementByName(TEXT("MapPage"));
+	const auto HousePin=Manager->FindElementUnder(TEXT("MapPage"),TEXT("Map_HousePosition_Icon"));
+	if(!TestTrue(TEXT("Retail house/map elements exist"),HouseLocationPage&&MapPage&&HousePin))return false;
+	auto LocationLine=[&]() -> FString
+	{
+		for(const UTextBlock* Text:Binder->HouseTextRows)
+			if(Text->GetVisibility()!=ESlateVisibility::Collapsed && Text->GetText().ToString().StartsWith(TEXT("Location: ")))
+				return Text->GetText().ToString();
+		return FString();
+	};
+	for(int32 Type:{1,2,3})
+	{
+		S.House.HouseType=Type;Binder->RefreshWorldHousePage(HouseLocationPage);Binder->RefreshWorldMapPage(MapPage);
+		TestEqual(TEXT("Landscape house inside a building shows its retail outdoor coordinates"),LocationLine(),FString(TEXT("Location: 27.4N, 33.6E")));
+		TestTrue(TEXT("Building-cell house retains its surface map pin"),bool(HousePin->bVisible));
+	}
+	const FIntPoint IndoorPin(HousePin->X,HousePin->Y);
+	S.House.Position.CellId=static_cast<int32>(0xA9A1001Eu);Binder->RefreshWorldHousePage(HouseLocationPage);Binder->RefreshWorldMapPage(MapPage);
+	TestEqual(TEXT("Outdoor and building cells give the same house location"),LocationLine(),FString(TEXT("Location: 27.4N, 33.6E")));
+	TestEqual(TEXT("Outdoor and building cells share the house map pin"),FIntPoint(HousePin->X,HousePin->Y),IndoorPin);
+	S.House.Position.CellId=0x565C0100;S.House.Position.Location=FVector(24,168,0);Binder->RefreshWorldHousePage(HouseLocationPage);
+	TestEqual(TEXT("House coordinates retain southern and western hemispheres"),LocationLine(),FString(TEXT("Location: 27.6S, 33.0W")));
+	S.House.HouseType=4;Binder->RefreshWorldHousePage(HouseLocationPage);Binder->RefreshWorldMapPage(MapPage);
+	TestTrue(TEXT("Apartments do not invent a surface location or map pin"),LocationLine().IsEmpty()&&!HousePin->bVisible);
+	S.House.HouseType=1;
+	for(uint32 Cell:{0u,0xA9A10080u,0xFFFF0100u})
+	{
+		S.House.Position.CellId=static_cast<int32>(Cell);Binder->RefreshWorldHousePage(HouseLocationPage);Binder->RefreshWorldMapPage(MapPage);
+		TestTrue(TEXT("Invalid or out-of-map housing coordinates hide stale location and pin"),LocationLine().IsEmpty()&&!HousePin->bVisible);
+	}
+	S.House.Position.CellId=static_cast<int32>(0xA9A10100u);S.House.Position.Location=FVector(84,132,0);
+	Binder->RefreshWorldHousePage(HouseLocationPage);Draw(TEXT("HousingLocation135"),1.35f);
 	TestEqual(TEXT("Retail housing paragraph font"),Binder->HouseTextElements[0]->FontId,0x40000000u);
 	TestEqual(TEXT("Retail housing paragraphs are centered"),Binder->HouseTextElements[0]->TextHorizontalJustification,1u);
 	TestEqual(TEXT("Retail housing paragraph spacing"),Binder->HouseTextElements[0]->TextMargins.Bottom,8.f);

@@ -77,6 +77,19 @@ character and server. Window placement and enablement use normal plugin settings
 Logging out, changing character, dying or disabling the plugin stops crafting;
 jobs never automatically restart at login.
 
+## Ammunition in UCM
+
+In UCM, go to **Recovery → Automatic crafting** and turn on **Craft ammunition
+from bundles**. Set **Craft when ammunition is below** to the number of rounds
+you want available before UCM makes another batch. The default is 25. The
+checkbox works independently of the general supply crafting checkbox.
+
+When selecting a missile loadout, UCM counts compatible ammunition across the
+equipped stack and packs. It combines matching regular or wrapped bundles for
+standard arrows, quarrels and atlatl darts, including elemental variants. It
+checks Fletching, waits for peace mode and the server's inventory result, then
+resumes the loadout. Keep the matching shafts and arrowheads in inventory.
+
 ## Catalog scope and provenance
 
 The bundled catalog is generated from

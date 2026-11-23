@@ -13,6 +13,38 @@ namespace
 {
 using namespace ACEAutoCraft;
 bool Option(const TSharedPtr<FJsonObject>& P,const TCHAR* Key,bool Default=false){bool V=Default;P->TryGetBoolField(Key,V);return V;}
+TOptional<FBundleAmmo> BundleAmmo(const FCatalog& Catalog,int32 Index)
+{
+    const auto& Recipe=Catalog.Recipes[Index];
+    const auto& Output=Catalog.Items.FindChecked(Recipe.Output);
+    if(Recipe.Skill!=37||Recipe.Conditional||Recipe.Modified||!(Output.Type&ACEItemType::MissileWeapon))return {};
+
+    const FString Shaft=Catalog.Name(Recipe.Target);
+    const bool Wrapped=Shaft.StartsWith(TEXT("Wrapped Bundle of "));
+    const FString Prefix=Wrapped?TEXT("Wrapped Bundle of "):TEXT("Bundle of ");
+    struct FFamily {int32 Kind;const TCHAR* Name;const TCHAR* Shafts;};
+    const FFamily Families[]={{1,TEXT("Arrow"),TEXT("Arrowshafts")},{2,TEXT("Quarrel"),TEXT("Quarrelshafts")},
+        {4,TEXT("Atlatl Dart"),Wrapped?TEXT("Atlatl Dartshafts"):TEXT("Atlatl Dart Shafts")}};
+    for(const auto& Family:Families)
+    {
+        if(Shaft!=Prefix+Family.Shafts)continue;
+        FString Variant=Output.Name;
+        if(Variant==Family.Name)Variant.Empty();
+        else if(!Variant.RemoveFromEnd(FString(TEXT(" "))+Family.Name))return {};
+        const FString Heads=Prefix+(Variant.IsEmpty()?FString():Variant+TEXT(" "))+TEXT("Arrowheads");
+        if(Catalog.Name(Recipe.Source)!=Heads)return {};
+        const int32 Tier=Variant.RemoveFromStart(TEXT("Deadly "))?4:Variant.RemoveFromStart(TEXT("Greater "))?2:0;
+        // The standard elemental head families use the same damage types across
+        // arrows, quarrels, and darts. Leave other named ammo to explicit recipes.
+        static const TMap<FString,int32> Damage={{TEXT(""),2},{TEXT("Armor Piercing"),2},{TEXT("Barbed"),2},
+            {TEXT("Blunt"),4},{TEXT("Frog Crotch"),1},{TEXT("Acid"),32},{TEXT("Fire"),16},{TEXT("Frost"),8},
+            {TEXT("Lightning"),64},{TEXT("Prismatic"),0x10000000}};
+        if(const int32* Element=Damage.Find(Variant))
+            return FBundleAmmo{Index,Family.Kind,*Element,Variant.IsEmpty()?0:Tier+(Variant==TEXT("Barbed")?1:2)};
+        return {};
+    }
+    return {};
+}
 // Retained tools may be used only where neither success nor failure consumes
 // them. Protected ingredients, worn items, traded items and full packs stay out.
 bool Eligible(UACEClientSubsystem* C,FACEWorldObject Item,bool Tool)
@@ -162,6 +194,9 @@ void UACEPluginSubsystem::LoadAutoCraftCatalog(FACEAutoCraftState& A)
         }
     }
     A.SupplyRecipes.Reset();for(const auto& Pair:A.Catalog.ByName)A.SupplyRecipes.FindOrAdd(Pair.Key.ToLower()).Append(Pair.Value);
+    A.BundleAmmo.Reset();
+    for(int32 Index=0;Index<A.Catalog.Recipes.Num();++Index)
+        if(auto Ammo=BundleAmmo(A.Catalog,Index))A.BundleAmmo.Add(*Ammo);
 }
 
 bool UACEPluginSubsystem::ImportAutoCraftCatalog(const FString& Path)
@@ -262,7 +297,9 @@ void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& 
     auto P=PolicyPlugin();auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto S=C->GetSession();
     if(!P||!P->Running||!S)return;
     const auto Config=UCMServicesProfile?UCMServicesProfile:P->Profile;
-    if(!Option(Config,TEXT("auto_craft"))){UCMCraft.Reset();return;}
+    const bool SuppliesEnabled=Option(Config,TEXT("auto_craft"));
+    const bool AmmoEnabled=Option(Config,TEXT("auto_craft_ammo"));
+    if(!SuppliesEnabled&&!AmmoEnabled){UCMCraft.Reset();return;}
     if(!UCMCraft)UCMCraft=MakeShared<FACEAutoCraftState>();auto& A=*UCMCraft;
     const FString Character=FString::Printf(TEXT("%s/%08X"),*C->GetServerName(),uint32(C->GetPlayerGuid()));
     if(A.Character!=Character){A=FACEAutoCraftState();A.Character=Character;}
@@ -278,9 +315,33 @@ void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& 
     if(Now>=A.NextRefresh&&A.Catalog.Error.IsEmpty())
     {
         A.NextRefresh=Now+1;A.Inventory=Inventory(C);A.Candidates.Reset();
+        if(AmmoEnabled)
+        {
+            const int32 Minimum=int32(FMath::Clamp(ACEItemTools::Number(Config,TEXT("craft_ammo_minimum"),DefaultAmmoMinimum),1.,double(MaxAmmoMinimum)));
+            const auto* Skill=C->GetPlayerVitalsView().Skills.FindByPredicate([](const auto& V){return V.SkillId==37;});
+            TSet<int32> Outputs;
+            if(Skill&&Skill->AdvancementClass>=2)for(const auto& Ammo:A.BundleAmmo)
+            {
+                const auto& R=A.Catalog.Recipes[Ammo.Recipe];
+                if(Skill->Current<R.Difficulty||Outputs.Contains(R.Output)||A.Inventory.Receipt(R.Output)>=Minimum)continue;
+                if(A.Inventory.Available(R.Source,R.SourceReusable())<FMath::Max(1,R.SourceCount)
+                    ||A.Inventory.Available(R.Target,R.TargetReusable())<FMath::Max(1,R.TargetCount))continue;
+                const FString Name=A.Catalog.Name(R.Output);
+                if(A.BlockedSupplies.Contains(Name.ToLower())||!Plan(A.Catalog,Ammo.Recipe,A.Inventory,R.Yield,false).Valid)continue;
+                Outputs.Add(R.Output);
+                auto Candidate=MakeShared<FJsonObject>();
+                Candidate->SetStringField(TEXT("recipe"),R.Id);
+                Candidate->SetStringField(TEXT("name"),Name);
+                Candidate->SetStringField(TEXT("phase"),TEXT("ammunition"));
+                Candidate->SetNumberField(TEXT("ammo_type"),Ammo.Kind);
+                Candidate->SetNumberField(TEXT("damage_type"),Ammo.Damage);
+                Candidate->SetNumberField(TEXT("quality"),Ammo.Quality);
+                A.Candidates.Add(MakeShared<FJsonValueObject>(Candidate));
+            }
+        }
         struct FSupply{FString Name;int32 Type,Minimum;};TArray<FSupply> Supplies;TMap<FString,int32> SupplyIndex;
         static const TCHAR* Idle[]={TEXT("craft_health_kits"),TEXT("craft_health_food"),TEXT("craft_stamina_kits"),TEXT("craft_stamina_food"),TEXT("craft_mana_kits"),TEXT("craft_mana_food")};
-        for(const TCHAR* Key:{TEXT("assist_items"),TEXT("buff_items"),TEXT("craft_targets")})
+        if(SuppliesEnabled)for(const TCHAR* Key:{TEXT("assist_items"),TEXT("buff_items"),TEXT("craft_targets")})
         {
             const TArray<TSharedPtr<FJsonValue>>* Rows=nullptr;if(!Config->TryGetArrayField(Key,Rows))continue;
             for(const auto& V:*Rows)
@@ -295,9 +356,10 @@ void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& 
                 else {SupplyIndex.Add(KeyName,Supplies.Num());Supplies.Add({Name,Type,Minimum});}
             }
         }
+        int32 SupplyCount=0;
         for(const auto& Supply:Supplies)
         {
-            if(A.Candidates.Num()>=64)break;
+            if(SupplyCount>=64)break;
             const FString Key=Supply.Name.ToLower();if(A.BlockedSupplies.Contains(Key))continue;
             const auto* Named=A.SupplyRecipes.Find(Key);if(!Named)continue;
             // Different WCIDs can share a name. Count the whole named supply,
@@ -317,7 +379,7 @@ void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& 
                 if(!Trained)continue;
                 auto Candidate=MakeShared<FJsonObject>();Candidate->SetStringField(TEXT("recipe"),R.Id);Candidate->SetStringField(TEXT("name"),Supply.Name);
                 Candidate->SetStringField(TEXT("phase"),Count>0?TEXT("idle"):Supply.Type<6?TEXT("critical"):TEXT("normal"));
-                Candidate->SetNumberField(TEXT("count"),Count);Candidate->SetNumberField(TEXT("minimum"),FMath::Max(1,Supply.Minimum));A.Candidates.Add(MakeShared<FJsonValueObject>(Candidate));break;
+                Candidate->SetNumberField(TEXT("count"),Count);Candidate->SetNumberField(TEXT("minimum"),FMath::Max(1,Supply.Minimum));A.Candidates.Add(MakeShared<FJsonValueObject>(Candidate));++SupplyCount;break;
             }
         }
     }
@@ -326,16 +388,26 @@ void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& 
 
 void UACEPluginSubsystem::ExecuteUCMCraft(FACEClientPlugin& P,const TSharedPtr<FJsonObject>& I)
 {
-    if(P.Id!=TEXT("ucm")||!Option(UCMServicesProfile?UCMServicesProfile:P.Profile,TEXT("auto_craft"))||!P.Permissions.Contains(TEXT("inventory")))return;
+    if(P.Id!=TEXT("ucm")||!P.Permissions.Contains(TEXT("inventory")))return;
     if(auto Tool=Find(TEXT("autocraft"));Tool&&Tool->Running)return;
     if(UCMCraft&&UCMCraft->Selected==INDEX_NONE)UCMCraft->NextRefresh=0;
     auto Snapshot=MakeShared<FJsonObject>();ExtendUCMCraftSnapshot(Snapshot);if(!UCMCraft)return;auto& A=*UCMCraft;
     if(A.Selected==INDEX_NONE)
     {
         const FString Id=ACEItemTools::String(I,TEXT("recipe"));
-        if(!A.Candidates.ContainsByPredicate([&](const auto& V){return ACEItemTools::String(V->AsObject(),TEXT("recipe"))==Id;}))return;
+        const FString Phase=ACEItemTools::String(I,TEXT("phase"));
+        const auto* Candidate=A.Candidates.FindByPredicate([&](const auto& V)
+        {
+            const auto O=V->AsObject();
+            return ACEItemTools::String(O,TEXT("recipe"))==Id
+                &&(ACEItemTools::String(O,TEXT("phase"))==TEXT("ammunition"))==(Phase==TEXT("ammunition"));
+        });
+        if(!Candidate)return;
         const auto* Index=A.Catalog.ById.Find(Id);if(!Index)return;
         auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();if(C->IsUseBusy()||!C->GetSession()->GetConfirmations().IsEmpty())return;
+        const bool AmmoJob=Phase==TEXT("ammunition");
+        if(AmmoJob&&!PrepareCombatAction(P,I,1))return;
+        A.BundleAmmoJob=AmmoJob;
         A.Selected=*Index;A.Goal=A.Catalog.Recipes[*Index].Yield;A.Completed=0;A.Attempts=0;A.Failures=0;A.Pending=false;A.Preparation.Empty();A.NextAction=0;A.Deadline=FPlatformTime::Seconds()+30;
     }
     TickAutoCraft(&P);
@@ -446,12 +518,13 @@ void UACEPluginSubsystem::TickAutoCraft(FACEClientPlugin* Policy)
         if(Now>=A.Deadline){Finish(TEXT("Could not enter peace mode."));return;}
         S->SendChangeCombatMode(1);A.NextAction=Now+1;P->Status=TEXT("Entering peace mode");return;
     }
-    A.Inventory=Inventory(C);auto PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Goal-A.Completed,Policy||Option(P->Profile,TEXT("ingredients"),true));
+    const bool MakeIngredients=Policy?!A.BundleAmmoJob:Option(P->Profile,TEXT("ingredients"),true);
+    A.Inventory=Inventory(C);auto PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Goal-A.Completed,MakeIngredients);
     if(!PlanNow.Valid)
     {
         // Failed attempts can reduce an initial maximum estimate. Continue with
         // one attainable batch, rather than requiring the original full job.
-        PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Catalog.Recipes[A.Selected].Yield,Policy||Option(P->Profile,TEXT("ingredients"),true));
+        PlanNow=Plan(A.Catalog,A.Selected,A.Inventory,A.Catalog.Recipes[A.Selected].Yield,MakeIngredients);
         if(!PlanNow.Valid){Finish(FString::Printf(TEXT("Stopped at %d / %d items. %s"),A.Completed,A.Goal,*PlanNow.Error));return;}
     }
     const int32 Index=PlanNow.Steps[0].Recipe;const auto& R=A.Catalog.Recipes[Index];
@@ -479,7 +552,7 @@ void UACEPluginSubsystem::TickAutoCraft(FACEClientPlugin* Policy)
             FACEWorldObject Stack;const int32 Id=Choose(C,R.Source,SourceNeed+TargetNeed,false);
             if(Id&&C->GetWorldObject(Id,Stack))
             {
-                const int32 Pack=C->FindPickupContainer(Id,0,TargetNeed);
+                const int32 Pack=C->PlanInventoryPickup(Id,0,TargetNeed,false).Container;
                 if(!Pack){Finish(TEXT("Free one inventory slot to split ingredients for this recipe."));return;}
                 Prepare(Stack,FACEWorldObject(),TargetNeed,Pack);return;
             }

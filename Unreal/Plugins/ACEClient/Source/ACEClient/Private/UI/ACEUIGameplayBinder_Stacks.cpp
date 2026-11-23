@@ -9,7 +9,7 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Blueprint/WidgetTree.h"
 
-bool UACEUIGameplayBinder::CanMoveInventoryAmountToContainer(int32 Guid, int32 Container, int32 Amount, int32 MergeTarget) const
+bool UACEUIGameplayBinder::CanMoveInventoryAmountToContainer(int32 Guid, int32 Container, int32 Amount, int32 MergeTarget, bool bAutoMerge) const
 {
 	FACEWorldObject Item, Destination;
 	if (!Client || !Guid || !Container || Guid == Client->GetPlayerGuid() || Guid == Container
@@ -39,19 +39,14 @@ bool UACEUIGameplayBinder::CanMoveInventoryAmountToContainer(int32 Guid, int32 C
 	}
 	// A full move within the same pack simply reorders its existing slot.
 	if (Item.ContainerId == Container && Amount == FMath::Max(1, Item.StackSize)) return true;
-	if (const auto Session=Client->GetSession();Session && Session->FindContainerMergeTarget(Guid,Container,Amount)) return true;
+	const auto Session=Client->GetSession();
+	if (bAutoMerge && Session && Session->FindContainerMergeTarget(Guid,Container,Amount)) return true;
 	// Match the inventory's seven default side slots when a player descriptor
 	// omits capacity. Zero on an ordinary bag still means no nested packs.
 	const int32 Capacity = bPack ? (Container == Client->GetPlayerGuid() && Destination.ContainersCapacity == 0
 		? 7 : Destination.ContainersCapacity) : Destination.ItemsCapacity;
 	if (Capacity == -1) return true;
-	if (bPack)
-	{
-		TArray<int32> Packs;
-		if (const auto Session = Client->GetSession()) Session->GetContainerPackGuids(Container, Packs);
-		return Capacity > Packs.Num();
-	}
-	return Capacity > Client->GetPackItems(Container).Num();
+	return Session && Capacity > Session->CountContainerSlots(Container,bPack);
 }
 
 void UACEUIGameplayBinder::UpdateInventoryContainerDropFeedback(FVector2D CanvasLocalPos)
@@ -142,7 +137,8 @@ void UACEUIGameplayBinder::UpdateInventoryContainerDropFeedback(FVector2D Canvas
 			}
 	}
 	FACEWorldObject DragItem;const bool DragIsPack=Client->GetWorldObject(InvDragGuid,DragItem)
-        && ((DragItem.ItemType & ACEItemType::Container) || (DragItem.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot));
+        && (ACEInventoryRules::IsContainer(DragItem) || (DragItem.ItemType & ACEItemType::Container)
+			|| (DragItem.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot));
 	if (OpenLootContainerGuid)
 	{
 		// Icons include the root at index zero; background slots do not.
@@ -165,7 +161,7 @@ void UACEUIGameplayBinder::UpdateInventoryContainerDropFeedback(FVector2D Canvas
 			auto* Cell=ExtItemSlots[I].Get();
 			if (!Cell || !Cell->IsVisible() || !Canvas->IsWidgetExposedAt(Cell,Absolute)) continue;
 			const int32 Target=ExtItemGuids.IsValidIndex(I) ? ExtItemGuids[I] : 0;
-			Mark(Cell, !DragIsPack && CanMoveInventoryAmountToContainer(InvDragGuid,Container,Amount,Target),
+			Mark(Cell, !DragIsPack && CanMoveInventoryAmountToContainer(InvDragGuid,Container,Amount,Target,false),
 				false, TEXT("RootGameplay_FloatyEnvPanel_Field"));
 			return;
 		}
@@ -174,7 +170,11 @@ void UACEUIGameplayBinder::UpdateInventoryContainerDropFeedback(FVector2D Canvas
 	{
 		auto* Cell=PackSlotBgs.IsValidIndex(I) && PackSlotBgs[I] && PackSlotBgs[I]->IsVisible() ? PackSlotBgs[I].Get() : PackSlots[I].Get();
 		if (!Cell || !Cell->IsVisible() || !Canvas->IsWidgetExposedAt(Cell,Absolute)) continue;
-		const bool Reorder = (InvDragPackSlotIndex != INDEX_NONE || DragIsPack) && InvDragGuid != Client->GetPlayerGuid();
+		FACEWorldObject TargetPack;
+		const bool Nest = PackSlotGuids[I]!=Client->GetPlayerGuid()
+			&& Client->GetWorldObject(PackSlotGuids[I],TargetPack) && TargetPack.ContainersCapacity!=0;
+		const bool Reorder = (InvDragPackSlotIndex != INDEX_NONE || DragIsPack)
+			&& InvDragGuid != Client->GetPlayerGuid() && !Nest;
 		const int32 Container = Reorder ? Client->GetPlayerGuid() : PackSlotGuids[I];
 		Mark(Cell, CanMoveInventoryAmountToContainer(InvDragGuid,Container,Amount), !Reorder, TEXT("InventoryPanel_Field"));
 		return;
@@ -188,7 +188,7 @@ void UACEUIGameplayBinder::UpdateInventoryContainerDropFeedback(FVector2D Canvas
 			&& !(Item.ItemType & ACEItemType::Container) && !(Item.ObjectDescriptionFlags & ACEObjectDescFlag::RequiresPackSlot);
 		if (InventorySlotBgs.IsValidIndex(Visible))
 			Mark(InventorySlotBgs[Visible], Ordinary && CanMoveInventoryAmountToContainer(InvDragGuid,
-				SelectedPackGuid ? SelectedPackGuid : Client->GetPlayerGuid(),Amount,Target), false, TEXT("InventoryPanel_Field"));
+				SelectedPackGuid ? SelectedPackGuid : Client->GetPlayerGuid(),Amount,Target,false), false, TEXT("InventoryPanel_Field"));
 	}
 }
 
@@ -249,13 +249,13 @@ bool UACEUIGameplayBinder::TryDropInExternalContainer(int32 Guid, int32 Amount, 
 			if (!MergeInventoryAmount(Guid, ExtItemGuids[I], Amount))
 			{
 				const int32 Place = ResolveInventoryDropPlacement(Guid, Amount, Container, ExtItemGuids[I]);
-				if (Place != INDEX_NONE) MoveInventoryAmount(Guid, Container, Place, Amount);
+				if (Place != INDEX_NONE) MoveInventoryAmount(Guid, Container, Place, Amount, false);
 			}
 			return true;
 		}
 	const auto List = Manager->FindElementUnder(TEXT("ExternalContainer"), TEXT("Ext_Container_ItemList"));
 	if (!List || !Canvas->IsElementExposedAt(List, Canvas->GetCachedGeometry().AbsoluteToLocal(Absolute))) return false;
-	MoveInventoryAmount(Guid, Container, Client->GetPackItems(Container).Num(), Amount);
+	MoveInventoryAmount(Guid, Container, Client->GetPackItems(Container).Num(), Amount, false);
 	return true;
 }
 
@@ -272,10 +272,14 @@ void UACEUIGameplayBinder::PickupInventoryAmount(int32 Guid, int32 Amount)
 {
 	if (!Client) return;
 	if (Amount <= 0) Amount = GetSelectedItemAmount(Guid);
-	MoveInventoryAmount(Guid, Client->ResolvePickupContainer(Guid, SelectedPackGuid, Amount), 0, Amount);
+	if(Amount<=0)return;
+	const auto Pickup=Client->PlanInventoryPickup(Guid,SelectedPackGuid,Amount);
+	if(Pickup.MergeTarget)MergeInventoryAmount(Guid,Pickup.MergeTarget,Amount);
+	else if(Pickup.Container)MoveInventoryAmount(Guid,Pickup.Container,0,Amount,false);
+	else PostInventorySystemMessage(TEXT("No pack has room for that item."));
 }
 
-void UACEUIGameplayBinder::MoveInventoryAmount(int32 Guid, int32 Container, int32 Placement, int32 Amount)
+void UACEUIGameplayBinder::MoveInventoryAmount(int32 Guid, int32 Container, int32 Placement, int32 Amount, bool bAutoMerge)
 {
 	FACEWorldObject Item;
 	if (!Client || !Container || Amount <= 0 || !Client->GetWorldObject(Guid, Item)) return;
@@ -292,9 +296,14 @@ void UACEUIGameplayBinder::MoveInventoryAmount(int32 Guid, int32 Container, int3
 		return;
 	}
 	Amount = FMath::Min(Amount, FMath::Max(1, Item.StackSize));
-	if(const auto Session=Client->GetSession())
+	if(const auto Session=Client->GetSession();bAutoMerge && Session)
 		if(const int32 Target=Session->FindContainerMergeTarget(Guid,Container,Amount))
 			if(MergeInventoryAmount(Guid,Target,Amount))return;
+	if(!bAutoMerge && !CanMoveInventoryAmountToContainer(Guid,Container,Amount,0,false))
+	{
+		PostInventorySystemMessage(TEXT("That pack cannot accept this item."));
+		return;
+	}
 	// UIElement_ItemList only removes the source's old position for a full move.
 	// A split inserts a NEW object; the remainder keeps its original slot.
 	if (Amount < Item.StackSize)
@@ -303,7 +312,7 @@ void UACEUIGameplayBinder::MoveInventoryAmount(int32 Guid, int32 Container, int3
 		InventorySelectionSplit.ContainerGuid = Container;
 		Client->SendStackableSplitToContainer(Guid, Container, Placement, Amount);
 	}
-	else Client->SendPutItemInContainer(Guid, Container, Placement);
+	else Client->SendPutItemInContainer(Guid, Container, Placement,false);
 }
 
 bool UACEUIGameplayBinder::MergeInventoryAmount(int32 Guid, int32 TargetGuid, int32 Amount)

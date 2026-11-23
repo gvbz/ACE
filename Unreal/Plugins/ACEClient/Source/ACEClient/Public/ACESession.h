@@ -391,6 +391,7 @@ public:
 	/** Same ordered pack IDs as GetPlayerPacks; query afresh after session changes. */
 	void GetPlayerPackGuids(TArray<int32>& Out) const;
 	void GetContainerPackGuids(int32 ContainerGuid, TArray<int32>& Out) const;
+	int32 CountContainerSlots(int32 ContainerGuid, bool bPackSlots, int32 Exclude = 0) const;
 
 	/** GameAction Talk (0x0015) — local chat / @commands. */
 	void SendTalk(const FString& Message);
@@ -464,9 +465,9 @@ public:
 	void SendEmote(const FString& EmoteText);
 
 	/** GameAction PutItemInContainer (0x0019) — drag & drop into a pack (Placement = slot index). */
-	void SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement);
+	void SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement, bool bAutoMerge = true);
 	/** Retail auto-merge: first destination stack that can hold the entire selected amount. */
-	int32 FindContainerMergeTarget(int32 ItemGuid, int32 ContainerGuid, int32 Amount) const;
+	int32 FindContainerMergeTarget(int32 ItemGuid, int32 ContainerGuid, int32 Amount, bool bIncludeSourcePack = false) const;
 
 	/** GameAction StackableMerge (0x0054) — combine stackables by guid (amount of From into To). */
 	void SendStackableMerge(int32 MergeFromGuid, int32 MergeToGuid, int32 Amount);
@@ -988,6 +989,7 @@ private:
 	void RemoveFromContainerLists(int32 ItemGuid);
 	/** Side-pack / foci items share a separate PlacementPosition namespace from main-pack loot. */
 	static bool IsPackSlotItem(const FACEWorldObject& Obj);
+	void GetInventorySlotGuids(int32 ContainerGuid, bool bPackSlots, TArray<int32>& Out) const;
 	/**
 	 * Index into a (possibly mixed item/pack) ContainerContents list for a slot Placement
 	 * in that ContainerType namespace — matches UI DestSlot / server PlacementPosition.
@@ -1247,6 +1249,12 @@ private:
 	int32 VendorCurrencyCount = 0;
 	uint32 VendorReportedCurrencyWeenie = 0;
 	int32 VendorServerFunds = 0;
+	bool bVendorHasSupplementalCurrency = false;
+	bool UsesReportedVendorCurrency() const
+	{
+		return VendorCurrencyWeenie != 0 && VendorCurrencyWeenie == VendorReportedCurrencyWeenie
+			&& (bVendorHasSupplementalCurrency || !bVendorCurrencyInInventory);
+	}
 	int32 PendingVendorCurrencyCost = 0;
 	mutable bool bVendorCurrencyInInventory = false;
 	mutable uint64 VendorPurseRevision = MAX_uint64;

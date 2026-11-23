@@ -21,6 +21,16 @@ bool FACEUCMBuffParityTest::RunTest(const FString&)
     auto Start=[&](FACEPluginVM& VM){TestTrue(TEXT("Buff policy loads"),VM.Load(Source,Error));};
     auto Enchant=[](auto S,double Remaining,int Power=100)
     {auto E=BuffJson(TEXT(R"({"id":10,"category":1,"power":100,"duration":1800})"));E->SetNumberField(TEXT("remaining"),Remaining);E->SetNumberField(TEXT("power"),Power);S->SetArrayField(TEXT("enchantments"),{MakeShared<FJsonValueObject>(E)});};
+    for(int32 Level:{80,81})for(bool Trained:{false,true})
+    {
+        FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();
+        P->SetNumberField(TEXT("untrained_creature_buff_max_character_level"),80);
+        P->SetArrayField(TEXT("buffs"),{MakeShared<FJsonValueNumber>(10)});
+        S->SetNumberField(TEXT("level"),Level);
+        if(Trained)S->SetArrayField(TEXT("trained_skills"),{MakeShared<FJsonValueNumber>(31)});
+        TestEqual(TEXT("Imported limit uses character level only for an untrained school"),
+            Step(VM,S,P)->HasField(TEXT("spell")),Trained||Level<=80);
+    }
     {
         FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("item_mana"),true);
         auto Items=S->GetArrayField(TEXT("inventory"));
@@ -245,6 +255,77 @@ bool FACEUCMBuffParityTest::RunTest(const FString&)
         P->SetArrayField(TEXT("buff_items"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"name":"Shield","spell":10})")))});
         FACEPluginVM Consumable;Start(Consumable);
         TestFalse(TEXT("Item magic disabled also prevents a configured item from applying it"),Step(Consumable,S,P)->HasField(TEXT("item")));
+    }
+    return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEUCMIdleBuffTest,"ACE.Plugins.IdleBuffMaintenance",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
+bool FACEUCMIdleBuffTest::RunTest(const FString&)
+{
+    FString Source,Error;
+    FFileHelper::LoadFileToString(Source,*(IPluginManager::Get().FindPlugin(TEXT("ACEClient"))->GetBaseDir()/TEXT("ClientMods/ucm/main.lua")));
+    auto Snapshot=[](){return BuffJson(TEXT(R"({"time":100,"player":1,"health":100,"max_health":100,"stamina":100,"max_stamina":100,"mana":100,"max_mana":100,"ready":true,"busy":false,"action_serial":0,"action_error":0,"combat_mode":8,"components_required":false,"targets":[],"inventory":[{"id":99,"type":32768,"equipped":true,"can_wield":true},{"id":50,"type":2,"slots":512,"equipped":true,"identified":true},{"id":51,"name":"Buff gem","usable":true,"count":10}],"spells":[{"id":10,"category":1,"power":100,"skill":300,"school":4,"duration":600,"self_buff":true,"beneficial":true,"caster_target":true}],"enchantments":[]})"));};
+    auto Profile=[](){return BuffJson(TEXT(R"({"buffing":true,"recovery":false,"combat":"off","idle_buff_topoff":true,"idle_buff_seconds":1200,"refresh_seconds":300,"ignore_monsters":["Tusker"]})"));};
+    auto Step=[&](FACEPluginVM& VM,auto S,auto P){TSharedPtr<FJsonObject> I;TestTrue(*Error,VM.Step(S,P,I,Error));return I?I:MakeShared<FJsonObject>();};
+    // Character buffs, confirmed armor banes and consumables all use the actual
+    // server duration, including extensions beyond the spell's base duration.
+    for(int Kind:{0,1,2})for(double Duration:{600.,3600.})for(double Fraction:{.5,.101,.1,0.})
+    {
+        FACEPluginVM VM;TestTrue(TEXT("Idle buff policy loads"),VM.Load(Source,Error));
+        auto S=Snapshot(),P=Profile();auto Spell=S->GetArrayField(TEXT("spells"))[0]->AsObject();
+        const double Remaining=Duration*Fraction;
+        auto Timer=BuffJson(TEXT(R"({"id":10,"category":1,"power":100,"target":1})"));
+        Timer->SetNumberField(TEXT("duration"),Duration);Timer->SetNumberField(TEXT("remaining"),Remaining);Timer->SetNumberField(TEXT("expires"),100+Remaining);
+        if(Kind==1)
+        {
+            Spell->SetNumberField(TEXT("category"),162);Spell->SetNumberField(TEXT("school"),3);Spell->SetNumberField(TEXT("target_type"),6);
+            Timer->SetNumberField(TEXT("category"),162);S->SetArrayField(TEXT("item_buffs"),{MakeShared<FJsonValueObject>(Timer)});
+        }
+        else S->SetArrayField(TEXT("enchantments"),{MakeShared<FJsonValueObject>(Timer)});
+        if(Kind==2)
+        {
+            P->SetBoolField(TEXT("auto_buffs"),false);
+            P->SetArrayField(TEXT("buff_items"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"name":"Buff gem","spell":10})")))});
+        }
+        const auto I=Step(VM,S,P);
+        TestEqual(*FString::Printf(TEXT("Idle buff kind %d, duration %.0f, remaining %.0f refreshes only near expiry"),Kind,Duration,Remaining),
+            I->HasField(Kind==2?TEXT("item"):TEXT("spell")),Fraction<=.1);
+    }
+    for(bool Force:{false,true})for(int Kind:{0,1,2})
+    {
+        FACEPluginVM VM;TestTrue(TEXT("Combat idle policy loads"),VM.Load(Source,Error));auto S=Snapshot(),P=Profile();
+        if(Kind==1)
+        {
+            auto Spell=S->GetArrayField(TEXT("spells"))[0]->AsObject();Spell->SetNumberField(TEXT("category"),162);
+            Spell->SetNumberField(TEXT("school"),3);Spell->SetNumberField(TEXT("target_type"),6);
+        }
+        if(Kind==2)
+        {
+            P->SetBoolField(TEXT("auto_buffs"),false);
+            P->SetArrayField(TEXT("buff_items"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"name":"Buff gem","spell":10})")))});
+        }
+        S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":500,"name":"Tusker","distance":1,"health_fraction":1,"line_of_sight":true})")))});
+        if(Force)S->SetNumberField(TEXT("force_buff_request"),1);
+        TestEqual(TEXT("Ignored nearby monsters defer missing self buffs and consumables unless explicitly forced"),Step(VM,S,P)->HasField(TEXT("action")),Force);
+        if(!Force)
+        {
+            S->SetNumberField(TEXT("time"),401);
+            TestFalse(TEXT("Waiting five minutes in a fight does not force a buff"),Step(VM,S,P)->HasField(TEXT("action")));
+            S->SetArrayField(TEXT("targets"),{});S->SetNumberField(TEXT("time"),402);
+            TestTrue(TEXT("Missing buffs resume as soon as the area clears"),Step(VM,S,P)->HasField(TEXT("action")));
+        }
+    }
+    {
+        FACEPluginVM VM;TestTrue(TEXT("Interrupted idle buff policy loads"),VM.Load(Source,Error));auto S=Snapshot(),P=Profile();
+        auto Spells=S->GetArrayField(TEXT("spells"));auto Second=MakeShared<FJsonObject>(*Spells[0]->AsObject());
+        Second->SetNumberField(TEXT("id"),11);Second->SetNumberField(TEXT("category"),3);Spells.Add(MakeShared<FJsonValueObject>(Second));S->SetArrayField(TEXT("spells"),Spells);
+        TestEqual(TEXT("Quiet area begins the first missing buff"),Step(VM,S,P)->GetNumberField(TEXT("spell")),10.);
+        S->SetArrayField(TEXT("enchantments"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":10,"category":1,"power":100,"remaining":599,"duration":600})")))});
+        S->SetNumberField(TEXT("action_serial"),1);S->SetNumberField(TEXT("last_spell"),10);S->SetBoolField(TEXT("last_spell_confirmed"),true);S->SetNumberField(TEXT("time"),101);
+        S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(BuffJson(TEXT(R"({"id":500,"name":"Olthoi","distance":1,"line_of_sight":true})")))});
+        TestFalse(TEXT("A monster arriving mid-cycle defers the next buff"),Step(VM,S,P)->HasField(TEXT("spell")));
+        S->SetArrayField(TEXT("targets"),{});S->SetNumberField(TEXT("time"),102);
+        TestEqual(TEXT("After combat only the remaining missing buff is cast"),Step(VM,S,P)->GetNumberField(TEXT("spell")),11.);
     }
     return true;
 }

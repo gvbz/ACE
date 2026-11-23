@@ -445,6 +445,29 @@ bool FACEUCMRouteSaveEndToEndTest::RunTest(const FString&)
         for(const TCHAR* Surface:{TEXT("Overview"),TEXT("Route")}){Page(Surface);if(!Choose(Name))return false;}
     }
     Page(TEXT("Route"));
+    {
+        Plugin->Running=true;
+        ON_SCOPE_EXIT{Plugin->Running=false;};
+        Host->RoutePoint=1;
+        Host->MovementOwner=TEXT("ucm");
+        Host->bMovingAlongRoute=true;
+        FACEPosition Pos;Pos.CellId=0x7D640001;Pos.Location=FVector(15,25,3);Session->SetLocalPosition(Pos);
+        if(!Button(TEXT("Edit position"))||!Button(TEXT("Use my position")))return false;
+        auto X=Find(Panel.ToSharedRef(),TEXT("UCMRoutePosition.X"),false);
+        if(!TestTrue(TEXT("The waypoint X coordinate is editable"),X.IsValid()))return false;
+        Slate.SetUserFocus(0,X);
+        const FModifierKeysState Ctrl(false,false,true,false,false,false,false,false,false);
+        Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::A,Ctrl,0,false,0,0));
+        Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::A,Ctrl,0,false,0,0));
+        for(TCHAR Ch:FString(TEXT("15.75")))Slate.ProcessKeyCharEvent(FCharacterEvent(Ch,FModifierKeysState(),0,false));
+        if(!Button(TEXT("Save position")))return false;
+        TestTrue(TEXT("Saving the edited point leaves UCM running"),Plugin->Running);
+        TestEqual(TEXT("Editing preserves the ordered waypoint cursor"),Host->RoutePoint,1);
+        TestTrue(TEXT("Editing clears the old navigation steering"),Host->MovementOwner.IsEmpty());
+        const auto Saved=ReadRoute(TEXT("Academy Loop"))->GetArrayField(TEXT("route"))[0]->AsObject();
+        TestEqual(TEXT("Typed coordinates are saved without pressing Enter"),Saved->GetNumberField(TEXT("x")),15.75);
+        TestEqual(TEXT("Copied player coordinates are saved"),Saved->GetNumberField(TEXT("y")),25.);
+    }
     if(!Create(TEXT("Academy Loop"),false,false))return false;
     TestTrue(TEXT("Duplicate explains how to use the existing route"),Host->Notice.Contains(TEXT("already exists")));
     TestEqual(TEXT("Duplicate leaves recorded route intact"),ReadRoute(TEXT("Academy Loop"))->GetArrayField(TEXT("route")).Num(),3);

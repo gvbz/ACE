@@ -414,6 +414,8 @@ bool FACEUCMPolicyTest::RunTest(const FString&)
         I=Check(VM,S,P);TestEqual(TEXT("Combat resumes when target becomes unobstructed"),I->GetStringField(TEXT("action")),FString(TEXT("attack")));
         Target->SetBoolField(TEXT("line_of_sight"),false);
         I=Check(VM,S,P);TestEqual(TEXT("Losing sight cancels any repeating attack"),I->GetStringField(TEXT("action")),FString(TEXT("cancel_attack")));
+        I=Check(VM,S,P);TestEqual(TEXT("A still-closed door keeps the route waiting"),I->GetStringField(TEXT("status")),FString(TEXT("Waiting for route door")));
+        S->GetArrayField(TEXT("route_objects"))[0]->AsObject()->SetBoolField(TEXT("door_open"),true);
         I=Check(VM,S,P);TestEqual(TEXT("Then continues walking the route"),I->GetStringField(TEXT("action")),FString(TEXT("move")));
         Target->SetBoolField(TEXT("line_of_sight"),true);P->SetNumberField(TEXT("radius"),10);
         I=Check(VM,S,P);TestEqual(TEXT("Global attack range stops premature firing"),I->GetStringField(TEXT("action")),FString(TEXT("move")));
@@ -610,6 +612,42 @@ bool FACEUCMPolicyTest::RunTest(const FString&)
         auto I=Check(VM,S,P);TestEqual(TEXT("Launcher chooses compatible ammunition by effective element damage"),I->GetNumberField(TEXT("item")),52.);
         S->GetArrayField(TEXT("inventory"))[2]->AsObject()->SetBoolField(TEXT("equipped"),true);I=Check(VM,S,P);
         TestEqual(TEXT("Missile attack waits for ammunition equipment confirmation"),I->GetStringField(TEXT("action")),FString(TEXT("attack")));
+    }
+    for(int32 Kind:{1,2,4})
+    {
+        FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();
+        P->SetStringField(TEXT("combat"),TEXT("missile"));P->SetBoolField(TEXT("auto_craft_ammo"),true);
+        P->SetNumberField(TEXT("craft_ammo_minimum"),25);P->SetNumberField(TEXT("damage_type"),16);
+        Array(S,TEXT("targets"),TEXT(R"({"values":[{"id":500,"name":"Target","distance":20,"identified":true,"line_of_sight":true}]})"));
+        auto Bow=ParseUCM(TEXT(R"({"id":50,"name":"Launcher","type":256,"equipped":true,"identified":true,"can_wield":true,"damage_type":2,"damage_mod":2})"));
+        Bow->SetNumberField(TEXT("ammo_type"),Kind);
+        auto Crafting=ParseUCM(TEXT(R"({"pending":false,"candidates":[{"phase":"ammunition","recipe":"wrong-family","name":"Wrong family","ammo_type":8,"damage_type":16,"quality":6},{"phase":"ammunition","recipe":"wrong-element","name":"Wrong element","damage_type":8,"quality":6},{"phase":"ammunition","recipe":"matching-bundle","name":"Fire ammunition","damage_type":16,"quality":2}]})"));
+        const auto& Offers=Crafting->GetArrayField(TEXT("candidates"));
+        Offers[1]->AsObject()->SetNumberField(TEXT("ammo_type"),Kind);
+        Offers[2]->AsObject()->SetNumberField(TEXT("ammo_type"),Kind);
+        S->SetObjectField(TEXT("crafting"),Crafting);
+        auto Ammo=ParseUCM(TEXT(R"({"id":51,"name":"Fire ammunition","type":256,"slots":8388608,"equipped":true,"identified":true,"can_wield":true,"count":12,"damage":25,"damage_type":16})"));
+        Ammo->SetNumberField(TEXT("ammo_type"),Kind);
+        auto Spare=MakeShared<FJsonObject>(*Ammo);Spare->SetNumberField(TEXT("id"),52);Spare->SetBoolField(TEXT("equipped"),false);Spare->SetNumberField(TEXT("count"),13);
+        S->SetArrayField(TEXT("inventory"),{MakeShared<FJsonValueObject>(Bow),MakeShared<FJsonValueObject>(Ammo),MakeShared<FJsonValueObject>(Spare)});
+        TestEqual(TEXT("Equipped and pack stocks meeting the threshold keep firing"),Check(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("attack")));
+        Spare->SetNumberField(TEXT("count"),12);
+        TestEqual(TEXT("Below threshold, craft for the launcher and selected damage type"),Check(VM,S,P)->GetStringField(TEXT("recipe")),FString(TEXT("matching-bundle")));
+        S->SetArrayField(TEXT("inventory"),{MakeShared<FJsonValueObject>(Bow)});
+        auto Requested=Check(VM,S,P);
+        TestEqual(TEXT("Zero stock can prepare a matching bundle batch"),Requested->GetStringField(TEXT("recipe")),FString(TEXT("matching-bundle")));
+        TestTrue(TEXT("Ammo automation is forwarded to the native crafting service"),Requested->GetObjectField(TEXT("services_profile"))->GetBoolField(TEXT("auto_craft_ammo")));
+        Crafting->SetBoolField(TEXT("pending"),true);S->SetBoolField(TEXT("busy"),true);
+        TestEqual(TEXT("An active batch drives the native receipt even while busy"),Check(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("craft")));
+        Crafting->SetBoolField(TEXT("pending"),false);S->SetBoolField(TEXT("busy"),false);
+        Ammo->SetNumberField(TEXT("count"),100);Ammo->SetBoolField(TEXT("equipped"),false);
+        S->SetArrayField(TEXT("inventory"),{MakeShared<FJsonValueObject>(Bow),MakeShared<FJsonValueObject>(Ammo)});
+        TestEqual(TEXT("Crafted stock is equipped before missile combat resumes"),Check(VM,S,P)->GetNumberField(TEXT("item")),51.);
+        Ammo->SetBoolField(TEXT("equipped"),true);
+        TestEqual(TEXT("The confirmed ammo stack restores missile attacks"),Check(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("attack")));
+        P->SetBoolField(TEXT("auto_craft_ammo"),false);
+        S->SetArrayField(TEXT("inventory"),{MakeShared<FJsonValueObject>(Bow)});
+        TestFalse(TEXT("Disabled ammo automation does not consume bundles"),Check(VM,S,P)->GetStringField(TEXT("action"))==TEXT("craft"));
     }
     {
         FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("navigation"),true);S->SetNumberField(TEXT("teleport_sequence"),4);
@@ -904,10 +942,11 @@ bool FACEPluginEquipmentTest::RunTest(const FString&)
             if(Dat->TryGetPluginSpellInfo(Id,School,Power,Category,Flags,Duration)&&School==5&&Category==Family&&Power<=300){SpellId=Id;break;}
         }
         if(!TestTrue(TEXT("Native fixture finds a real Void spell"),SpellId!=0))continue;
-        Session.KnownSpells={int32(SpellId)};TMap<FString,int32> Scarabs;
-        TestTrue(TEXT("Native Void components are known"),Dat->TryGetPluginSpellScarabs(SpellId,Scarabs));
+        Session.KnownSpells={int32(SpellId)};
+        TMap<FString,int32> Components;
+        TestTrue(TEXT("Native Void components are known"),Dat->TryGetPluginSpellComponents(SpellId,false,Components));
         int32 SupplyId=1000;
-        for(const auto& Pair:Scarabs)
+        for(const auto& Pair:Components)
         {
             FACEWorldObject Item;Item.Guid=SupplyId++;Item.Name=Pair.Key;Item.StackSize=100;
             Item.ContainerId=Session.PlayerGuid;Item.ItemType=ACEItemType::SpellComponents;Session.UpsertWorldObject(Item);

@@ -75,7 +75,7 @@ FString SectionFor(const FString& Key)
     // Run activity switches stay local to the setup; shared rules do not toggle
     // another hunt's activities when their settings are edited.
     static const TSet<FString> Run = {TEXT("buffing"), TEXT("combat"), TEXT("recovery"), TEXT("navigation"),
-        TEXT("looting"), TEXT("auto_craft"), TEXT("auto_fellowship"), TEXT("buff_others"), TEXT("vendor_restock"), TEXT("meta_enabled"), TEXT("idle_peace"),
+        TEXT("looting"), TEXT("auto_craft"), TEXT("auto_craft_ammo"), TEXT("auto_fellowship"), TEXT("buff_others"), TEXT("vendor_restock"), TEXT("meta_enabled"), TEXT("idle_peace"),
         TEXT("import_source"), TEXT("ucm_format_version"), TEXT("loot_revision"), TEXT("vt_revision"), TEXT("vt_loaded_kind")};
     if (Run.Contains(Key)) return TEXT("ucm");
     if (Key == TEXT("monsters") || Key == TEXT("monster_catalog") || Key == TEXT("monster_damage_version")) return TEXT("Monsters");

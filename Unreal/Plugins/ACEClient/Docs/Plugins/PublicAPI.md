@@ -1,349 +1,217 @@
 # Public plugin API 2
 
-API 2 exposes UCM's gameplay data and native action pipeline to independently
-named Lua plugins, plus structured native UI. API 1 manifests remain supported.
-This is a client API; server rules, spell timing, collision and ownership still
-apply. It does not load Decal DLLs or execute arbitrary native widget code.
+API 2 exposes native gameplay data, actions and UI to Lua plugins. API 1
+manifests remain supported.
 
-Start with [API Workbench](Examples/api_workbench/main.lua), its
-[manifest](Examples/api_workbench/plugin.json) and
-[default profile](Examples/api_workbench/default.json). Copy that directory into
-`Saved/ClientPlugins/Installed`, refresh Manage Plugins, enable its permissions,
-then Start. The example's activities start off. It has its own profiles and does
-not edit the built-in UCM configuration. The machine-readable action/field catalog is
-[`ClientMods/api.json`](../../ClientMods/api.json).
+Install the [API Workbench](Examples/api_workbench) folder under
+`Saved/ClientPlugins/Installed`, then refresh Manage Plugins, enable it and
+press **Start**. Its activities default to off. Find action and field signatures
+in [`ClientMods/api.json`](../../ClientMods/api.json).
 
 ## Find the functionality you need
 
-- Installation, enabled limits and execution: [lifecycle](#lifecycle-and-ownership).
-- Character, inventory, equipment and action results: [snapshots and permissions](#permissions-and-snapshots).
-- Item classification: [Loot matching](LootMatching.md), including appraisal and resumable evaluation.
-- Trackers that read server messages: [chat delivery and filters](#read-and-filter-chat).
-- Custom PNGs, gauges, timers, animation and controls: [native UI](#native-ui) and [Graphics Gallery](Examples/graphics_gallery/main.lua).
-- Color pickers, scale, offsets and container item selection: [Appearance Controls](Examples/appearance_controls/main.lua).
-- Target health, effects and opaque/translucent nameplates: [target data and world plates](#target-data-and-object-attached-plates).
-- Casting, combat, equipment, transfers and navigation: [game intents](#game-intents) and [built-in policies](#reuse-or-replace-the-built-in-policies).
-- Configuration, imports, outgoing chat and sounds: [services](#services-and-profiles).
-- Terrain navigation overlays: [terrain API](#optional-terrain-overlays-api-2).
-- Administrative content tools: [content service](#administrative-content-service-api-2).
-- Local appearance conversion: the separate [Local Cosmetics service](LocalCosmetics.md).
+- [Snapshots and permissions](#permissions-and-snapshots), [game intents](#game-intents), and [built-in policies](#reuse-or-replace-the-built-in-policies)
+- [Native UI](#native-ui) and [target plates](#target-data-and-object-attached-plates)
+- [Chat subscriptions and filters](#read-and-filter-chat), [local client channels](#channels-between-local-clients), and [companion APIs](Companions.md)
+- [Profiles and services](#services-and-profiles), [loot matching](LootMatching.md), and [local cosmetics](LocalCosmetics.md)
 
 ## Lifecycle and ownership
 
-The host discovers every valid installed plugin; disabled plugins no longer hide
-later folders. **Plugin Manager > Enabled plugin limit** defaults to **16**.
-Players may raise it or set **0** for unlimited. Only enabled plugins count;
-disabled plugins take no slot. An enabled but stopped plugin still counts, as
-does an enabled UI-only tool. Closing a window does not disable its plugin.
-Disabling frees a slot immediately. The limit is saved across restarts, and the
-manager rejects lowering it below the current enabled count without stopping
-any plugin. Bundled and third-party plugins use the same allowance.
+Set `"api":2` and choose a mode.
 
-This is a host preference, not a manifest property or Lua setter. Plugins cannot
-raise the limit, enable themselves, or grant permissions. `snapshot.plugins`
-lists discovered IDs with `{enabled, running}`; request `plugins` explicitly when
-using `snapshot_fields`. This map does not include the configured limit or other
-plugins' private data. The machine-readable catalog's `host.plugin_limit`
-describes the setting; it is not a live settings query. Increasing this allowance
-does not change VM memory/work quotas, world-plate limits, or automation ownership.
+- `"mode":"automation"` starts explicitly and stops on logout or character
+  change. One automation driver owns actions at a time. Starting another stops
+  the current driver. Bundled Item Tools temporarily pauses bundled UCM.
+- `"mode":"companion"` starts when enabled and logged in and runs beside the
+  automation driver. Closing either plugin window leaves the plugin running.
 
-Use `"api":2` with either `"mode":"automation"` or `"mode":"companion"`.
-Automation explicitly starts, owns game actions, and stops on logout/character
-change. Only one ordinary automation driver runs at a time; starting another
-stops the previous driver. Built-in Item Tools temporarily pauses built-in UCM.
-Companions auto-start when enabled and logged in, run beside the driver, and do
-not stop its casting, attacks, movement or recovery. Stopping a companion never
-stops UCM. Use companions for trackers and UI; automation for tools that actually
-fight, navigate, equip, loot or cast. Closing either window does not stop it.
+The host discovers every valid installed plugin. **Manage Plugins → Enabled
+plugin limit** defaults to 16, with 0 meaning unlimited. Enabled plugins count
+even when stopped, and disabling one frees a slot. The limit persists across
+restarts. The manager rejects a limit below the enabled count. The player
+controls this preference. Request `plugins` in `snapshot_fields` to read
+each discovered ID's `{enabled, running}` state. The host preference is not
+exposed as a Lua setter; `host.plugin_limit` in the catalog describes its schema.
 
-Callbacks remain `return function(snapshot, profile) ... end`. The output can
-combine a game intent with `presentation`, `ui`, `chat_filters`, `state`, `markers`, `messages`, `requests`, and
-`profile_patch`. Return nil for no change. Explicit empty UI/marker/message/request
-arrays clear those lists; omitted presentation fields retain the previous display.
-The tables given to Lua are copies. To change native state, return an intent or a
-service request; mutating a snapshot does nothing to the game.
+Write `return function(snapshot, profile) ... end`. Return an intent and any
+supported structured output in one table, or `nil` for no change. Omitted
+presentation fields retain their current values. An explicit empty UI or marker
+list clears it. An empty message or request list submits no work. Lua receives
+copies of the snapshot and profile. Return an intent, service request or
+`profile_patch` to change host state.
 
-Automation uses UCM's completion/vitals/target-death wakes and action gates, not a
-second timer that slows it down. Companion callbacks are limited to 2 Hz. There
-is no permission to override casting delays, teleport, bypass collision or send
-raw packets. Each VM has a 32 MiB heap (including host-provided snapshots and profiles) and
-250,000 instructions per callback. Use
-`workavailable()` to split large jobs across callbacks.
+Automation uses native action gates and wakes on game updates. Each Lua VM
+has a 32 MiB heap and 250,000 instructions per callback. Use
+[`workavailable()`](#sandbox-helper-functions) for incremental jobs.
 
-Companion manifests may set `"update_interval": 2.0` (seconds, 0.5–60;
-default 0.5). Due callbacks are scheduled round-robin, at most one companion
-per rendered frame. Input events may wake a callback earlier. Native snapshot
-data is shared with other readers in that host tick and invalidated by actions;
-each Lua VM still receives its own tables.
+Companions default to a 0.5-second callback interval. The manifest may set
+`update_interval` from 0.5 to 60 seconds. Due companions run round-robin, with
+at most one callback per rendered frame. Input events may wake them sooner.
 
-API 2 companions may opt into `"snapshot_fields"`, an array of top-level field
-names. For example, `"snapshot_fields":["character_name","level","char_ints",
-"action_serial","health","max_health"]` avoids building inventory, spells,
-target scans, and vendor data. With no list, the existing full snapshot remains
-available. `api`, `time`, `unix_time`, `player`, `server`, `state`, `error`,
-`events`, and `capabilities` are always retained. Permissions still apply;
-listing a field never grants access. Character qualities, `character_name`,
-`level`, and action results require `data`. Inventory-only observers use the
-cached inventory path described below. Other full automation fields can build
-the shared full snapshot before filtering; use only
-the fields your observer needs to reduce native work and Lua allocations.
+Companions may set `snapshot_fields` to the top-level fields they need.
+Omit it for the full permitted snapshot. `api`, `time`, `unix_time`,
+`player`, `server`, `state`, `error`, `events` and `capabilities` are
+always included. Character qualities, `character_name`, `level` and action
+results require `data`. Selective snapshots can use the cached inventory path. Some automation
+fields still require building the full snapshot before filtering.
 
-Character quality maps (`char_ints`, `char_quads`, `char_doubles`, `char_bools`,
-and `char_strings`) use decimal property IDs as string keys. They reflect the
-server's received character qualities, including custom IDs, live replacements
-and removals. A removed key is absent (`nil` in Lua); an explicit zero, false
-quality or empty string remains present. `char_bools` values are numeric `0`/`1`,
-so compare them explicitly rather than using Lua truthiness. Missing qualities
-are not universally equivalent to zero: for example, an absent
-`SpellComponentsRequired` bool (68) means components are required. Use the
-derived `components_required` field for that policy. `char_strings["1"]` may
-still fall back to the player's public object name when the name quality is
-absent. These maps describe the current character, not arbitrary nearby objects.
+Character quality maps `char_ints`, `char_quads`, `char_doubles`, `char_bools`
+and `char_strings` use decimal property IDs as string keys. Removed keys become
+`nil`. Explicit zero, false and empty strings remain present. In `char_bools`,
+compare numeric 0/1 explicitly. Use the derived `components_required` field,
+since an absent bool 68 means components are required.
+`char_strings["1"]` can fall back to the public character name.
 
-`vendor_purchase_funds` is the open vendor's spendable balance, identical to the
-vendor window's "you have" amount (zero when no vendor is open). Ordinary vendors
-use the server's `CoinValue`; this includes bank funds on custom servers that
-advertise them there. Alternate currencies use their live physical or
-server-managed balance, including pending-purchase reservations. Do not add
-`pyreals` to this value: `pyreals` counts carried coin stacks separately. Use the
-vendor balance for affordability and trade-note shortfalls; confirm purchases
-from inventory receipts, not a balance change alone.
+`vendor_purchase_funds` is the open vendor's spendable balance shown as
+"you have", or zero with no vendor open. It includes bank funds when the server
+advertises them in `CoinValue`. Alternate currencies use the live physical or
+server-managed balance with pending purchase reservations. `pyreals` counts
+carried coins separately. Confirm purchases through inventory receipts.
 
 ## Plugin title and toolbar icon
 
-Every plugin can set a default display title and its own artwork in `plugin.json`:
+Set a default title and icon filename in `plugin.json`:
 
 ```json
 "presentation": { "title": "Kill Task Tracker", "icon": "tracker.png" }
 ```
 
-Put the PNG at `images/tracker.png` inside that plugin's folder. It appears in
-Manage Plugins and the plugin bar. The full title appears on hover and in the
-window header. Standalone plugin windows do not repeat that title above the
-Start/Stop controls; authors do not need to add a title row to `ui`. The embedded
-login/VR manager keeps a heading to identify the selected plugin. Without a title,
-the manifest's `name` is used. Without a usable
-icon, the built-in emblem or generic extension sigil remains visible. Images
-keep their original aspect ratio inside the 26-pixel icon area; square transparent
-artwork is recommended.
+Save the PNG under the plugin's `images/` directory. The title appears in the
+window header and on hover. Without a usable title or icon, the host uses the
+manifest name and a built-in emblem. Icons preserve aspect ratio in the
+26-pixel toolbar slot.
 
-API 1 companions and API 2 plugins with `ui` permission may also return:
+With `ui` permission, API 1 companions and API 2 plugins can return runtime
+`presentation`:
 
 ```lua
-return function(s, p)
-  return {
-    presentation = {title="Kill Task Tracker - 12 / 50", icon="tracker.png"},
-    ui = {{id="progress", text="12 of 50 kills"}}
-  }
-end
+return {presentation = {title="Kill Task Tracker - 12 / 50",
+                        icon="tracker.png",
+                        window={opacity=0.35, pinned=true}}}
 ```
 
-Omitting `presentation` keeps the current values. Returning it replaces the
-runtime overrides: missing keys inherit the manifest defaults; `{}` restores
-all defaults. An empty title uses `name`; an empty icon uses the native emblem.
-Changes update open windows and the bar without restarting. Runtime overrides
-last until a character change or plugin reload; use the manifest for defaults
-that must appear before Lua starts. Metadata does not change the plugin's ID,
-permissions or saved files.
+Omit `presentation` to keep the current values. Supplying it replaces the
+runtime overrides. Missing fields inherit the manifest, and `{}` resets all
+overrides. An empty title or icon uses the host fallback. Runtime overrides
+last until character change or reload.
 
-Plugins can also supply window defaults in the manifest or runtime presentation:
+`window.opacity` is 0–1 and fades the window background and border.
+`window.pinned` hides the frame and locks the position. **Quick-show pinned
+windows** restores the frame temporarily. Player overrides take priority over
+plugin defaults, including **Use this opacity for all plugins**.
 
-```lua
-presentation = {
-  title = "Kill Task Tracker",
-  window = {opacity = 0.35, pinned = true}
-}
-```
-
-`window.opacity` is a number from 0 to 1. It fades backgrounds and borders only;
-text, item icons and interactive controls remain readable. `window.pinned` hides
-the title bar and border and locks the window's position, keeping its contents at
-the same screen position. The background retains the configured opacity whether
-pinned or unpinned. Hold the rebindable **Quick-show pinned
-windows** key (Left Control by default) to restore the header and resize controls.
-Runtime changes require `ui` permission and update existing widgets without
-rebuilding their controls. Player overrides in Manage Plugins take precedence
-over these defaults; **Use this opacity for all plugins** overrides every plugin's
-opacity. Omitted window fields inherit manifest defaults, just like title/icon.
-
-Titles allow up to 80 characters on one line. Icons are PNG filenames only (up
-to 96 characters), with no paths or URLs. PNGs are limited to 2 MiB compressed and
-1024 by 1024 pixels. Toolbar and UI images share one cache per plugin: at most 32
-assets and 16 MiB decoded. Missing or invalid images use the fallback; use Refresh
-in Manage Plugins after replacing image files on disk.
+Titles are single-line, up to 80 characters. Use a bare PNG filename of up
+to 96 characters for `icon`. Toolbar and UI assets share the [PNG cache limits](#native-ui).
+Refresh Manage Plugins after replacing a file.
 
 ## Native window controls
 
-The manifest's `presentation` object and runtime `presentation` output accept:
+Manifest and runtime `presentation` accept these settings:
 
 ```lua
 presentation = {
   controls = "toggle",       -- "start_stop" (default), "toggle", or "none"
   start_label = "Start tracker", stop_label = "Pause tracker",
-  settings = false,          -- hide the complete Settings and profiles section
-  status = false,            -- optional: hide the host's status text too
-  scroll = false             -- optional: paginated panel without host scrolling
+  settings = false,
+  status = false,
+  scroll = false
 }
 ```
 
-The toggle starts/stops the actual plugin; labels follow its running state.
-Labels are single-line strings of at most 40 characters; empty strings use
-Start/Stop. `settings`, `status` and `scroll` default to true. Defaults and overrides use
-the same inheritance/reset rules as title/icon. Changes preserve the open
-window and its control identities. These options apply to custom plugin panels;
-specialized built-in panels keep their own layout. Companions auto-start when
-enabled, making `controls="none"` useful for passive HUDs. Hiding settings only
-changes presentation; it does not remove the profile API or change permissions.
+The toggle starts or stops the plugin. Labels allow up to 40 characters on one
+line and fall back to Start/Stop. `settings`, `status` and `scroll` default
+to true. These options apply to custom native panels and inherit defaults
+like title and icon. Profile and permission APIs remain available when
+the host settings controls are hidden.
 
-With `scroll=false`, the host allocates the remaining window height to the custom
-UI and does not create a scroll box. While that panel is displayed, snapshots
-include `panel={width=...,height=...}` in logical UI units, updated on resize.
-Paginated plugins can use this to choose how many rows fit; provide a fallback
-before the panel's first layout. The last measured size remains when closed.
-Plugins are responsible for fitting their controls into this space.
+With `scroll=false`, fit your UI within the available `panel={width,height}`
+in logical units. The snapshot reports it after the panel first lays out,
+updates it on resize, and retains the last measurement when closed.
 
 ## Read and filter chat
 
-`chat` permission already provides `snapshot.chat_events`, including `raw_text`,
-formatted `text`, `sender`, `color`/`chat_type` (chat message type), `time`, and `serial`.
-Use these events to parse server-specific responses without hiding a chat window.
+`chat` grants `snapshot.chat_events`, with `raw_text`, formatted `text`,
+`sender`, `color`/`chat_type`, `time` and `serial`.
 
-To receive only relevant lines, declare `chat_subscriptions` in the manifest or
-return it from Lua. These rules filter delivery before messages enter the plugin's
-inbox; they do not change what players or other plugins see. For example:
+Set `chat_subscriptions` in the manifest or return it from Lua to filter the
+plugin's inbox. Rules are ORed, with all predicates within one rule required.
+An empty list subscribes to no lines. Omitting runtime subscriptions retains
+them. By default the plugin receives all chat. A changed subscription starts
+at the newest line. Repeating a registration preserves pending messages.
 
 ```json
 "chat_history": false,
 "chat_subscriptions": [
-  {"id":"kills", "prefix":"You have killed", "sender_type":"server"},
-  {"id":"solves", "contains":" solves (", "sender_type":"server"}
+  {"id":"kills","prefix":"You have killed","sender_type":"server"}
 ]
 ```
 
-Subscriptions use the same matching predicates as display filters below. Rules
-are ORed; predicates within a rule are ANDed. Omission retains subscriptions;
-an empty list subscribes to no lines. Without this option, existing plugins
-continue receiving all chat. A runtime change starts at the newest line; repeating
-the same registration preserves pending messages. Register in the manifest to
-cover responses before the first callback. Each subscriber retains up to 2,048
-matching events / 2 MiB of message text; delivery remains 128 events / 64 KiB per
-callback. `chat_pending`, `chat_more`, `chat_gap` and `chat_dropped` describe this
-matching inbox, so unrelated combat messages cannot delay quest responses.
+`chat_history=false` starts at the newest line. The default, true, allows
+retained messages from this login. Refresh preserves the delivery cursor.
+Each filtered inbox retains 2,048 matching events or 2 MiB of text. Callbacks
+receive up to 128 events or 64 KiB. Check `chat_pending`, `chat_more`,
+`chat_gap` and `chat_dropped` for backlog or loss.
 
-`chat_history=false` starts or restarts at the newest message. The default, true,
-allows retained messages from this login. Refresh preserves the existing cursor
-instead of replaying messages already delivered. Neither option replays past logins.
-
-Local `notice/show` output uses the **Plugin chat** category in Options > Chat.
-Players can independently enable it for each chat window. Notices retain their
-normal text color and enter bounded chat history, including while a window is
-closed. This category also covers UCM loot announcements. Server messages and
-echoes of `chat/send` retain their normal channel categories.
-
-The separate **`chat_filter` permission** allows display-only filtering. Return a
-`chat_filters` array to replace your plugin's active rules:
+Use the separate `chat_filter` permission and return `chat_filters` to alter
+how lines display. Rules apply to incoming `raw_text`. Hidden lines still reach
+plugin readers and any active chat log. Filtering applies to new lines.
 
 ```lua
-chat_filters = {{
-  id = "quest_dump", contains = " solves (", sender = "", chat_type = 0,
-  window = 0
-}}
+chat_filters = {{id="quests", contains=" solves (", sender="", chat_type=0,
+                 window=0, action="hide"}}
 ```
 
-This matches ACE/GDLe-format `/myquests` rows in main chat. It does not hide other
-Broadcast messages. Custom server formats may require different literals. The
-matching uses incoming `raw_text` before speaker/timestamp decoration. Rules run
-natively before a row is drawn, so a response does not flash until the next Lua
-callback. Hidden messages still reach **all** plugin readers and an enabled chat
-log file. Filtering never changes server state or messages, chat window settings,
-or existing chat history.
+Both rule types require an ID of 1–64 characters and at least one predicate.
+`contains`, `prefix`, `exact` and `pattern` allow up to 256 characters.
+Text predicates are literal except `pattern`, which uses bounded regex.
+`case_sensitive` defaults to false. `sender` is exact and `sender=""`
+matches a missing sender. `chat_type` is 0–63. `sender_type` accepts
+`player`, `npc`, `vendor`, `server` (no sender) or `unknown`, based on
+known speaker data. It is also included on chat events.
 
-Each rule has a unique `id` (1–64 characters) and at least one text, sender or
-message-type predicate. `contains`, `prefix`, `exact`, and `pattern` strings allow
-at most 256 characters. All supplied tests must
-match. Optional `sender` is an exact match; `sender=""` restricts matching to
-messages with no sender. `case_sensitive` defaults to false. `chat_type` optionally
-matches a numeric message type, 0–63. `window` is 0 for main chat, 1–4 for extra
-windows, or -1/omitted for all five. `seconds` optionally expires the rule after
-more than 0 and at most 300 seconds; omitting it keeps the rule until cleared.
-`contains`, `prefix`, and `exact` are literal. `pattern` is a regular expression
-using the same bounded regex engine as loot rules, not a Lua pattern. Matching
-has native work/stack limits. Invalid patterns are rejected during registration.
+Display rules accept `action="hide"` (default), `"show"` or `"color"`.
+`color` accepts red, green, blue, yellow, white or `#RRGGBB` and alone
+implies the color action. `window` is 0 for main chat, 1–4 for extra windows,
+or -1/omitted for all windows. `seconds` can expire a rule after a positive
+duration up to 300 seconds. `show` can bypass a window's category filter.
+Hide rules win conflicts. Global filters and player squelches still apply.
 
-`sender_type` optionally matches `player`, `npc`, `vendor`, `server`, or `unknown`.
-It is also included on chat events. Classification uses the currently known
-speaker, fellowship and character data; an unrecognized name remains `unknown`.
-`server` means the message has no sender. The chat protocol does not reliably
-supply spell-school metadata, so there is no inferred `spell_type` field.
+The host validates each replacement atomically. At most 32 display rules
+may be registered per plugin. Omit `chat_filters` to retain them or return
+`{}` to clear them. Stop, disable, reload, logout or character change removes
+the plugin's rules.
 
-Display rules accept `action="hide"` (default), `"show"` or `"color"`, plus
-`color="red"` (also green, blue, yellow, white or `#RRGGBB`). A color alone implies
-the color action. `show` adds the line to the selected windows even if their
-message-category filters are off. Hiding wins conflicting plugin rules; global
-filters and player squelches still apply. For example:
-
-```lua
-chat_filters = {{id="kill_alert", pattern="^You (have |)killed [0-9]+",
-  sender_type="server", action="show", window=2, color="#FF8800"}}
-```
-
-At most 32 rules may be registered per plugin. Omitted `chat_filters` retains
-them; `{}` clears them. A replacement is validated before applying any of its
-rules. Stop, disable, reload, logout, or character change removes that plugin's
-filters. One plugin cannot remove another plugin's rules. Any matching active
-hide rule can hide a line in its chosen window.
-
-For outgoing custom server commands, API 2 already supports the separate `say`
-permission and `requests={{id="bonus",service="chat",operation="send",text="/bonus"}}`.
-This sends text to the server; it does not grant local shell access. `/b` and
-`/fship` can be sent the same way. Register filters in the same output or before
-the request so the first response is covered. Sending is limited to once per
-second; use `events` result records to check acceptance.
-
-See the runnable [Chat Tools example](Examples/chat_tools/main.lua) and its
-[manifest](Examples/chat_tools/plugin.json): optional two-minute quest polling,
-on-demand server commands, readable responses, and no native Start/Stop or
-Settings and profiles section.
+The [chat service](#services-and-profiles) sends outgoing server commands with
+`say` permission. Register display rules with or before that request to cover
+the first response. Local notices appear in the **Plugin chat** category.
+See [Chat Tools](Examples/chat_tools/main.lua) for a working example.
 
 ## Target data and object-attached plates
 
-All companion snapshots (API 1 and 2) include `selection` (a target object, or
-nil), `tracked_targets` (objects keyed by the decimal string of their GUID),
-and `target_effects` (effect arrays keyed the same way). Tracked objects include
-the selection, active world-plate targets, and every still-known object with an
-unexpired confirmed timer, independently of the 512 nearby-object limit. Reading
-these fields alone does not send requests or require UCM or Action Deck.
-`objects` also includes the descriptor-derived `object_type`.
+Companions receive `selection` (a target or `nil`), `tracked_targets` and
+`target_effects`, keyed by decimal GUID strings. Tracked objects include the
+selection, plate targets and known objects with active confirmed timers, even
+outside the 512-object snapshot list. Reading these fields sends no requests.
 
-Target fields:
+Target records can include:
 
-- `id`, `name`, `wcid`, `item_type`, `monster`, `dead`.
-- `object_type`: descriptor-derived `player`, `creature`, `vendor`, `portal`,
-  `container` (bags/chests), `lifestone`, `door`, `corpse`, or `item`.
-  The database's raw `weenie_type` is **only** included if an assessment supplies
-  property 9007. Standard ACE public object descriptions do not transmit that
-  database enum; `object_type` is the usable client classification.
-- `creature_type` and localized `creature_class` (for example, Banderling),
-  `title` (for example, Royal Guard), and `level`, when assessed and known.
-- `pk_status`: `NPK`, `PK`, or `PK Lite` for players, from the public descriptor.
-- `vitals.health`, `.stamina`, `.mana`: omitted when unknown. Each known pair
-  contains `current` and `max`; zero current is a known value. A newer health
-  update supplies `fraction` (0–1) and, if assessed, `max`, but omits `current`:
-  the health packet is a percentage, not an integer hit-point count. A new
-  assessment restores the exact pair. No values are copied from the player.
-  `assessment_age` on the target and `age` on a percentage health sample report
-  seconds since receipt; assessed stamina/mana are samples, not live estimates.
+- `id`, `name`, `wcid`, `item_type`, `monster`, `dead` and `object_type`.
+  `object_type` identifies players, creatures, vendors, portals, containers,
+  lifestones, doors, corpses and items. Raw `weenie_type` requires assessment
+  property 9007.
+- `creature_type`, `creature_class`, `title` and `level` when known.
+  Players can include `pk_status` (`NPK`, `PK` or `PK Lite`).
+- `vitals.health`, `.stamina` and `.mana` as `{current,max}` pairs when
+  assessed. A newer health packet provides `fraction` (0–1) and any known
+  `max`, and omits `current`. `assessment_age` and health sample `age`
+  report seconds since receipt. A known zero is included.
 
-Each `target_effects[string.format("%.0f", id)]` entry has `spell`, DAT `icon`, `remaining`
-(seconds), `duration`, and `source="own_confirmed_cast"`. These are the same
-records used by Action Deck: successful server cast confirmations start timers;
-resists, fizzles, and ambiguous same-name confirmations do not. They are duration
-estimates from local spell data, not authoritative target enchantments. Casts by
-other players, early dispels, and custom server durations cannot be inferred.
-Changing selection preserves other targets' timers. Expiry, death, loss of
-awareness, GUID reuse, and character/session changes clear them.
+Each effect has `spell`, DAT `icon`, `remaining` in seconds, `duration` and
+`source="own_confirmed_cast"`. Timers estimate the duration of your confirmed
+casts. They cannot account for other casters, early dispels or custom durations.
+Expiry, death, loss of awareness, GUID reuse and session changes clear timers.
 
-With **both `ui` and `markers` permissions**, return `world_plates`:
+Return `world_plates` with both `ui` and `markers` permissions:
 
 ```lua
 local t = s.selection
@@ -356,75 +224,43 @@ return {world_plates = t and {{
 }} or {}}
 ```
 
-The native renderer draws brackets around the rendered actor, a role/name/level
-heading, known health/stamina/mana bars, and DAT effect icons with countdowns.
-It updates the billboard transform after world movement every frame, with a
-stereo world-space surface in VR; Lua never needs camera coordinates. Countdown
-labels advance locally between callbacks. Hidden or unloaded actors, corpses,
-portal transitions and stopped plugins do not leave floating plates behind.
-Plates are visual only: they do not intercept clicks, controller rays or movement.
+The host follows rendered actors, advances countdowns locally and renders in
+stereo in VR. Plates do not intercept input. Omission retains your list and
+`{}` clears it. Replacements apply atomically. `selection_only` defaults to
+true and hides a plate immediately on deselection. Use false to display an
+additional tracked target. Stop, disable, reload, logout and character changes
+remove the list.
 
-`opacity` controls the entire composed plate (text, brackets, bars and icons).
-`background_opacity` controls the black backing behind labels, bars and icons.
-Both are finite numbers in [0,1], defaulting to 1: solid content and backing,
-with the unused canvas still transparent. Overall opacity is applied once after
-composition, so overlapping text and backing do not compound the fade.
-Optional `vr_opacity` and `vr_background_opacity` override the corresponding
-desktop value while VR is active; omitted overrides inherit it. These fields
-never change the selected creature's yellow mesh tint or selection settings.
-For solid text with a softer backing, keep `opacity=1` and lower
-`background_opacity`. Set both to 1 for an opaque nameplate.
+- `opacity` and `background_opacity` accept finite values from 0 to 1 and
+  default to 1. The first fades the composed plate; the second fades the
+  backing. Optional `vr_opacity` and `vr_background_opacity` inherit
+  their desktop values unless supplied.
+- `color` styles the brackets and name. `text_color`, `background_color`,
+  `health_color`, `stamina_color` and `mana_color` style those components.
+  Colors accept green, yellow, red, blue, white, purple, black, transparent,
+  `#RRGGBB` or `#RRGGBBAA` (sRGB with linear alpha).
+- `scale` is 0.25–4 (default 1). `offset_x` and `offset_y` accept
+  -2,048–2,048 plate-local logical pixels (default 0), right/down positive.
+  Offsets scale with the plate. `vr_scale`, `vr_offset_x` and `vr_offset_y`
+  override individual values in VR.
+- Up to 4 plates per plugin and 16 globally. IDs must be unique. Names allow
+  128 single-line characters and roles 80. `level` is a nonnegative integer.
+  Vitals require a valid pair or fraction. Up to 16 effects per plate, each
+  with a `0x06xxxxxx` icon and `remaining` from 0 to 86,400 seconds.
+  Zero hides the effect. `spell` is optional.
 
-Plate colors accept `green`, `yellow`, `red`, `blue`, `white`, `purple`, `black`,
-`transparent`, `#RRGGBB`, or `#RRGGBBAA` (sRGB RGB, linear alpha). `color` styles
-the name and brackets; `text_color` styles role, level, vital numbers and timers.
-`background_color` styles the backing, multiplied by `background_opacity`.
-`health_color`, `stamina_color`, and `mana_color` style their respective bar fills.
-Omitting these fields preserves the existing palette. Overall `opacity` also
-multiplies each chosen color's alpha; use `FF` alpha for fully opaque content.
+Plates request background assessments unless `refresh=false`. They share the
+global one-per-second appraisal budget and use at most alternate seconds
+while automation runs. A successful target is revisited no sooner than two
+seconds, and a failed or unanswered request waits 30 seconds. Off-target
+vitals may refresh only when assessed. Normal health updates are also accepted.
 
-`scale` is a uniform multiplier from 0.25 to 4 (default 1). `offset_x` and
-`offset_y` are finite plate-local logical pixels from -2,048 to 2,048 (default 0):
-positive X moves right and positive Y moves down in the camera-facing plane.
-Offsets scale with the plate; the whole plate, including brackets, moves together.
-Optional `vr_scale`, `vr_offset_x`, and `vr_offset_y` override individual values
-in VR; each omitted override inherits the corresponding desktop value. These
-controls affect the plugin's plate only, never the actor or its selection tint.
-Use native `type="color"` and slider controls below to expose addon preferences.
-
-An omitted `world_plates` retains this plugin's list; `{}` clears it. A supplied
-list atomically replaces it. `selection_only` defaults to true, hiding the old
-target immediately when selection changes; set false for an additional tracked
-target. Stop, disable, reload, logout and character changes remove the plates.
-Plates automatically request background assessments, including after selection
-changes. `refresh=false` opts out. Requests share the global one-per-second
-appraisal budget, rotating among nearby living plate targets; with automation
-running, plates use at most alternate seconds. Successful targets are revisited
-no sooner than two seconds; failed or unanswered assessments wait 30 seconds.
-The normal server health feed is accepted for every known target. No health-query
-polling steals the server's selected target. On ordinary servers, off-target
-vitals therefore refresh at assessment cadence, not every damage event. Assessment
-skills and server restrictions still apply; unknown fields remain absent.
-
-At most 4 plates per plugin and 16 globally are rendered. Object IDs must be
-unique within a plugin. Names are at most 128 single-line characters, roles 80;
-long text is ellipsized. Optional `level` is a nonnegative integer. Colors are
-`yellow`, `red`, `blue`, `green`, `white`, `purple`. Missing vitals are hidden;
-each supplied vital needs a valid `current/max` pair or a `fraction` in [0,1].
-Effects are limited to 16 per plate, with a `0x06xxxxxx` DAT icon ID and
-`remaining` in [0,86400] seconds; optional `spell` identifies the spell. Zero
-remaining hides that icon. Plugins choose which effects to show. This surface
-accepts no custom meshes, shaders, file paths or native code.
-
-The runnable [Target Plate example](Examples/target_plate/main.lua) caps effects
-and passes only known fields. Copy its folder into `Saved/ClientPlugins/Installed`,
-refresh Manage Plugins and enable it. It is an API example, not an enabled-by-default
-HUD and does not modify another companion's configuration.
+See the [Target Plate example](Examples/target_plate/main.lua).
 
 ## Inventory-style icons
 
-Use `item_icon` for the same square background and composited artwork as the
-inventory and Supply Ledger. The original `icon` control remains a plain DAT icon.
+`item_icon` uses the inventory type background and composited artwork.
+`icon` alone displays a plain DAT texture.
 
 ```lua
 local item = s.inventory[1]
@@ -435,47 +271,36 @@ local row = {
 }
 ```
 
-Full inventory snapshots now expose `icon_overlay`, `icon_underlay`, and
-`ui_effects` alongside `icon` and `type`. A companion needs `data` permission for
-that full snapshot. Item icon fields are unsigned 32-bit numbers; texture IDs
-include the `0x06000000` prefix. `size` is 16–128 pixels (default 32); optional
-appearance fields default to zero. The native compositor applies the type
-background, underlay, icon, overlay, and enchantment effects in inventory order.
-Returning new values updates the retained icon rather than rebuilding its row.
+Companions need `data` for the inventory snapshot. Icon fields are unsigned
+32-bit DAT texture IDs including the `0x06000000` prefix. `size` is 16–128
+pixels (default 32). Optional appearance values default to zero.
 
-Assessed casting implements expose `innate_spell` with
-`id,name,power,category,level,caster_target,beneficial,duration,flags,school,skill`,
-plus `innate_spell_available`. `skill` is the item's reported spellcraft.
-These describe the item's spell independently of learned spells and components.
-Availability checks known activation requirements, ownership/trade state and
-item mana; it does not promise a successful cast or a valid target.
-For backward compatibility, beneficial instant self spells also expose the same
-metadata as `innate_recovery` and `innate_recovery_available`.
-Policies may equip an eligible implement and submit `cast_item` below.
+Assessed implements expose `innate_spell` with
+`id,name,power,category,level,caster_target,beneficial,duration,flags,school,skill`
+and `innate_spell_available`. `skill` is the spellcraft reported for the item.
+Availability checks known requirements, ownership, trade state and item mana.
+Beneficial instant self spells also expose `innate_recovery` and
+`innate_recovery_available`. Use [`cast_item`](#game-intents) to activate an
+eligible equipped implement.
 
 Assessed physical weapons can expose `proc_debuff` with
-`id,name,power,category,school,flags,duration,skill`, and `proc_debuff_available`.
-This represents the first appraised spell only, when it is an offensive timed
-non-War/non-Item spell. It is a potential on-hit effect, **not** an activatable
-item spell. Availability checks activation requirements, ownership/trade state
-and item mana; callers must also check `can_wield` and ammunition. UCM uses normal
-physical attacks and waits for an actual effect confirmation. Its internal
-`debuff_spell` attack field is restricted to UCM and revalidated against the
-currently equipped source; third-party plugins cannot invent proc spell IDs.
+`id,name,power,category,school,flags,duration,skill` and
+`proc_debuff_available`. It describes the first appraised spell when that spell
+is a timed offensive non-War/non-Item proc. Use physical attacks and observe
+effect confirmation. Check `can_wield` and ammunition separately.
+`debuff_spell` is restricted to UCM's attack path.
 
-Route-door rows in `route_objects` include `door_open` (live passage state) and
-`door_identified`. An assessed door adds `door_locked` and `lock_difficulty`.
-Unknown appraisal is not evidence of an unlocked door. Lockpick inventory rows
-provide `lockpick_available`; retained picks remain usable, but traded, equipped
-or exhausted picks do not. `structure` reports remaining uses.
+Door rows in `route_objects` include `door_open` and `door_identified`, plus
+`door_locked` and `lock_difficulty` when assessed. Lockpicks expose
+`lockpick_available` and `structure` for remaining uses. Retained picks are
+eligible. Traded, equipped and exhausted picks are excluded.
 
 ## Reuse or replace the built-in policies
 
-Optionally add `"policy":"ucm"` or `"policy":"itemtools"` to an automation
-manifest. This loads the exact shipped Lua policy as `builtinpolicy` and its
-configuration defaults as `builtinprofile`. Each plugin gets an independent
-function/VM state. Defaults are not silently applied to the author's saved
-profile: copy the wanted values into your own default.json.
+An automation manifest may select `"policy":"ucm"` or
+`"policy":"itemtools"`. The shipped Lua function is then available as
+`builtinpolicy` and its defaults as `builtinprofile`. Each plugin has its
+own runtime and profile. Copy the values you want into your `default.json`.
 
 ```lua
 return function(s, p)
@@ -485,51 +310,33 @@ return function(s, p)
 end
 ```
 
-`policy` is optional. Write your own decision function and return the same native
-intents to replace the algorithms. Both approaches get the same cast confirmation,
-fast buff movement, equipment requirements, attack cancellation, target-death
-wake, inventory transfer, route collision/door use and action-failure handling.
-The built-in policies are readable in `ClientMods/ucm/main.lua` and
-`ClientMods/itemtools/main.lua`; the UCM defaults define its full configuration
-including spells, recovery, summons, equipment mana, vendors, monster rules,
-loot/salvage and meta state machines. No reserved plugin ID is needed.
-
-`mana_charges_when_off=true` also opts an enabled automation plugin with inventory
-permission into the native stopped-state gear recharge service. With no driver
-running, the first eligible plugin supplies its settings. Only the stock recharge
-policy runs then; the author's stopped callback is not invoked.
-
-The sandbox also supplies `lootmatch`, `spellindex`, `regexmatch`, `regextest`,
-`string.contains`, `string.findplain`, `ucmcommand` (legacy alias `vtcommand`) and `workavailable`.
-These are the same bounded helpers used by UCM. A command returned by
-`ucmcommand()` is a policy command record, not a host intent: pass it to a
-policy-command request or process the record in your own Lua code.
+A custom decision function can return the same native intents. See
+[UCM source](../../ClientMods/ucm/main.lua) and
+[Item Tools source](../../ClientMods/itemtools/main.lua).
+`mana_charges_when_off=true` lets the first eligible enabled automation
+plugin with inventory permission supply settings for stopped-state recharge
+while no driver is running. The native recharge policy runs that service.
 
 `spellindex(spells, inventory, time, skill_margin, unavailable_until, components_required)`
-returns `by_id, supplied, usable, groups`. The first two are keyed by spell ID;
-`usable` retains all eligible tiers in snapshot order. `groups` provides the
-same records as `offense` (non-beneficial usable spells), `instant_self`
-(usable caster-targeted spells with zero duration), `other_buffs` (usable
-beneficial timed spells that are neither caster-targeted nor self buffs),
-and `by_category[category]` (all usable spells in that family). `buffs` contains
-known self buffs and beneficial timed Item Enchantment spells, including those
-blocked by skill, supplies or retry delay, so a policy can apply its separate
-buff margin and report unavailable families. Groups retain every tier and
-reference the original records; they do not choose which spell to cast.
-Indexing remains subject to the per-callback native work and memory limits.
+returns `by_id, supplied, usable, groups`. The first two are keyed by spell ID,
+with boolean entries in `supplied`. `usable` retains eligible tiers in
+snapshot order. Groups reference the supplied records:
 
-The optional sixth `components_required` argument defaults to true. Pass
-`s.components_required ~= false` to honor an explicit server exemption; do not
-infer an exemption from missing component data. `unavailable_until` is a table
-keyed by numeric spell IDs with monotonic retry times. Indexing accepts at most
-16,384 spells and 4,096 inventory entries, with 131,072 combined native visits per
-callback. `supplied[id]` is a boolean, not an inventory count. New spell snapshots
-provide `components`, a name-to-quantity map of the character's complete formula,
-including personalized tapers or the focused formula from carried foci/augmentations.
-The host updates this map when the focus changes. `components_known` reports whether
-the formula was resolved. `scarabs` remains available as the scarab-only subset;
-`spellindex` uses it only when an older snapshot has no `components` field. Eligibility is not
-a guarantee of line of sight, target validity, or server acceptance.
+- `offense` contains usable non-beneficial spells.
+- `instant_self` contains usable caster-targeted spells with zero duration.
+- `other_buffs` contains usable beneficial timed spells that are neither
+  caster-targeted nor self buffs.
+- `by_category[category]` contains all usable tiers in the family.
+- `buffs` contains known self buffs and beneficial timed Item Enchantment
+  spells, including entries blocked by skill, supplies or retry delay.
+
+`unavailable_until` maps numeric spell IDs to monotonic retry times.
+`components_required` defaults to true. Pass `s.components_required ~= false`
+to honor a server exemption. `components` maps the current formula's
+component names to counts, including taper and focus adjustments.
+`components_known` indicates a resolved formula. Older snapshots can fall
+back to `scarabs`. The helper accepts up to 16,384 spells, 4,096 inventory
+entries and 131,072 combined visits per callback.
 
 ## Sandbox helper functions
 
@@ -572,88 +379,62 @@ inside the same quota as the plugin; they do not grant game-action permissions.
 - `spellindex(...)`: the [indexing helper above](#reuse-or-replace-the-built-in-policies)
   returns four tables and leaves the decision of what to cast to your policy.
 
-The VM exposes base functions plus `table`, `math`, `utf8`, and bounded `string`
-operations. There is no `require`, `io`, `os`, `debug`, coroutine API, dynamic
+The source-only Lua 5.4 VM exposes base functions plus `table`, `math`, `utf8`,
+and bounded `string` operations. There is no `require`, `io`, `os`, `debug`, coroutine API, dynamic
 loading, `pcall`/`xpcall`, metatable access, `collectgarbage`, or `print`. Standard
 Lua pattern functions `string.find`, `match`, `gmatch`, `gsub`, and `dump` are
 removed. Use the helpers above and the notice/log services for output.
 
 ## Channels between local clients
 
-API 2 automation and companion plugins can declare `client_messaging` to exchange
-JSON messages with the same plugin in other Windows/Linux client processes,
-including desktop VR. This is separate from `messaging`, which remains inside
-one process. Players must enable the new permission through Manage Plugins.
-No external service, Lua sockets, or `require` is needed.
+API 2 plugins with `client_messaging` exchange JSON with other Windows/Linux
+client processes, including desktop VR. Use `messaging` within one process.
 
 ```lua
--- Join first; wait for snapshot.client_bus.connected before sending.
+-- Join first and wait for snapshot.client_bus.connected.
 return {client_channels={"team"}}
-
--- In a later callback, broadcast to other subscribers (no self echo).
-return {client_messages={{channel="team", data={operation="ready"}}}}
-
--- Or target a transient instance ID from snapshot.client_bus.peers.
-return {client_messages={{channel="team", to=peer.instance,
-                         data={operation="ready"}}}}
+-- In a later callback, broadcast or supply to=peer.instance.
+return {client_messages={{channel="team",data={operation="ready"}}}}
 ```
 
-`client_channels` replaces this plugin's subscriptions; omission retains them and
-`{}` leaves all channels. Names are case-sensitive, 1–64 ASCII letters, digits,
-underscores, dots or dashes. A send must use a subscribed channel. `data` must be
-a JSON object. Receivers get a subsequent `events` entry:
+`client_channels` replaces subscriptions. Omission retains them and `{}`
+leaves all channels. Names use 1–64 case-sensitive ASCII letters, digits,
+underscores, dots or dashes. Send a JSON object on a subscribed channel.
+Broadcasts omit the sending instance. Receivers get an `events` entry:
 
 ```lua
-{type="client_message", sender="instance-id", character="Example",
- player=0x50000001, plugin="my_plugin", channel="team",
- data={operation="ready"}, serial=123}
+{type="client_message",sender="instance-id",character="Example",
+ player=0x50000001,plugin="my_plugin",channel="team",
+ data={operation="ready"},serial=123}
 ```
 
-Native code supplies sender/character/player metadata. Include `client_bus` in
-selective `snapshot_fields` for `{available, connected, instance, channels,
-peers, error}`. Each peer has `{instance, character, player, channels}` and belongs
-to the same plugin and server; it may subscribe to different channels. Peer
-lists omit the current instance. Instances change on reconnecting a character
-or recreating the transport; do not save them as permanent character IDs.
+Request `client_bus` in selective snapshots for `{available, connected,
+instance, channels, peers, error}`. Peer records contain `instance`,
+`character`, `player` and `channels` for other clients on the same plugin
+and server. Instance IDs are transient and change on reconnect or transport
+restart. The host supplies sender metadata.
 
-Channels are scoped to the same computer and OS-user namespace, configured
-server host/port plus reported server name, plugin ID, and channel. Use the same
-server address in both login profiles: different aliases are intentionally
-separate. This does not connect to LAN clients or retail UtilityBelt.Service.
-The first active client hosts a loopback-only relay on a stable per-user port
-in 37000–37999. Other clients elect a replacement if it closes; an unrelated
-application occupying that port is reported as a connection failure.
+Channels are scoped by computer, OS user, configured server host/port,
+reported server name, plugin ID and channel. Log both clients into the same
+server address. The clients share a per-user loopback relay on a port in
+37000–37999. Another client can take over when the host exits. A port conflict
+sets a connection error.
 
-Limits: 8 subscriptions per plugin, 64 per client, 32 clients, 8 messages per
-callback, 20 sends/second per plugin and 80 across the client. Each `data` object
-is at most 4,096 UTF-8 bytes and 10 nested levels. Socket queues are bounded to
-256 KiB; the transport inbox and the normal per-plugin event inbox each hold
-at most 64 events. Stop, disable, reload, logout, or a character/session change
-clears subscriptions and invalidates pending deliveries. Changing the channel
-subscription set also invalidates deliveries for the old subscriptions.
+Limits are 8 subscriptions per plugin, 64 per client, 32 clients, 8 messages
+per callback, 20 sends/second per plugin and 80 across the client. A payload
+allows 4,096 UTF-8 bytes and 10 nested levels. Socket queues allow 256 KiB,
+and transport and plugin event inboxes each hold up to 64 events.
+Changing subscriptions invalidates deliveries for the old set. Stop, disable,
+reload, logout or session changes clear subscriptions and pending deliveries.
 
-Delivery is transient and best effort. Disconnected, rate-limited, or full-queue
-sends set `client_bus.error`; they are not saved for reconnect or replayed. A
-successful queue operation is not confirmation that a peer acted. Use request
-IDs, acknowledgements, deduplication and deliberate retries when needed; never
-automatically replay non-idempotent inventory or spell commands. The normal
-event inbox can also evict old events under overload.
+Delivery is best effort, with errors in `client_bus.error` and no replay on
+reconnect. Use request IDs and acknowledgements where completion matters.
+The receiver interprets each payload under its own permissions and action
+gates. Keep credentials and secrets off the channel. Local apps are outside
+its trust boundary.
 
-Receiving a message does not execute chat or game commands. The recipient must
-explicitly interpret its payload using its own permissions and normal action
-gates; the single automation-driver rule remains. Only enable plugins you trust.
-Loopback and namespace separation are not authentication against other local
-applications; this channel is unsuitable for credentials or secrets.
-
-The [Client Channel example](Examples/client_channel/main.lua) shows peer
-discovery and broadcasts. Copy the entire `Examples/client_channel` folder to
-`Saved/ClientPlugins/Installed/client_channel` in each client, refresh and enable
-it, and log characters into the same server. Click **Send greeting to other
-clients**, or enter `/acueplugin client_channel hello`. Its native themed panel
-lists peers and recent messages. It displays received text without executing it.
-Set the same `channel` in both copies' `default.json` before first installation
-to use another team name. Plugin authors can build tag groups or a broadcast
-command interface using channels and targeted messages.
+See the [Client Channel example](Examples/client_channel/main.lua).
+`/acueplugin client_channel hello` sends its test greeting.
 
 ## Permissions and snapshots
 
@@ -688,36 +469,29 @@ optional `admin_content` capability provides bounded content authoring operation
 it does not grant general automation permissions or server privileges. Request a selection through a
 UI button to select an observed world object or, in API 2, an owned inventory item.
 
-Full snapshots include every field UCM receives: known spells and eligibility,
-enchantments/debuffs/cooldowns, current/base vitals, skills and quality maps,
-appraised inventory and worn equipment, all packs and capacities, reachable
-monsters/corpses, route visibility and movement breadcrumbs, vendor stock/currency,
-fellowship vitals, confirmations, portal events and combat results. Item Tools'
-transfer eligibility, vendor room/price and inventory failure fields are included
-as well. `identified=false` means a property may be unknown; it is not evidence
-that the property is zero. Automation appraisal uses inventory permission;
-companions use the narrower identify permission above.
+Full snapshots include UCM gameplay data and Item Tools transfer, vendor
+and inventory failure fields. See [the catalog](../../ClientMods/api.json)
+for field names. With `identified=false`, appraisal-only properties may
+be unknown. Automation requests appraisal using `inventory`.
 
-Policy plugins may emit `{action="identify", item=guid, pipeline=true,
-continue_work=true}` for items directly inside the **currently open external
-container**. The host rechecks membership at dispatch and skips only that
-appraisal's action wait. Without `pipeline=true`, or outside that scope, ordinary
-appraisal gating is unchanged. Permissions, busy state and earlier action gates
-still apply; companion identify commands retain their existing rate limit.
-`continue_work` requests the next client frame after a nonblocking action,
-rather than waiting for each appraisal reply. Waiting polls use a 50 ms cadence;
-new appraisal and inventory receipts wake the policy immediately. These are
-scheduling rules, not guaranteed throughput or permission to bypass busy state.
+`combat_death` records the most recent confirmed combat target death as
+`id`, `time`, `cell`, `x`, `y`, `z` and `teleport_sequence`. Bound its age.
+The record survives object deletion until superseded or the session changes.
+The inventory field `auto_wield_left` comes from the live object descriptor.
 
-An opting-in policy must cap outstanding appraisals, track each item separately,
-retry timed-out requests, and wait for `identified=true` before deciding rules
-that need appraisal data. Replies can be delayed, unsuccessful, or out of order.
-Discard pending work when its container closes/changes or the policy stops.
-UCM pipelines at most eight pending corpse appraisals, retries after five
-seconds (three attempts total), and still evaluates each item's rules in order.
-It requests only appraisals needed by those rules or mana-source selection.
-Loot transfers remain serialized until server ownership/quantity confirmation;
-appraisal replies never confirm pickups or authorize salvage.
+`{action="identify",item=guid,pipeline=true,continue_work=true}` lets a policy
+skip the appraisal wait for items directly inside the currently open
+external container. The host rechecks membership, permissions and busy state.
+Ordinary appraisal and companion requests retain their usual gates.
+`continue_work` requests the next frame after an accepted nonblocking
+action and a 50 ms poll when waiting. Appraisal and inventory receipts wake
+the policy.
+
+Track pending appraisals by item, cap the queue, bound retries and wait for
+`identified=true` before using appraisal-only properties. Discard pending
+work on container change or stop. UCM uses up to eight pending requests and
+three attempts per item, spaced five seconds apart. Loot transfers still
+require server ownership or quantity confirmation.
 
 Combat equipment also exposes `combat_identified` and `combat_appraisal_cached`.
 When `combat_appraisal_cached=true`, an owned weapon, shield or ammunition item
@@ -794,19 +568,14 @@ or removal clears a previous reading. A use receipt alone does not confirm a
 refill: wait for the corresponding resource change while allowing other work
 once the native busy gate releases.
 
-API 2 adds `api`, `unix_time`, `server`, `state`, `events`, `error`, `capabilities`,
-`plugins`, `automation_owner`, `profile_name`, `waiting_action`, `log`, and the
-lightweight nearby `objects` list. `chat_events` has independent per-plugin
-cursors and works with UCM disabled. Large bursts are delivered oldest first
-in batches of up to 128 events / 64 KiB of UTF-8 message text per callback;
-unread events remain queued for later callbacks. `chat_serial` advances only
-through the delivered batch, while `chat_latest_serial` identifies the latest
-received event. `chat_pending` and `chat_more` expose the remaining backlog.
-The shared backlog retains up to 32,768 events / 8 MiB of UTF-8 message text;
-`chat_gap` and `chat_dropped` report actual unread overflow, not pagination.
-See [companion chat delivery](Companions.md#callback-and-snapshot) for the field limits and
-session scope. Chat events are empty without chat permission, regardless of
-whether a full snapshot is requested.
+API 2 adds `api`, `unix_time`, `server`, `state`, `events`, `error`,
+`capabilities`, `plugins`, `automation_owner`, `profile_name`,
+`waiting_action`, `log` and nearby `objects`. With `chat` permission,
+`chat_events` uses an independent cursor, even when UCM is stopped.
+`chat_serial` tracks the batch delivered to you and `chat_latest_serial`
+tracks the latest received event. Unread events stay in the bounded backlog
+(32,768 events or 8 MiB shared). See [chat delivery](#read-and-filter-chat)
+and the [companion snapshot](Companions.md#callback-and-snapshot).
 
 `action_error` remains the numeric server result associated with `action_serial`.
 Plugins with data permission also receive native `events` for item use and casts:
@@ -858,72 +627,58 @@ a Lua exception or quota violation still stops that plugin.
 
 ## Game intents
 
-Return one action per callback. Do not treat submission as completion: observe
-`ready`, `busy`, serials, inventory revisions and cast confirmations, or use the
-shipped policy's pending-action logic. Native code rechecks targets/ownership and
-server state before sending an action.
+Return one action per callback. Check `ready` and `busy` before sending.
+Confirm completion through the matching action result and resulting game state.
+The host rechecks ownership, targets and server state at dispatch. An intent
+may include a `status` message of up to 1,024 UTF-8 bytes. See
+[`api.json`](../../ClientMods/api.json) for the complete action and permission
+list.
 
-The field list for every action and its permission is in `api.json`. The actions
-cover:
+- `cast` takes spell and target, with optional `fast_cast`. `attack` accepts
+  `mode` 2 for melee or 4 for missile, `height` 1–3 and `power` 0–1.
+  Use `cancel_attack`, `combat_mode` and `attack_bar` for combat controls.
+- `cast_item` takes `item,spell,target` and requires `cast` and `inventory`.
+  Equip the eligible implement first. It uses the implement in magic mode,
+  targeting self for instant beneficial recovery or a living attackable
+  non-player/non-pet for a timed harmful effect with clear projectile sight.
+  The completion is a `use` receipt. Confirm the vital or effect separately.
+- `cast_jiggle` is optional on `cast` and `cast_item`, and `jump_out_wand`
+  on `cast_item`. Both default to false, require `navigation` and use normal
+  collision. Manual movement, stop, session changes and completion or failure
+  cancel them. `fast_cast` is a separate self-buff behavior.
+- `move` accepts AC `cell,x,y,z`, a metre `arrival_radius` and optional
+  pursuit `target`. Navigation also includes `face`, `jump`, `use_world`,
+  `close_vendor` (current vendor GUID), `select`, `logout` and `recall`.
+  Recall destinations include marketplace, lifestone, allegiance, house and
+  mansion. Use `cast` for spell recalls.
+- Inventory actions include `identify`, `equip` (with `offhand` or
+  `unequip`), `use_item`, `apply_item`, `store_item`, `give` and `merge`.
+- Loot actions include `open_corpse`, `close_corpse`, `loot`, `salvage`,
+  `combine_salvage`, `read`, `sell`, `buy`, `split_note` and `sell_note`.
+  `combine_salvage.items` is a comma-separated list of 2–64 distinct salvage
+  bag GUIDs and `tool` is an owned Ust.
+- Item Tools' `it_*` actions require `inventory` and `loot`. `it_merge`
+  takes `item` (source GUID), `target` (receiving GUID) and `amount`.
+  Use owned, unequipped, unoffered, non-retained stacks of the same WCID.
+  Check source quantity and destination space, then wait for both stack
+  updates before another merge.
+- `say` accepts one line of text up to 500 characters. Supply `recipient`
+  up to 128 characters for a tell, or `channel=2048` for fellowship chat.
+  Otherwise it sends local talk.
+- `fellowship` accepts `operation` `create` (`name`, shares XP), `quit`,
+  `disband`, `open`, `close`, `recruit`, `dismiss` or `leader`.
+  The last three take a player GUID in `target`. Dismiss and leader require
+  the leader and another current member. Members can recruit when the
+  fellowship is open. A locked fellowship cannot change openness. Wait for
+  the `fellowship` snapshot to confirm changes.
+- `confirm` uses the current prompt's `type,context,accept`.
+  `profile_load` loads a validated nav/utl/met/usd dependency.
+  Other policy actions include `plugin_command`, `buff_request_start`,
+  `buff_request_done`, `force_buff_done`, `pause_navigation`,
+  `pause_loot_approach`, `activity_failed`, `notice` and `stop`.
 
-- `cast` with spell/target and optional `fast_cast`; attack (`mode` 2 melee or 4
-  missile, `height` 1-3, `power` 0-1), `cancel_attack`, `combat_mode`, `attack_bar`.
-- `cast_item` with `item,spell,target` requires both `cast` and `inventory`.
-  The owned, equipped implement must expose that eligible innate spell.
-  Supported targets are the player for beneficial instant self recovery, or a
-  living, attackable non-player/non-pet for a harmful timed debuff with clear
-  projectile sight. It sends item use with target in magic mode, never a
-  learned-spell cast. Completion is a `use` receipt with the implement as source;
-  confirm the recovered vital or the actual debuff separately. A successful use
-  receipt alone is not proof the spell landed.
-- `cast` and `cast_item` optionally accept `cast_jiggle` (backward movement with
-  alternating strafes); `cast_item` also accepts `jump_out_wand` (a brief jump
-  request after use). Both default to false, require `navigation`, use ordinary
-  movement/collision and are cancelled by manual movement, stop, session change,
-  completion or failure. UI-blocked or stale requests are discarded. The client
-  does not change normal casting restrictions or promise server-side animation
-  cancellation. `fast_cast` remains the separate fast self-buff tap behavior.
-- `move` with AC `cell,x,y,z`, metre `arrival_radius`, optional pursuit `target`;
-  `face`, `jump`, `recall`, `use_world`, `close_vendor` (current vendor GUID),
-  `select`, `logout`.
-- `identify`, `equip` (`offhand`/`unequip`), `use_item`, `apply_item`, `store_item`,
-  `give`, `merge`.
-- `open_corpse`, `close_corpse`, `loot`, `salvage`, `combine_salvage`, `read`,
-  `sell`, `buy`, `split_note`, `sell_note`. `combine_salvage.items` is a comma
-  separated list of 2-64 distinct salvage-bag GUIDs, with an owned `tool` Ust.
-- `it_give`, `it_buy`, `it_sell`, `it_merge`, `it_split`, `it_open`, `it_key`,
-  `it_refresh_chest`, `it_close`, `it_pickup`: the Item Tools transaction paths.
-  `it_merge` takes `item` (source GUID), `target` (receiving GUID), and `amount`;
-  both must be owned, unequipped, unoffered, non-retained stacks of the same WCID,
-  with enough source units and destination space. Wait for both stack updates
-  before issuing another merge; `UseDone` alone does not confirm it.
-- `say` accepts `text` (up to 500 characters), optional `recipient` (up to
-  128 characters) for a private tell, or `channel=2048` for fellowship chat.
-  Without either it sends local talk. Embedded line breaks are rejected.
-- `say`, `fellowship`, `confirm` (current `type,context,accept`). Recall destinations
-  are marketplace, lifestone, allegiance, house and mansion; spell recalls use cast.
-  `fellowship` requires the `fellowship` capability and `operation`: `create`
-  (`name`, shares XP), `quit`, `disband`, `open`, `close`, `recruit`, `dismiss`, or
-  `leader`. The last three use `target` (unsigned player GUID). Dismiss/leader
-  require another current member and leader authority; an open fellowship also
-  permits recruiting by members. A locked fellowship cannot change openness.
-  These actions send requests, not predicted results: wait for `fellowship`
-  snapshot changes (`valid`, `name`, `open`, `leader`, `members`) before dependent
-  actions. `action_events`/`UseDone` do not acknowledge fellowship management.
-  UCM meta sequences wait up to 30 seconds, yield to recovery, and hold navigation
-  until the matching fellowship state arrives. They do not resend an unanswered
-  invitation. UCM also has an optional automatic tell-based fellowship manager
-  under Buff others; its private command queue is not exposed in other plugins'
-  data snapshots. Use the public chat subscription API for your own chat handling.
-
-UCM's integrated crafting uses the existing native Auto Craft recipe/receipt
-engine. Its internal `craft`, `crafting`, `services_profile` and
-`fellowship_tells` fields are UCM implementation details, not general plugin API
-contracts. Other plugins should use the documented inventory/use/confirmation
-APIs and correlate `action_events` with actual inventory updates.
-- `profile_load` for validated imported dependencies (`kind`: nav/utl/met/usd),
-  `plugin_command`, `buff_request_start`, `buff_request_done`, `force_buff_done`,
-  `pause_navigation`, `pause_loot_approach`, `activity_failed`, `notice`, `stop`.
+UCM's internal `craft`, `crafting`, `services_profile` and
+`fellowship_tells` are reserved for the bundled implementation.
 
 Policy metadata is also public: `activity`, `meta_state`, `targeting_status`,
 `route_point`, `route_join_pending`, `route_track_movement`, `helper_updates`,
@@ -955,37 +710,20 @@ ui = {
 }
 ```
 
-Controls: text, button, checkbox, slider, number, input, select, color, progress, icon,
-item_icon, image, row, column, section, tabs, overlay and frame. Containers use `children`; tabs use each
-child's text as its tab title. Sections have `expanded`; their expansion state
-and selected tab are retained while the window is open. Common options are text,
-tooltip, enabled, padding, size (font/icon), bold and color (green/red/yellow/blue).
-The player's **Lua Plugin Text Scale** setting applies to native labels, button
-captions and editable text, including already open third-party windows. It is
-independent of chat text scale. Do not multiply font sizes by chat scale yourself.
-Prefer flexible widths and wrapping; fixed-size panels must allow for larger
-text. The same Lua UI runs on desktop, VR/Quest and Android phones/tablets, but
-test touch targets and layout at each intended screen size.
+Controls include `text`, `button`, `checkbox`, `slider`, `number`,
+`input`, `select`, `color`, `progress`, `icon`, `item_icon`, `image`,
+`row`, `column`, `section`, `tabs`, `overlay` and `frame`.
+Containers use `children`. Tabs label pages with each child's `text`
+and keep selection by ID. Sections use `expanded`. Common options are
+`text`, `tooltip`, `enabled`, `padding`, `size`, `bold` and `color`.
 
-Rows normally divide their width equally. Use `compact=true` on a row to size
-all its children to their content, or `auto_width=true` on individual children
-to reserve just their natural width while siblings fill the remainder. Row
-children align vertically at the center. Labels accept `wrap=false` to remain
-on one line and clip within their control; use a tooltip for full long names.
-Add `ellipsis=true` to shorten an unwrapped label with `...` when it exceeds
-the available width. This opt-in behavior follows the native font and UI scale;
-keep the full text in `tooltip` when the complete name matters.
-Tabs use the shared navigation style: dark inactive backgrounds, with a brighter
-background and gold underline on the selected page. Selection follows the page
-ID through live updates and reordering. Use `tabs` for page navigation so custom
-plugins receive the same selected-state treatment as the built-in interfaces.
-Text `size` is a point size from 10 to 36 (default 15), including intermediate
-sizes such as 11, 13 and 15. Updating it on an existing control takes effect
-without replacing the control or losing focus in neighboring inputs.
-Progress is a fraction 0-1 with its label drawn over the bar. Select takes up to 256 string options. Number and
-slider accept min/max/step; native code clamps/snaps the returned value.
-For progress controls, `color` sets the fill and `text_color` sets the label
-(light text by default).
+Rows divide width evenly. Set `compact=true` to size all children to their
+content, or `auto_width=true` on individual children. Labels can use
+`wrap=false` and `ellipsis=true`. Text `size` is 10–36 pt (default 15)
+and follows **Lua Plugin Text Scale**. Allow room for larger text. Select
+supports up to 256 string options. Number and slider use `min/max/step`.
+Progress takes a fraction 0–1, with `color` for the fill and `text_color`
+for the label.
 
 `type="color"` provides a swatch, editable hex value, and an expandable color
 wheel with brightness and opacity sliders. `value` is required and accepts a
@@ -1012,24 +750,18 @@ normal click event, or use the same action fields as buttons.
 restores it during Quick-show immediately, without waiting for Lua. The same state
 is available as `window_chrome_hidden` in the snapshot.
 
-Custom images preserve their source aspect ratio inside their width/height box.
-All controls and containers accept `scale` (0.25–4, default 1), `offset_x` and
-`offset_y` (-2,048–2,048, default 0). These are render transforms: scale and
-rotation are applied around the control's center, then offsets move it in its
-parent's logical pixels (right/down positive). Child controls and their hit
-targets transform together. Nesting a transformed column scales its whole panel
-content. Render transforms do not resize the window or reserve extra layout
-space; provide sufficient surrounding space and avoid overlapping controls or
-clipping at panel edges. Use width/height/padding for layout allocation. These
-values multiply the normal UI scale and coexist with Lua Plugin Text Scale.
-All controls accept `opacity` (0–1), `rotation` (degrees, -360–360), and
-`effect="blink"`, `"pulse"`, or `"rotate"`. `period` is 0.1–60 seconds;
-`min_opacity` defaults to 0.2 for blink/pulse. Native Slate animation advances each
-frame even when Lua callbacks run slowly. Text `outline` (0–8) and `outline_color`
-add an outline. `glow` (0–8) enables a simple tinted halo for images, or an outline
-for text, using `glow_color`; these are lightweight UI effects, not postprocess
-materials. See [Graphics Gallery](Examples/graphics_gallery/main.lua) for layered
-artwork, a vital gauge, a countdown, native effects and clickable controls.
+All controls and containers accept `scale` (0.25–4, default 1),
+`offset_x` and `offset_y` (-2,048–2,048, default 0), `opacity` (0–1),
+and `rotation` (-360–360 degrees). Scale and rotation apply around the
+control's center, followed by offsets in parent logical pixels, right/down
+positive. Hit targets and children transform with the control. Use
+`width`, `height` and `padding` to reserve layout space.
+
+`effect` accepts `blink`, `pulse` or `rotate`. `period` is 0.1–60 seconds,
+and `min_opacity` defaults to 0.2 for blink and pulse. Text uses
+`outline` (0–8) and `outline_color`; `glow` (0–8) and `glow_color` add a
+tinted halo to images or an outline to text.
+See [Graphics Gallery](Examples/graphics_gallery/main.lua).
 
 Buttons default to `{type="click",id=...}` events. Optional `action` is event,
 select, select_item, waypoint or command; a command button uses `command="/acueucm ..."`. Native
@@ -1180,22 +912,15 @@ service when the command should belong to your own automation plugin instead.
 
 ## Validation and portability
 
-The host uses the same native gameplay implementation for UCM and API 2. The
-PublicAPI regression creates a third-party ID with UCM disabled, verifies full
-snapshots, target-death wakes, native route geometry, force buffs, failure
-isolation, state restoration, nested UI events, profile archive/permission checks,
-and the shipped policy module. Existing UCM/VM/companion regressions remain in use.
-Source is shared with Windows/Linux/VR/Quest and Android phones/tablets. Platform-specific live gameplay and
-server behavior still require testing; an editor automation pass does not prove
-all plugins or servers behave identically.
-
+Run the public API, UCM and companion automation suites described in the
+[test guide](../../Tests/README.md). Shared Lua source runs on Windows,
+Linux, VR, Quest and Android. Verify the plugin's layout and server actions
+on each target you intend to support.
 
 ## Optional terrain overlays (API 2)
 
-The bundled **Dereth Lens** companion is disabled by default. Its Lua script owns
-all settings and per-character persistence. It requests a native visual surface
-using the new `terrain` permission, without a gameplay snapshot, native DLLs,
-custom meshes, or shaders:
+Return `terrain_overlay` with the `terrain` permission. Dereth Lens is a
+bundled example.
 
 ```lua
 return {terrain_overlay={
@@ -1226,14 +951,6 @@ have no collision, and render in stereo. The radar wall follows the player each
 frame at the native 75 m outdoor / 25 m indoor radius. Dungeon light is a temporary
 world color-grading lift, with adjustable strength and tint; it does not overwrite
 saved video settings and is removed outdoors or when disabled.
-
-Third Eye provides name matching, alerts and world/map markers. Target plates
-belong to separate addons. Each plate addon supplies its own opacity sliders and
-saves its preferences using `state`; the host applies that addon's `world_plates`
-opacity values independently. The [Target Plate example](Examples/target_plate/main.lua)
-demonstrates separate desktop and VR controls. Updating Third Eye retains watch
-rules and removes its obsolete plate preferences.
-
 
 ## Administrative content service (API 2)
 

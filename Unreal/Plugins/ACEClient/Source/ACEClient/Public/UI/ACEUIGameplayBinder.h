@@ -933,7 +933,7 @@ private:
 	bool TryOpenTradeForDraggedItem(const FACEWorldObject& Target, int32 Guid, int32 Amount);
 	int32 GetSelectedItemAmount(int32 Guid) const;
 	void PickupInventoryAmount(int32 Guid, int32 Amount = 0);
-	void MoveInventoryAmount(int32 Guid, int32 Container, int32 Placement, int32 Amount);
+	void MoveInventoryAmount(int32 Guid, int32 Container, int32 Placement, int32 Amount, bool bAutoMerge = true);
 	bool MergeInventoryAmount(int32 Guid, int32 TargetGuid, int32 Amount);
 	bool TryDropInExternalContainer(int32 Guid, int32 Amount, FVector2D Absolute);
 	int32 ResolveInventoryDropPlacement(int32 Guid, int32 Amount, int32 Container, int32 TargetGuid) const;
@@ -1512,7 +1512,7 @@ private:
 	bool DropInventoryInWorld(int32 Guid, int32 Amount, const FVector2D& Absolute);
 	void AddInventoryGuidToVendorSellCart(int32 Guid, int32 Amount = INDEX_NONE);
 	bool CanStageVendorSellItem(int32 Guid) const;
-	bool CanMoveInventoryAmountToContainer(int32 Guid, int32 Container, int32 Amount, int32 MergeTarget = 0) const;
+	bool CanMoveInventoryAmountToContainer(int32 Guid, int32 Container, int32 Amount, int32 MergeTarget = 0, bool bAutoMerge = true) const;
 	void UpdateInventoryContainerDropFeedback(FVector2D CanvasLocalPos);
 	void UpdateVendorSellSplit();
 	void SyncVendorPageVisibility();

@@ -14,6 +14,7 @@
 #include "Widgets/SWindow.h"
 #include "ACEDesktopPointer.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/App.h"
 #include "VR/ACEVRComponent.h"
 #include "ACEClientBuild.h"
 #include "ACERuntimeOptions.h"
@@ -559,7 +560,7 @@ void AACEPlayerController::ApplyViewportSizeToLoginWidget()
 		World->GetTimerManager().ClearTimer(DesiredSizeRetryTimerHandle);
 	}
 
-	if (!LoginWidget || !LoginWidget->IsInViewport())
+	if (!FApp::CanEverRender() || !LoginWidget || !LoginWidget->IsInViewport())
 	{
 		return;
 	}
@@ -7641,8 +7642,7 @@ void AACEPlayerController::SendInventoryPickup(int32 Guid, int32 Amount)
 	if (!Client) return;
 	if (DatGameplayBinder)
 		DatGameplayBinder->PickupInventoryAmount(Guid, Amount);
-	else Client->SendPutItemInContainer(Guid,
-		Client->ResolvePickupContainer(Guid, GameHUDWidget ? GameHUDWidget->GetOpenPackGuid() : 0), 0);
+	else Client->SendInventoryPickup(Guid, GameHUDWidget ? GameHUDWidget->GetOpenPackGuid() : 0, Amount);
 }
 
 void AACEPlayerController::BeginUseApproach(int32 TargetGuid, float DistanceAc, bool bPickupIntoInventory,
@@ -7786,7 +7786,9 @@ void AACEPlayerController::PickupSelectedObject()
 	if (!Client || IsWorldTransitionActive()) return;
 	const FACESelectedObject Selected = Client->GetSelectedObject();
 	FACEWorldObject Object;
-	if (Selected.bValid && Client->GetWorldObject(Selected.Guid, Object) && Object.IsWorldLootable())
+	if (Selected.bValid && Client->GetWorldObject(Selected.Guid, Object)
+		&& (Object.IsWorldLootable() || (Object.ContainerId && !Object.WielderId && !Object.ParentGuid)
+			|| Object.WielderId==Client->GetPlayerGuid()))
 	{
 		if (Client->IsUseBusy() || (Client->GetSession() && Client->GetSession()->IsInventoryTransferPending())) return;
 		SendInventoryPickup(Object.Guid);
