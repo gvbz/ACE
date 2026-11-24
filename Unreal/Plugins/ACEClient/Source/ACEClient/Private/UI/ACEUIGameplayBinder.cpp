@@ -27,6 +27,7 @@
 #include "UI/ACEUICanvasWidget.h"
 #include "UI/ACEUIElementManager.h"
 #include "UI/ACEUIResourceResolver.h"
+#include "UI/ACEItemDragIcon.h"
 #include "UI/ACERetailTextBlock.h"
 #include "UI/ACEUILayoutResolver.h"
 #include "UI/ACEUIElement.h"
@@ -3113,8 +3114,10 @@ void UACEUIGameplayBinder::BeginCombatPowerCharge(uint32 AttackHeight, bool bHel
 	bCombatPluginAttack = false; // a manual attack takes over from automation
 	if (PlayerController)
 	{
-		PlayerController->PrepareManualCombat(true);
-		bCombatMovementBlocked = PlayerController->IsJumpAirborne();
+		const bool bMovingMissile = CombatMode == int32(ACECombatMode::Missile) && Client && Client->GetSession()
+			&& Client->GetSession()->IsMissileMovementBlocked();
+		if (!bMovingMissile) PlayerController->PrepareManualCombat(true);
+		bCombatMovementBlocked = bMovingMissile || PlayerController->IsJumpAirborne();
 	}
 	bCombatAttackHeld = bHeld;
 	ReleasedAttackPower = RequestedAttackPower;
@@ -3156,6 +3159,8 @@ void UACEUIGameplayBinder::CancelCombatAttack()
 
 void UACEUIGameplayBinder::SetCombatMovementBlocked(bool bBlocked)
 {
+	if (CombatMode == int32(ACECombatMode::Missile) && Client && Client->GetSession())
+		bBlocked |= Client->GetSession()->IsMissileMovementBlocked();
 	const bool bWasBlocked = bCombatMovementBlocked;
 	bCombatMovementBlocked = bBlocked;
 	if (bBlocked)
@@ -3248,7 +3253,7 @@ bool UACEUIGameplayBinder::IsCombatPoseReady() const
 	if (Client && Client->IsInPortalSpace()) return false;
 	if (CombatMode != int32(ACECombatMode::Missile)) return true;
 	const auto Session = Client ? Client->GetSession() : nullptr;
-	if (!Session) return false;
+	if (!Session || Session->IsMissileMovementBlocked()) return false;
 	// ClientCombatSystem::PlayerInReadyPosition(true) requires an interpreted
 	// Ready substate in a missile style. Reload/Aim cannot build a new shot.
 	const uint32 Style = Session->GetCurrentStance();
@@ -5120,7 +5125,17 @@ void UACEUIGameplayBinder::UpdateInventoryDrag(FVector2D CanvasLocalPos)
 		InvDragIcon->SetPadding(FMargin(0.f));
 		InvDragIcon->SetVisibility(ESlateVisibility::HitTestInvisible);
 	}
-	SetIconDid(InvDragIcon, InvDragIconDid);
+	UTexture2D* DragTexture = ACEItemDragIcon::Resolve(Canvas->GetResourceResolver(),
+		Client ? Client->GetSession().Get() : nullptr, InvDragGuid, InvDragIconDid);
+	const auto DrawAs = DragTexture ? ESlateBrushDrawType::Image : ESlateBrushDrawType::NoDrawType;
+	if (InvDragIcon->Background.GetResourceObject() != DragTexture || InvDragIcon->Background.DrawAs != DrawAs)
+	{
+		FSlateBrush Brush;
+		Brush.SetResourceObject(DragTexture);
+		Brush.ImageSize = FVector2D(32, 32);
+		Brush.DrawAs = DrawAs;
+		InvDragIcon->SetBrush(Brush);
+	}
 	// ItemSlot's DAT accept/reject artwork belongs to the hovered destination cell.
 	if (PaperDollDragTargetIcon) PaperDollDragTargetIcon->SetVisibility(ESlateVisibility::Collapsed);
 	FString TargetName; int64 TargetMask = 0;

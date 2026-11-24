@@ -55,7 +55,7 @@ private:
         const auto& Route=Host->WaypointItinerary;
         Title=Route.IsEmpty()?TEXT("No active route"):TEXT("Route to ")+Route.Last().Name;
         Status=Route.IsEmpty()?TEXT("Use Find route in Waypoint to choose a destination.")
-            :TEXT("Click a step to point the arrow. Travel and use portals yourself.");
+            :TEXT("Click a step to aim the arrow. Use portals manually.");
         for(int32 Index=0;Index<Route.Num();++Index)
         {
             const auto& Step=Route[Index];
@@ -91,16 +91,18 @@ public:
         Host=Args._Host;Status=Args._Status;
         auto Style=FACEPluginStyle::Use(Args._Host,TEXT("waypoint"));
         auto Body=SNew(SVerticalBox);
+        auto Back=Button(TEXT("Back"),Args._Back);
+        Back->SetTag(TEXT("Waypoint.AtlasBack"));
         Body->AddSlot().AutoHeight()[SNew(SHorizontalBox)
             +SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)[SNew(SACEPluginText).Text(FText::FromString(TEXT("Atlas locations"))).Font(FACEPluginStyle::NativeFont("Bold",18))]
-            +SHorizontalBox::Slot().AutoWidth()[Button(TEXT("Back"),Args._Back)]];
+            +SHorizontalBox::Slot().AutoWidth()[Back]];
         Body->AddSlot().AutoHeight().Padding(0,4)[SNew(SACEPluginText).Tag(TEXT("Waypoint.AtlasStatus")).Font(FACEPluginStyle::NativeFont("Regular",13)).AutoWrapText(true).Text_Lambda([this]{return FText::FromString(Status);})];
         Body->AddSlot().AutoHeight()[SNew(SACEPluginEditableTextBox).Tag(TEXT("Waypoint.AtlasSearch")).Style(&Style->Edit).HintText(FText::FromString(TEXT("Search by name or type")))
             .OnTextChanged_Lambda([this](const FText& Value){Filter=Value.ToString().TrimStartAndEnd();FilterRows();})];
         Body->AddSlot().AutoHeight().Padding(0,3)[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",13)).Text_Lambda([this]
             {return FText::FromString(FString::Printf(TEXT("%d of %d locations"),Rows.Num(),Locations.Num()));})];
         Body->AddSlot().AutoHeight()[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",13)).AutoWrapText(true)
-            .Text(FText::FromString(TEXT("Select a location and choose Point arrow or Find route. Double-click a result to point the arrow.")))];
+            .Text(FText::FromString(TEXT("Double-click a location to point the arrow.")))];
         Body->AddSlot().FillHeight(1)[SAssignNew(List,SListView<FLocation>).Tag(TEXT("Waypoint.AtlasResults")).ListItemsSource(&Rows).SelectionMode(ESelectionMode::Single)
             .OnSelectionChanged_Lambda([this](FLocation Value,ESelectInfo::Type){Selected=Value;CancelSearch();})
             .OnMouseButtonDoubleClick_Lambda([this](FLocation Value){Selected=Value;PointArrow();})
@@ -113,10 +115,6 @@ public:
         FindRoute->SetTag(TEXT("Waypoint.FindRoute"));
         Actions->AddSlot().AutoWidth().Padding(4,0)[FindRoute];
         Body->AddSlot().AutoHeight().Padding(0,4)[Actions];
-        auto ShowRoute=Button(TEXT("Show route"),FSimpleDelegate::CreateLambda([H=Host]{if(H.IsValid())H->OpenPluginWindow(TEXT("waypoint.route"));}));
-        ShowRoute->SetTag(TEXT("Waypoint.ShowRoute"));
-        ShowRoute->SetEnabled(TAttribute<bool>::CreateLambda([H=Host]{return H.IsValid()&&H->IsWaypointEnabled()&&!H->WaypointItinerary.IsEmpty();}));
-        Body->AddSlot().AutoHeight().HAlign(HAlign_Left)[ShowRoute];
         // Keep an inline view for embedded/VR surfaces that have no desktop dock.
         Body->AddSlot().AutoHeight()[SNew(SBox).HeightOverride(160)
             .Visibility_Lambda([H=Host]{return H.IsValid()&&!H->WaypointItinerary.IsEmpty()?EVisibility::Visible:EVisibility::Collapsed;})
@@ -158,7 +156,7 @@ private:
         });
         Revision=Host->WaypointLocationsRevision;
         if(Locations.IsEmpty())
-            Status=TEXT("No locations imported. Select Back, use Browse XML file in Waypoint settings to choose a GoArrow or CoD XML file, then choose Import locations.");
+            Status=TEXT("The atlas could not be loaded. Choose Back to import a GoArrow or CoD XML file.");
         else if(!Host->bWaypointAtlasHasRoutingData)
             Status=TEXT("Reimport your GoArrow or CoD XML file to include portal exits in routes.");
         FilterRows();

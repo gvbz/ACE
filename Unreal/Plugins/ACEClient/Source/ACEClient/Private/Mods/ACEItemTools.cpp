@@ -226,7 +226,7 @@ bool UACEPluginSubsystem::ExecuteItemTools(FACEClientPlugin& P,const TSharedPtr<
     else if(Action==TEXT("it_merge"))
     {
         if(!Found||!HasTarget||!Transferable(C,Item)||!Transferable(C,Target)
-            ||Amount>ACEInventoryRules::MergeAmount(Item,Target))return Fail(TEXT("Merge items or stack space changed; merge stopped."));
+            ||Amount>Session->AvailableMergeAmount(Item,Target))return Fail(TEXT("Merge items or stack space changed; merge stopped."));
         C->SendStackableMerge(Id,TargetId,Amount);
     }
     else if(Action==TEXT("it_split"))

@@ -1,0 +1,44 @@
+name: Publish official client plugins
+on:
+  push:
+    branches: [master]
+    paths: ['Unreal/Plugins/ACEClient/ClientMods/**', '.github/workflows/official-plugins.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'Thwargle/ACE' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency: official-client-plugins
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          sparse-checkout: Unreal/Plugins/ACEClient/ClientMods
+          filter: blob:none
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Thwargle/ACUnrealPlugins
+          ref: 66b9d25f9bf6f13228aa40b03031d5e727d0e772
+          path: catalog-tools
+          persist-credentials: false
+      - name: Publish verified packages for this plugin revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          directory=Unreal/Plugins/ACEClient/ClientMods
+          revision=$(git log -1 --format=%H -- "$directory")
+          tag="plugins-$revision"
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [[ "$draft" == false ]]; then exit 0; fi
+          for manifest in "$directory"/*/plugin.json; do
+            python3 catalog-tools/tools/package.py "$(dirname "$manifest")" --official --output dist
+          done
+          if [[ "$draft" != true ]]; then
+            gh release create "$tag" --target "$revision" --draft --latest=false --title "Official client plugins (${revision:0:8})" --notes "Optional AC:Unreal plugins for the account-screen Plugin Manager."
+          fi
+          gh release upload "$tag" dist/*.acplugin --clobber
+          gh release edit "$tag" --draft=false --latest=false

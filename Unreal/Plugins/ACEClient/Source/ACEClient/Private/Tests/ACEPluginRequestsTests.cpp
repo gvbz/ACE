@@ -723,6 +723,15 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         TestEqual(TEXT("Changed selection rejects ambiguous late outcome"),H->CombatOutcomes.Num(),2);
         Session.SelectedObject.Guid=900;H->PhysicalAttackUntil=0;Session.OnChatMessage.Broadcast(TEXT("Your missile attack hit the environment."),TEXT(""),0);
         TestEqual(TEXT("Expired physical attack ignores late feedback"),H->CombatOutcomes.Num(),2);
+        H->PhysicalAttackUntil=FPlatformTime::Seconds()+30;H->PhysicalAttackMode=4;
+        auto& Wasp=Session.WorldObjects.FindChecked(900);Wasp.bHasPosition=true;Wasp.Position=Session.PlayerPosition;Wasp.Position.Location.X+=12.;
+        Session.OnChatMessage.Broadcast(TEXT("Out of Range!"),TEXT("Visitor"),ACEChatMessageType::Tell);
+        TestEqual(TEXT("Player chat cannot reject missile range"),H->CombatOutcomes.Num(),2);
+        FACEBinaryWriter RangeError;RangeError.WriteUInt32(0x0550);FACEBinaryReader RangeReader(RangeError.GetData());
+        Session.HandleWeenieError(RangeReader);
+        TestEqual(TEXT("Server missile rejection identifies the current shot"),H->CombatOutcomes.Num(),3);
+        if(H->CombatOutcomes.Num()==3)TestEqual(TEXT("Records the rejected distance in metres"),H->CombatOutcomes.Last()->AsObject()->GetNumberField(TEXT("missile_rejected_distance")),12.);
+        H->PhysicalAttackMode=0;
         H->PhysicalAttackTarget=0;H->PhysicalAttackOwner.Empty();H->CombatOutcomes.Empty();Session.SelectedObject.Guid=0;Session.WorldObjects.Remove(900);
     }
     {
@@ -1110,7 +1119,14 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         FString Script,Error;FFileHelper::LoadFileToString(Script,*(IPluginManager::Get().FindPlugin(TEXT("ACEClient"))->GetBaseDir()/TEXT("ClientMods/ucm/main.lua")));
         FACEPluginVM VM;TestTrue(TEXT("Pursuit policy loads"),VM.Load(Script,Error));TSharedPtr<FJsonObject> Intent;
         TestTrue(*Error,VM.Step(Snapshot,P->Profile,Intent,Error));if(!Intent)return false;
-        TestEqual(TEXT("Distant target requests pursuit before any shot"),Intent->GetStringField(TEXT("action")),FString(TEXT("move")));
+        TestFalse(TEXT("Stationary missile profile issues no action at 60m"),Intent->HasField(TEXT("action")));
+        H->Execute(*P,Intent);
+        TestTrue(TEXT("No route leaves controller steering idle"),H->MovementOwner.IsEmpty());
+        TestTrue(TEXT("No route leaves the distant monster unselected"),C->GetSelectedObject().Guid!=Enemy.Guid);
+        P->Profile->SetBoolField(TEXT("navigation"),true);
+        P->Profile->SetArrayField(TEXT("route"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"cell":16842753,"x":10,"y":0,"z":0})")))});
+        TestTrue(*Error,VM.Step(Snapshot,P->Profile,Intent,Error));if(!Intent)return false;
+        TestEqual(TEXT("Active route permits pursuit before any shot"),Intent->GetStringField(TEXT("action")),FString(TEXT("move")));
         TestFalse(TEXT("Pursuit fixture has no pending use or equipment request"),C->IsUseBusy());
         TestFalse(TEXT("Pursuit fixture is out of portal space"),ChasePC->IsWorldTransitionActive());
         H->Execute(*P,Intent);
@@ -1311,6 +1327,9 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
         }
         {
             const auto ObjectsBefore=Session.WorldObjects;const auto ContentsBefore=Session.ContainerContents;
+            const auto OldFailure=Session.InventoryFailureSerial;const auto OldFailureItem=Session.InventoryFailureItem;
+            const auto OldError=Session.InventoryFailureError;const auto OldSelection=Session.SelectedObject;
+            ON_SCOPE_EXIT {Session.InventoryFailureSerial=OldFailure;Session.InventoryFailureItem=OldFailureItem;Session.InventoryFailureError=OldError;Session.SelectedObject=OldSelection;};
             ON_SCOPE_EXIT {Session.WorldObjects=ObjectsBefore;Session.ContainerContents=ContentsBefore;Session.TradeSelfItems.Reset();P->ActivityFailure.Reset();P->WaitAction.Empty();Session.CachedC2SPackets.Reset();};
             auto* Sockets=ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
             FSocket* Receiver=Sockets->CreateSocket(NAME_DGram,TEXT("UCM pickup test receiver"),false);
@@ -1330,6 +1349,11 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             }
             FACEContainerItemRef Unknown;Unknown.ItemGuid=889;Session.ContainerContents.FindOrAdd(881).Add(Unknown);
             auto Pickup=MakeShared<FJsonObject>();Pickup->SetStringField(TEXT("action"),TEXT("loot"));Pickup->SetNumberField(TEXT("item"),Drop.Guid);
+            auto StackReceipt=[&](int32 Guid,int32 Count)
+            {
+                FACEBinaryWriter W;W.WriteUInt8(1);W.WriteInt32(Guid);W.WriteInt32(Count);W.WriteInt32(Count);
+                FACEBinaryReader R(W.GetData());Session.HandleSetStackSize(R);
+            };
             auto CheckPickup=[&](int32 Destination,int32 Amount,int32 MergeTo=0)
             {
                 const auto BeforeObjects=Session.WorldObjects;const auto BeforeContents=Session.ContainerContents;
@@ -1343,6 +1367,11 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                     TestEqual(TEXT("Loot identifies the original corpse item"),R.ReadUInt32(),uint32(Drop.Guid));
                     TestEqual(TEXT("Loot routes to the available pack or compatible stack"),R.ReadUInt32(),uint32(MergeTo?MergeTo:Destination));
                     if(MergeTo)TestEqual(TEXT("Merge transfers only the requested quantity"),R.ReadInt32(),Amount);
+                    else if(Amount<Session.WorldObjects[Drop.Guid].StackSize)
+                    {
+                        R.ReadInt32(); // insertion position
+                        TestEqual(TEXT("New stack contains the selected quantity"),R.ReadInt32(),Amount);
+                    }
                 }
                 if(MergeTo)
                 {
@@ -1354,12 +1383,12 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
                     else Session.WorldObjects[Drop.Guid].StackSize-=Amount;
                     H->RefreshActionWait(*P);
                     TestEqual(TEXT("Source removal/reduction alone cannot confirm merged loot"),P->NextAction,Deadline);
-                    Session.WorldObjects[MergeTo].StackSize+=Amount;
+                    StackReceipt(MergeTo,Session.WorldObjects[MergeTo].StackSize+Amount);
                     H->RefreshActionWait(*P);
                     TestTrue(TEXT("Destination stack confirmation releases merged pickup immediately"),P->WaitAction.IsEmpty()&&P->NextAction<=FPlatformTime::Seconds());
                     // The destination packet may also arrive before the source.
                     Session.WorldObjects=BeforeObjects;H->ExecuteInventory(*P,Pickup,TEXT("loot"));
-                    Session.WorldObjects[MergeTo].StackSize+=Amount;H->RefreshActionWait(*P);
+                    StackReceipt(MergeTo,Session.WorldObjects[MergeTo].StackSize+Amount);H->RefreshActionWait(*P);
                     TestEqual(TEXT("Destination increase alone cannot confirm merged loot"),P->WaitAction,FString(TEXT("loot")));
                     if(Amount==Original)Session.WorldObjects.Remove(Drop.Guid);
                     else Session.WorldObjects[Drop.Guid].StackSize-=Amount;
@@ -1391,6 +1420,70 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             Session.TradeSelfItems.Add(883);TestEqual(TEXT("Packs offered in trade cannot receive automated loot"),C->FindPickupContainer(Drop.Guid,0),0);Session.TradeSelfItems.Reset();
             Session.WorldObjects[882].ItemsCapacity=-1;Session.WorldObjects[893].StackSize=100;CheckPickup(882,20);
             CheckPickup(882,5);
+            FACEWorldObject Ground=Session.WorldObjects[Drop.Guid];Ground.Guid=894;Ground.ContainerId=0;Ground.StackSize=7;
+            Session.WorldObjects.Add(Ground.Guid,Ground);
+            auto CheckManual=[&](uint32 Expected,int32 Destination,int32 Amount)
+            {
+                Session.CachedC2SPackets.Reset();C->SendInventoryPickup(Ground.Guid,882,Amount);
+                int32 Transfers=0;
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {
+                    FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);const uint32 Action=R.ReadUInt32();
+                    if(Action!=ACEGameAction::StackableMerge && Action!=ACEGameAction::PutItemInContainer && Action!=ACEGameAction::StackableSplitToContainer)continue;
+                    ++Transfers;
+                    TestEqual(TEXT("Manual pickup uses the expected transfer"),Action,Expected);
+                    TestEqual(TEXT("Manual pickup transfers the ground item"),R.ReadInt32(),Ground.Guid);
+                    TestEqual(TEXT("Manual pickup uses the expected stack or pack"),R.ReadInt32(),Destination);
+                    if(Action==ACEGameAction::StackableSplitToContainer)R.ReadInt32();
+                    if(Action!=ACEGameAction::PutItemInContainer)TestEqual(TEXT("Manual pickup preserves the quantity"),R.ReadInt32(),Amount);
+                }
+                TestEqual(TEXT("Manual pickup dispatches one transfer"),Transfers,1);
+                if(Expected==ACEGameAction::PutItemInContainer)
+                {
+                    const auto BeforeObjects=Session.WorldObjects;const auto BeforeContents=Session.ContainerContents;
+                    ConfirmPut(Ground.Guid,Destination);
+                    TestEqual(TEXT("The new stack keeps its own GUID and quantity"),Session.WorldObjects[Ground.Guid].StackSize,Amount);
+                    TestEqual(TEXT("The new stack occupies the requested pack"),Session.WorldObjects[Ground.Guid].ContainerId,Destination);
+                    Session.WorldObjects=BeforeObjects;Session.ContainerContents=BeforeContents;
+                }
+            };
+            CheckManual(ACEGameAction::PutItemInContainer,882,7);
+            CheckManual(ACEGameAction::StackableSplitToContainer,882,3);
+
+            StackReceipt(893,80);
+            CheckManual(ACEGameAction::StackableMerge,893,7);
+            TestEqual(TEXT("An unconfirmed pickup leaves the displayed count alone"),Session.WorldObjects[893].StackSize,80);
+            TestEqual(TEXT("The last 13 units still fit exactly"),C->PlanInventoryPickup(Drop.Guid,0,13).MergeTarget,893);
+            CheckPickup(882,20); // The same 20 slots cannot serve both manual pickup and UCM.
+            FACEWorldObject Alternate=Session.WorldObjects[893];Alternate.Guid=895;Alternate.StackSize=30;
+            Alternate.ContainerId=882;Session.WorldObjects.Add(Alternate.Guid,Alternate);
+            TestEqual(TEXT("Another carried stack is preferred over a new slot"),C->PlanInventoryPickup(Drop.Guid,0,20).MergeTarget,895);
+            Session.WorldObjects.Remove(Alternate.Guid);
+            FACEBinaryWriter Failure;Failure.WriteInt32(Ground.Guid);Failure.WriteInt32(0);
+            FACEBinaryReader Fail(Failure.GetData());Session.HandleInventoryServerSaveFailed(Fail);
+            TestEqual(TEXT("A rejected merge returns its space"),C->PlanInventoryPickup(Drop.Guid,0,20).MergeTarget,893);
+
+            CheckManual(ACEGameAction::StackableMerge,893,7);
+            Session.OpenExternalContainerGuid=Corpse.Guid;Pickup->SetNumberField(TEXT("amount"),13);
+            H->ExecuteInventory(*P,Pickup,TEXT("loot"));
+            StackReceipt(893,87);
+            CheckManual(ACEGameAction::PutItemInContainer,882,7); // UCM still holds the last 13 slots.
+            FACEBinaryWriter TargetFailure;TargetFailure.WriteInt32(893);TargetFailure.WriteInt32(0);
+            FACEBinaryReader FailedTarget(TargetFailure.GetData());Session.HandleInventoryServerSaveFailed(FailedTarget);
+            TestEqual(TEXT("A failure naming the recipient releases the remaining reservation"),C->PlanInventoryPickup(Drop.Guid,0,13).MergeTarget,893);
+            StackReceipt(893,80);
+
+            // Reverse the callers. The corpse removal can arrive before the stack count.
+            Pickup->SetNumberField(TEXT("amount"),20);Session.OpenExternalContainerGuid=Corpse.Guid;
+            H->ExecuteInventory(*P,Pickup,TEXT("loot"));
+            FACEBinaryWriter Removed;Removed.WriteInt32(Drop.Guid);FACEBinaryReader Remove(Removed.GetData());
+            Session.HandleInventoryRemoveObject(Remove);
+            CheckManual(ACEGameAction::PutItemInContainer,882,7);
+            StackReceipt(893,100);
+            CheckManual(ACEGameAction::PutItemInContainer,882,7);
+            StackReceipt(893,93); // Later use frees exactly seven real slots.
+            CheckManual(ACEGameAction::StackableMerge,893,7);
+            StackReceipt(893,100);
         }
         // Finish the prior synthetic pickup/equipment operations before testing
         // a fresh non-corpse interaction's stance transition.
@@ -2011,7 +2104,7 @@ bool FACEPluginRequestsTest::RunTest(const FString&)
             TestFalse(TEXT("Dead opponent stays excluded after selection moves to next opponent"),DeadInSnapshot);
             Session.WorldObjects.Remove(971);Session.OnObjectDeleted.Broadcast(971);
             TestTrue(TEXT("Removal without health update also releases target throttle"),H->CombatTarget==0&&P->NextAction==0);
-            TestEqual(TEXT("Visibility deletion is not another confirmed kill"),H->LastCombatDeath->GetNumberField(TEXT("id")),970.);
+            TestTrue(TEXT("Visibility deletion preserves the previous confirmed kill"),H->LastCombatDeath.IsValid() && H->LastCombatDeath->GetNumberField(TEXT("id"))==970.);
         }
         Session.WorldObjects.Add(970,Enemy);Session.OnObjectCreated.Broadcast(Enemy);
         TestFalse(TEXT("Newly created object with reused GUID does not inherit dead filter"),H->DefeatedTargets.Contains(970));

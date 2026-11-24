@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Linq;
 using System.Collections.Generic;
+using ACE.Common.Logging;
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
@@ -296,6 +297,7 @@ namespace ACE.Server.WorldObjects
 
         private void FireVRMissile(VRCombatRequest r, DateTime now)
         {
+            if (MovementBlocksMissile()) { RejectVRCombat(r, StationaryMissileMessage); return; }
             var weapon = GetEquippedMissileWeapon();
             if (weapon == null || weapon.Guid.Full != r.Weapon) { RejectVRCombat(r, "The missile weapon has changed. Try again with the equipped weapon."); return; }
             var crossbow = weapon.DefaultCombatStyle == CombatStyle.Crossbow;

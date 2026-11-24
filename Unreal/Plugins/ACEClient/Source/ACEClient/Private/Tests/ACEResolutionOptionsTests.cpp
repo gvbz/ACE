@@ -18,7 +18,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FACEResolutionOptionsTest,"ACE.Rendering.Resolu
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::ClientContext|EAutomationTestFlags::EngineFilter)
 bool FACEResolutionOptionsTest::RunTest(const FString&)
 {
-    const FIntPoint Desktops[]={{1280,800},{1920,1080},{2560,1440},{2560,1600},{3440,1440},{3840,2160},{5120,1440}};
+    const FIntPoint Desktops[]={{1280,800},{1920,1080},{2560,1440},{2560,1600},{3440,1440},{3840,2160},{3840,1080},{5120,1440},{7680,2160}};
     for(const auto Desktop:Desktops)
     {
         for(bool EmptyEnumeration:{false,true})
@@ -33,6 +33,8 @@ bool FACEResolutionOptionsTest::RunTest(const FString&)
                 if(I)TestTrue(TEXT("Resolution options are unique and numerically sorted"),Options[I-1].X<Options[I].X || (Options[I-1].X==Options[I].X && Options[I-1].Y<Options[I].Y));
             }
             if(Desktop.X>=2560 && Desktop.Y>=1440)TestTrue(TEXT("1440p is not capped to 1080p"),Options.Contains(FIntPoint(2560,1440)));
+            for(const FIntPoint Size : {FIntPoint(2560,720),FIntPoint(3840,1080),FIntPoint(5120,1440),FIntPoint(7680,2160)})
+                TestEqual(TEXT("32:9 fallback is offered when it fits the monitor"),Options.Contains(Size),Size.X<=Desktop.X && Size.Y<=Desktop.Y);
         }
     }
     const auto Reported=FACEDesktopDisplay::BuildResolutionOptions({{640,480},{0,0},{-1,1080},{2560,1440},{2560,1440},{3008,1692},{7680,4320}},
@@ -51,7 +53,7 @@ bool FACEResolutionOptionsTest::RunTest(const FString&)
     const auto Display=SDL_GetPrimaryDisplay();
     const auto* Desktop=SDL_GetDesktopDisplayMode(Display);
     if(!TestNotNull(TEXT("Linux provides its actual desktop mode"),Desktop))return false;
-    const auto NativeOptions=FACEDesktopDisplay::GetAvailableResolutions(nullptr);
+    const auto NativeOptions=FACEDesktopDisplay::GetAvailableResolutions(nullptr,EWindowMode::Fullscreen);
     TestTrue(TEXT("SDL desktop pixel size reaches the resolution list"),NativeOptions.Contains(FIntPoint(Desktop->w,Desktop->h)));
     int Count=0;
     if(auto** Modes=SDL_GetFullscreenDisplayModes(Display,&Count))

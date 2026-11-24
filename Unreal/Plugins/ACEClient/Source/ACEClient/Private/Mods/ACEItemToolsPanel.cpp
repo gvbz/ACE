@@ -50,9 +50,7 @@ public:
         ChildSlot[SNew(SBorder).BorderImage(&FACEPluginStyle::Current()->Background).Padding(16)
             [SNew(SVerticalBox)
             +SVerticalBox::Slot().AutoHeight()[SNew(SHorizontalBox)
-                +SHorizontalBox::Slot().FillWidth(1)[SNew(SVerticalBox)
-                    +SVerticalBox::Slot().AutoHeight()[SNew(SBox).Visibility(Args._ShowTitle?EVisibility::Visible:EVisibility::Collapsed)[Text(TEXT("Item Tools"),26)]]
-                    +SVerticalBox::Slot().AutoHeight().Padding(0,4)[Text(TEXT("Give, trade, restock and merge across all your packs."),14,Muted)]]
+                +SHorizontalBox::Slot().FillWidth(1)[SNew(SBox).Visibility(Args._ShowTitle?EVisibility::Visible:EVisibility::Collapsed)[Text(TEXT("Item Tools"),26)]]
                 +SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[SNew(SBox).IsEnabled_Lambda([this](){return Plugin->Running;})
                     [Button(TEXT("Stop"),[this](){Host->Stop(Plugin->Id,TEXT("Stopped by player"));})]]]
             +SVerticalBox::Slot().AutoHeight().Padding(0,8)[SNew(SACEPluginText).AutoWrapText(true).ColorAndOpacity(Accent)
@@ -123,7 +121,8 @@ private:
         Add(SNew(SCheckBox).Style(&FACEPluginStyle::Current()->Check).IsChecked_Lambda([this](){return Plugin->Enabled?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
             .OnCheckStateChanged_Lambda([this](ECheckBoxState S){Host->SetEnabled(Plugin->Id,S==ECheckBoxState::Checked);})[Text(TEXT("Enable Item Tools inventory actions"))]);
         Add(SNew(SBox).IsEnabled_Lambda([this](){return Plugin->Enabled;})[Button(Label,[this,Mode](){Host->StartItemTools(Mode);})]);
-        Add(Text(TEXT("Waits for each transfer to be confirmed. UCM pauses during this job and resumes afterwards."),12,Muted));
+        if(Host->Plugins.ContainsByPredicate([](const auto& Entry){return Entry->Id==TEXT("ucm")&&Entry->Enabled;}))
+            Add(Text(TEXT("UCM pauses during this job and resumes afterward."),12,Muted));
     }
     void Rules(const FString& Key,const FString& Label)
     {
@@ -137,16 +136,25 @@ private:
             .ButtonContent()[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",14)).AutoWrapText(true).Text_Lambda([this,Key](){const TArray<TSharedPtr<FJsonValue>>* Values=nullptr;
                 const int32 N=P()->TryGetArrayField(Key+TEXT("_rules"),Values)?Values->Num():0;FString Name=String(P(),*(Key+TEXT("_file")));
                 return FText::FromString(N?FString::Printf(TEXT("%s  (%d rules)"),*Name,N):TEXT("None - choose loot profile"));})]];
-        Content->AddSlot().AutoHeight()[Button(TEXT("Copy UCM's active rules"),[this,Key](){for(const auto& U:Host->Plugins)if(U->Id==TEXT("ucm"))
-            {const TArray<TSharedPtr<FJsonValue>>* Values=nullptr;if(U->Profile->TryGetArrayField(TEXT("loot_rules"),Values)){P()->SetArrayField(Key+TEXT("_rules"),*Values);P()->SetStringField(Key+TEXT("_file"),TEXT("Copy of UCM rules"));Save();}}})];
+        if(Host->ProfileOwner(TEXT("ucm")))
+            Content->AddSlot().AutoHeight()[Button(TEXT("Copy active loot rules"),[this,Key]()
+            {
+                const auto Owner=Host->ProfileOwner(TEXT("ucm"));
+                const TArray<TSharedPtr<FJsonValue>>* Values=nullptr;
+                if(Owner&&Owner->Profile->TryGetArrayField(TEXT("loot_rules"),Values))
+                {
+                    P()->SetArrayField(Key+TEXT("_rules"),*Values);
+                    P()->SetStringField(Key+TEXT("_file"),TEXT("Copy of active loot rules"));
+                    Save();
+                }
+            })];
         Add(Tile(Content));
     }
     void Library()
     {
         Add(Text(TEXT("Loot profile folder"),14,Muted));
         Add(SNew(SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit).Text(FText::FromString(Host->GetProfileFolder())).OnTextCommitted_Lambda([this](const FText& Value,ETextCommit::Type){Host->SetProfileFolder(Value.ToString());}));
-        Add(Button(TEXT("Refresh profiles"),[this](){Rebuild();Host->Notice=TEXT("Profile list refreshed. Re-select a profile to apply edits from disk.");}));
-        Add(Text(TEXT("Reads .utl files without changing the originals. First matching rule wins; only unlimited Keep items are given; Keep # limits are honored when collecting from chests. Use the Loot Editor to edit rules."),12,Muted));
+        Add(Text(TEXT("Select a .utl file again to load edits from disk."),12,Muted));
     }
     void RestockList()
     {
@@ -158,7 +166,7 @@ private:
             auto R=MakeShared<FJsonObject>();R->SetStringField(TEXT("name"),ACERetailObjectNames::Name(Item));R->SetNumberField(TEXT("wcid"),Item.WeenieClassId);R->SetNumberField(TEXT("quantity"),100);
             Rows.Add(MakeShared<FJsonValueObject>(R));P()->SetArrayField(TEXT("restock"),Rows);Save();Rebuild();}));
         const TArray<TSharedPtr<FJsonValue>>* Rows=nullptr;
-        if(!P()->TryGetArrayField(TEXT("restock"),Rows)||Rows->IsEmpty()){Add(Text(TEXT("Your list is empty. Add a component, ammunition or another supply above."),14,Muted));return;}
+        if(!P()->TryGetArrayField(TEXT("restock"),Rows)||Rows->IsEmpty()){Add(Text(TEXT("No supplies selected."),14,Muted));return;}
         for(int32 Index=0;Index<Rows->Num();++Index)
         {
             auto R=(*Rows)[Index]->AsObject();auto Box=SNew(SVerticalBox);
@@ -203,11 +211,10 @@ private:
         }
         else if(Page==TEXT("Merge"))
         {
-            Heading(TEXT("Merge similar items"),TEXT("Combine matching partial stacks across your main backpack and all carried bags, up to each item's maximum stack size."));
-            Add(Text(TEXT("Equipped, retained and offered items are excluded. Full stacks stay intact. Each merge waits for server confirmation; Stop cancels the remaining work."),14,Muted));
+            Heading(TEXT("Merge similar items"),TEXT("Combine partial stacks across all packs."));
+            Add(Text(TEXT("Equipped, retained and offered items stay untouched."),14,Muted));
             Quantity(TEXT("merge_delay_ms"),TEXT("Pause between merges (milliseconds)"),0,5000);
             Start(TEXT("merge"),TEXT("Merge similar items"));
-            Add(Text(TEXT("Chat command: /acueitems merge"),12,Muted));
         }
         else if(Page==TEXT("Buy / Sell"))
         {
@@ -219,12 +226,12 @@ private:
         }
         else if(Page==TEXT("Profiles"))
         {
-            Heading(TEXT("Give by loot profile"),TEXT("Send inventory items that match Keep rules to a player or NPC. Rules marked Keep #, Ignore, Sell, Salvage or Read stay in your inventory, matching GiveVT."));
+            Heading(TEXT("Give by loot profile"),TEXT("Give items matching unlimited Keep rules. Keep # items stay in your packs."));
             Pick(TEXT("target"),TEXT("recipient"),TEXT("Recipient"));Rules(TEXT("profile"),TEXT("Transfer profile"));Start(TEXT("profile"),TEXT("Give profile matches"));Library();
         }
         else if(Page==TEXT("Chests"))
         {
-            Heading(TEXT("Open, collect and distribute"),TEXT("Use a key, collect Keep matches, then give new loot to up to two recipients using their own profiles. Clear the key for looter-only; clear the collection profile for opener-only."));
+            Heading(TEXT("Open, collect and distribute"),TEXT("Leave the key empty to collect only. Leave the collection profile empty to open only. Keep # limits apply when collecting."));
             Pick(TEXT("chest"),TEXT("chest"),TEXT("Chest"));Pick(TEXT("key"),TEXT("item"),TEXT("Key (optional)"));Rules(TEXT("chest"),TEXT("Collection profile"));
             Pick(TEXT("mule1"),TEXT("recipient"),TEXT("First recipient (optional)"));Rules(TEXT("mule1"),TEXT("First recipient's profile"));
             Pick(TEXT("mule2"),TEXT("recipient"),TEXT("Second recipient (optional)"));Rules(TEXT("mule2"),TEXT("Second recipient's profile"));
@@ -233,10 +240,10 @@ private:
         }
         else
         {
-            Heading(TEXT("Character supplies"),TEXT("Set the total quantity to keep across all packs. Buys only the shortage from the open vendor. This list is saved separately for each character and server."));
+            Heading(TEXT("Character supplies"),TEXT("Buy enough to reach each total across all packs. Lists are saved per character and server."));
             Toggle(TEXT("auto_restock"),TEXT("Restock automatically when a matching vendor opens"));Toggle(TEXT("redeem_notes"),TEXT("Redeem trade notes to fund restocking"),true);
             Toggle(TEXT("server_bank"),TEXT("Use server bank for purchases (server validates funds; skips note sales)"));
-            RestockList();Start(TEXT("restock"),TEXT("Buy missing supplies"));Add(Text(TEXT("Chat command: /acueitems restock"),12,Muted));
+            RestockList();Start(TEXT("restock"),TEXT("Buy missing supplies"));
         }
     }
 };

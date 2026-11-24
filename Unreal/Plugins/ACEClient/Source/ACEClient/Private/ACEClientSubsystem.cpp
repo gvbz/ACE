@@ -362,6 +362,8 @@ FACEInventoryPickup UACEClientSubsystem::PlanInventoryPickup(int32 ItemGuid, int
 	TArray<int32> Containers{Self};
 	for (const auto& Pack : GetPlayerPacks())
 		if (Pack.Guid != ItemGuid && ACEInventoryRules::IsContainer(Pack)
+			&& (!Pack.ContainerId || Pack.ContainerId == Self)
+			&& (Pack.ContainerId || !Pack.ParentGuid || Pack.ParentGuid == Self)
 			&& !Offered.Contains(Pack.Guid) && !OtherOffers.Contains(Pack.Guid))
 			Containers.Add(Pack.Guid);
 
@@ -464,7 +466,7 @@ void UACEClientSubsystem::TickInventorySort(float DeltaTime)
 	for (const auto& Target:Candidates)
 	{
 		if (!IsOwnedInventoryItem(Target) || Offered.Contains(Target.Guid)) continue;
-		const int32 Amount=ACEInventoryRules::MergeAmount(Source,Target);
+		const int32 Amount=Session->AvailableMergeAmount(Source,Target);
 		if (Amount<=0) continue;
 		// Prefer retail's whole-stack auto-merge. If none fits, allow the same
 		// capacity-limited transfer as a direct drag, keeping the remainder in place.
@@ -476,7 +478,7 @@ void UACEClientSubsystem::TickInventorySort(float DeltaTime)
 	if (!MergeTarget) MergeTarget=PartialTarget;
 	if (MergeTarget)
 	{
-		const int32 Amount=ACEInventoryRules::MergeAmount(Source,*MergeTarget);
+		const int32 Amount=Session->AvailableMergeAmount(Source,*MergeTarget);
 		SortMergeTargetGuid=MergeTarget->Guid; SortWaitSeconds=0;
 		SortExpectedSource=SourceSize-Amount;
 		SortExpectedTarget=FMath::Max(1,MergeTarget->StackSize)+Amount;

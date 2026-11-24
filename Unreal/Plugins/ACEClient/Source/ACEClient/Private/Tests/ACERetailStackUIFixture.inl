@@ -2,6 +2,11 @@
 // separately invoked so the large screen suite does not exceed MSVC's optimizer limit.
 TFunction<void()> CheckStackTransfers = [&]()
 {
+    auto StackReply=[&](int32 Guid,int32 Count)
+    {
+        FACEBinaryWriter W;W.WriteUInt8(1);W.WriteInt32(Guid);W.WriteInt32(Count);W.WriteInt32(Count);
+        FACEBinaryReader R(W.GetData());Session.HandleSetStackSize(R);
+    };
     auto LastWire=[&](uint32 Expected, TArray<uint32> Values)
     {
         uint32 Last=0;
@@ -93,11 +98,11 @@ TFunction<void()> CheckStackTransfers = [&]()
         LastWire(ACEGameAction::StackableMerge,{uint32(Notes.Guid),uint32(Match.Guid),7});
         TestEqual(TEXT("Retail merge selects the receiving stack"),Client->GetSelectedObject().Guid,Match.Guid);
         Drag(25,Slot(Match.Guid));
-        LastWire(ACEGameAction::StackableMerge,{uint32(Notes.Guid),uint32(Match.Guid),10});
-        Session.WorldObjects[Match.Guid].StackSize=250;
+        LastWire(ACEGameAction::StackableMerge,{uint32(Notes.Guid),uint32(Match.Guid),3});
+        StackReply(Match.Guid,250);
         Drag(7,Slot(Match.Guid));
         LastWire(ACEGameAction::StackableSplitToContainer,{uint32(Notes.Guid),uint32(Player.Guid),1,7});
-        Session.WorldObjects[Match.Guid].StackSize=240;
+        StackReply(Match.Guid,240);
         SelectAmount(7); Gameplay->TryBeginInventoryDrag(Slot(Notes.Guid));
         Gameplay->UpdateInventoryDrag(Empty); Session.CachedC2SPackets.Reset();
         Gameplay->TryFinishInventoryDrag(Slot(Notes.Guid));
@@ -166,7 +171,7 @@ TFunction<void()> CheckStackTransfers = [&]()
     Controller->DatGameplayBinder=Gameplay;
     Gameplay->SelectInventoryGuid(LootStack.Guid); Gameplay->SelectedStackAmount=7;
     Session.CachedC2SPackets.Reset(); Controller->InteractWithObject(LootStack.Guid);
-    LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(Match.Guid),7});
+    LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(SplitPart.Guid),7});
     // Selecting another item while walking to a world stack cannot change its amount.
     Gameplay->SelectInventoryGuid(LootStack.Guid); Gameplay->SelectedStackAmount=7;
     Session.WorldObjects[LootStack.Guid].ContainerId=0;
@@ -175,12 +180,13 @@ TFunction<void()> CheckStackTransfers = [&]()
     Gameplay->SelectInventoryGuid(Other.Guid);
     Session.CachedC2SPackets.Reset();
     Controller->SendInventoryPickup(LootStack.Guid,Controller->ApproachPickupAmount);
-    LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(Match.Guid),7});
+    LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(SplitPart.Guid),7});
     Controller->ClearServerMoveTo();
     // Retail PlaceInBackpack: option 0x29 chooses main vs the open owned bag.
     // Exercise reliable action payloads, including quantity, rather than just the resolver.
     Session.CharacterOptions2&=~0x00004000u;
-    LootStack.WeenieClassId=900001; Session.WorldObjects[LootStack.Guid]=LootStack;
+    StackReply(Match.Guid,250);StackReply(SplitPart.Guid,250);
+    Session.WorldObjects[LootStack.Guid]=LootStack;
     Gameplay->RefreshInventoryOverlays(); CaptureScreen(TEXT("GameplayPickupBag"));
     if (TestTrue(TEXT("Pickup fixture can select its side bag"),BagIndex!=INDEX_NONE))
     {
@@ -256,7 +262,7 @@ TFunction<void()> CheckStackTransfers = [&]()
     LastWire(ACEGameAction::PutItemInContainer,{uint32(GroundBag.Guid),uint32(Player.Guid),0});
     // Full selected bag can still receive a compatible stack, even when main has room.
     Session.WorldObjects[Player.Guid]=PlayerRecord;
-    Session.WorldObjects[SplitPart.Guid].WeenieClassId=LootStack.WeenieClassId;
+    StackReply(SplitPart.Guid,7);
     Session.CachedC2SPackets.Reset(); Controller->SendInventoryPickup(LootStack.Guid,7);
     LastWire(ACEGameAction::StackableMerge,{uint32(LootStack.Guid),uint32(SplitPart.Guid),7});
     // Ordinary cell drops insert at the requested position instead of searching

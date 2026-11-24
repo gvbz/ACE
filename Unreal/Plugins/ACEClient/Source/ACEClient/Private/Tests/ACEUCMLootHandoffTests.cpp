@@ -48,6 +48,51 @@ bool FACEUCMLootHandoffTest::RunTest(const FString&)
     }
     TestEqual(TEXT("Final salvage hands back to navigation"),Action(Next),FString(TEXT("move")));
     TestTrue(TEXT("Policy handoffs require no elapsed multi-second delays"),S->GetNumberField(TEXT("time"))<102.);
+    // ACE can report TooBusy on the world Use, or reject an inventory move with
+    // SaveFailed(item, 0) after emitting the busy message on a different packet.
+    S->SetNumberField(TEXT("time"),200);S->SetNumberField(TEXT("action_serial"),0);
+    P->SetBoolField(TEXT("navigation"),false);P->SetNumberField(TEXT("corpse_attempts"),1);
+    P->SetArrayField(TEXT("loot_rules"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"action":"keep"})")))});
+    S->SetArrayField(TEXT("corpses"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"id":710,"name":"Busy corpse","identified":true,"distance":1})")))});
+    TestEqual(TEXT("Starts opening busy corpse"),Action(Step()),FString(TEXT("open_corpse")));
+    S->SetArrayField(TEXT("action_events"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"type":"use","source":710,"action_serial":1,"requested_at":200.1,"error":29})")))});
+    S->SetNumberField(TEXT("action_serial"),1);
+    TestTrue(TEXT("Busy open waits briefly"),Action(Step()).IsEmpty());
+    S->SetNumberField(TEXT("time"),201);
+    TestEqual(TEXT("Busy did not consume corpse blacklist allowance"),Action(Step()),FString(TEXT("open_corpse")));
+    S->SetNumberField(TEXT("container"),710);
+    auto Pea=MakeShared<FJsonValueObject>(Json(TEXT(R"({"id":801,"wcid":501,"name":"Gold Pea","count":1,"identified":true})")));
+    auto Coin=MakeShared<FJsonValueObject>(Json(TEXT(R"({"id":802,"wcid":502,"name":"Coin","count":1,"identified":true})")));
+    S->SetArrayField(TEXT("contents"),{Pea,Coin});
+    TestEqual(TEXT("Starts pickup"),Step()->GetNumberField(TEXT("item")),801.);
+    S->SetNumberField(TEXT("inventory_failure_serial"),1);S->SetNumberField(TEXT("inventory_failure_item"),999);
+    TestTrue(TEXT("Unrelated failure cannot retry the pickup"),Action(Step()).IsEmpty());
+    for(int Attempt=1;Attempt<=3;++Attempt)
+    {
+        S->SetNumberField(TEXT("inventory_failure_serial"),Attempt+1);S->SetNumberField(TEXT("inventory_failure_item"),801);
+        S->SetNumberField(TEXT("inventory_failure_error"),Attempt==1?0:0x1d);
+        TestTrue(TEXT("Repeated busy replies respect retry spacing"),Action(Step()).IsEmpty());
+        S->SetNumberField(TEXT("time"),202+Attempt);
+        auto Retry=Step();
+        TestEqual(TEXT("Inventory rejection stays within looting"),Action(Retry),FString(TEXT("loot")));
+        TestEqual(TEXT("Retry same item, then try other contents"),Retry->GetNumberField(TEXT("item")),Attempt<3?801.:802.);
+    }
+    auto Inventory=S->GetArrayField(TEXT("inventory"));Inventory.Add(Coin);S->SetArrayField(TEXT("inventory"),Inventory);S->SetArrayField(TEXT("contents"),{Pea});
+    auto Incomplete=Step();
+    TestEqual(TEXT("Temporarily releases corpse after other loot"),Action(Incomplete),FString(TEXT("close_corpse")));
+    TestFalse(TEXT("A rejected pickup never marks a corpse complete"),Incomplete->HasField(TEXT("completed")));
+    S->SetNumberField(TEXT("container"),0);S->SetNumberField(TEXT("time"),236);
+    TestEqual(TEXT("Returns for the remaining item without restarting UCM"),Action(Step()),FString(TEXT("open_corpse")));
+    S->SetNumberField(TEXT("container"),710);
+    TestEqual(TEXT("Rechecks outstanding item"),Step()->GetNumberField(TEXT("item")),801.);
+    S->SetNumberField(TEXT("time"),247);
+    TestTrue(TEXT("Unacknowledged transfer waits for late ownership"),Action(Step()).IsEmpty());
+    S->SetNumberField(TEXT("time"),248);
+    TestEqual(TEXT("Unchanged corpse item retries after a missing packet"),Step()->GetNumberField(TEXT("item")),801.);
+    S->SetNumberField(TEXT("inventory_failure_serial"),5);Step();
+    Inventory.Add(Pea);S->SetArrayField(TEXT("inventory"),Inventory);S->SetArrayField(TEXT("contents"),{});
+    auto Received=Step();TestTrue(TEXT("Late delivery wins over the scheduled retry"),Received->GetBoolField(TEXT("completed")));
+    TestTrue(TEXT("Only confirmed pickup produces a notice"),Received->HasField(TEXT("loot_notification")));
     return !HasAnyErrors();
 }
 #endif

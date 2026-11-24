@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #include "ACECameraRetail.h"
+#include "SceneView.h"
 #include "ACEOrbitCameraBoom.h"
 #include "ACECameraSettings.h"
 #include "ACETerrainPresenterComponent.h"
@@ -49,7 +50,7 @@ bool FACECameraEdgeTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Retail 4:3 60-degree preference"),FMath::IsNearlyEqual(ACECameraRetail::HorizontalFovDegrees(4.f/3,60),62.15513f,.0001f));
     TestTrue(TEXT("Retail 16:9 default projection"),FMath::IsNearlyEqual(ACECameraRetail::HorizontalFovDegrees(16.f/9,90),83.90130f,.0001f));
     TestTrue(TEXT("Retail ultrawide 120-degree preference"),FMath::IsNearlyEqual(ACECameraRetail::HorizontalFovDegrees(21.f/9,120),99.53647f,.0001f));
-    for(float Aspect : {4.f/3,16.f/9,21.f/9}) for(float Degrees : {10.f,60.f,90.f,120.f,160.f})
+    for(float Aspect : {4.f/3,16.f/9,21.f/9,32.f/9}) for(float Degrees : {10.f,60.f,90.f,120.f,160.f})
     {
         const float Lens=ACECameraRetail::HorizontalFovDegrees(Aspect,Degrees);
         TestTrue(TEXT("Portal lens blend ends at the configured FOV"),FMath::IsNearlyEqual(ACERetailPortalAnimation::StretchFov(Lens,Aspect,1.f,true),Lens,.001f));
@@ -79,7 +80,30 @@ bool FACECameraEdgeTest::RunTest(const FString& Parameters)
             ACECameraRetail::HorizontalFovDegrees(16.f/9,120.f));
         TestTrue(TEXT("Projection keeps the calculated horizontal FOV"),Camera->bOverrideAspectRatioAxisConstraint
             && Camera->AspectRatioAxisConstraint==AspectRatio_MaintainXFOV && !Camera->bConstrainAspectRatio);
-        for (const FIntPoint Size : {FIntPoint(2048,1536),FIntPoint(1920,1080),FIntPoint(3440,1440)})
+        auto Projection = [Camera](FIntPoint Size, float Preference)
+        {
+            ACECameraRetail::ApplyFovToCamera(Camera,Size.X,Size.Y,Preference);
+            FMinimalViewInfo View;
+            Camera->GetCameraView(0.f,View);
+            FSceneViewProjectionData Data;
+            const FIntRect Rect(FIntPoint::ZeroValue,Size);
+            Data.SetViewRectangle(Rect);
+            FMinimalViewInfo::CalculateProjectionMatrixGivenViewRectangle(View,AspectRatio_MaintainYFOV,Rect,Data);
+            return Data.ProjectionMatrix;
+        };
+        for (float Preference : {10.f,60.f,90.f,120.f,160.f})
+        {
+            const auto Reference=Projection({3840,1600},Preference);
+            for (FIntPoint Size : {FIntPoint(3840,1080),FIntPoint(5120,1440),FIntPoint(7680,2160)})
+            {
+                const auto Wide=Projection(Size,Preference);
+                TestTrue(TEXT("32:9 preserves vertical framing at the chosen FOV"),
+                    FMath::IsNearlyEqual(Wide.M[1][1],Reference.M[1][1],.0001));
+                TestTrue(TEXT("32:9 extends the horizontal view in proportion to viewport width"),
+                    FMath::IsNearlyEqual(Wide.M[0][0],Reference.M[0][0]*(3840./1600.)/(32./9.),.0001));
+            }
+        }
+        for (const FIntPoint Size : {FIntPoint(2048,1536),FIntPoint(1920,1080),FIntPoint(3440,1440),FIntPoint(5120,1440)})
         {
             ACECameraRetail::ApplyFovToCamera(Camera,Size.X,Size.Y,120.f,true);
             TestEqual(TEXT("High sky view keeps the retail 120-degree preference across window shapes"),Camera->FieldOfView,

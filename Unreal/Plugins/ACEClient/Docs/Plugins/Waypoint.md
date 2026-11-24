@@ -31,13 +31,12 @@ the Waypoint panel, including the north arrow shown when you have no destination
 This choice persists across logins and Waypoint profiles. Chat links, map clicks,
 atlas routes and other plugins can update the destination while the arrow is hidden.
 Turn the checkbox back on to see the current heading or destination.
-**Show distance to destination** is independent. To move the
-arrow, unlock the game UI with the radar lock icon, or hold **Quick-show pinned
-windows** (Left Control by default), and drag the arrow area. The
-arrow has no background, frame or title bar, and does not intercept clicks while
-locked. Its
-position is stored through the same plugin window persistence as other plugins.
-Window positions, the destination and display preferences survive login/restart.
+Unlock the HUD with the radar lock icon or hold **Quick-show pinned windows**
+(Left Control by default). Drag the arrow to move it, or drag its lower-right
+corner to resize the arrow and its labels together. The preview in Waypoint
+settings has the same resize grip. Size and position are saved across logins.
+The locked HUD arrow lets clicks through. **Show distance to destination**
+controls the distance label independently.
 The desktop overlay hides with Alt+Z and is removed on logout.
 
 ## Map
@@ -120,16 +119,16 @@ from live server objects, so custom portals use their server-provided placement.
 
 ### GoArrow destinations and directions
 
-Open **NAV** and use **Browse XML file** to select a GoArrow or CoD atlas XML
-file from your computer. The Windows and Linux file pickers show XML files and
-fill the path field; click **Import locations** to load the selected file. You
-can also paste a full path, including Windows “Copy as path” quotes. A successful
-import opens the searchable list and shows how many locations were loaded. An
-error appears beside the import controls and leaves the previous atlas available.
-Use **Search locations** in NAV or the full map to search the imported atlas,
-including after restarting the client. **Back** returns to the same settings or
-map view without losing the typed XML path or map filter. If you imported
-with v157 or earlier, import the XML once more to add its portal exits.
+Open **Search locations** in NAV or the full map to use the included Crossroads
+of Dereth atlas. It contains towns, dungeons, portals and other landmarks, with
+known portal exits available for route planning. Towns shared with the built-in
+map use its geographic centers.
+
+To use a different atlas, choose **Browse XML file** in NAV or paste a full path,
+then click **Import locations**. A successful import opens the searchable list
+and becomes your atlas across restarts. If an import fails, the previous atlas
+stays available. **Back** preserves the typed path or map filter. If you last
+imported with v157 or earlier, reimport that XML to add its portal exits.
 
 Search by name or type and select a row. Each row shows its coordinates so you
 can distinguish places that share a name.
@@ -142,12 +141,12 @@ can distinguish places that share a name.
   for each step. Close NAV, the map or Plugin Manager and keep using these buttons
   while you travel. After taking a portal, click the next step to point the arrow.
   The route window can be moved, resized and pinned like other plugin windows.
-- **Show route** reopens the current route without recalculating it. Finding a
-  new route updates and raises the same route window instead of creating duplicates.
+- **Current directions** appears in NAV and the full map after you find a route.
+  It reopens the existing steps. Finding another route updates the same window.
   Directions also remain available inside the atlas browser for embedded interfaces.
 
 Walking legs use straight-line distances within GoArrow's map regions and must
-be under 50 map units each. Directions use the imported exits. Personal recalls,
+be under 50 map units each. Directions use the active atlas's portal exits. Personal recalls,
 terrain obstacles, and character-specific access requirements are outside the
 planner. You move your character and use each portal yourself.
 Region boundaries come from [GoArrow's MapRegions.xml](https://github.com/Xanius/GoArrow-VVSEdition/blob/fb7e49f0f9f4d7bd1401c5310dfcfa9fd05ed84d/GoArrow/RouteFinding/MapRegions.xml).
@@ -164,12 +163,14 @@ exits in GoArrow exports remain valid. These conventions follow
 Retired records and version metadata are excluded. Invalid location rows are
 skipped and counted in the import result; a bad travel exit is ignored without
 losing its valid entrance. Malformed XML, unsupported formats, and files with
-no usable locations preserve the previous atlas. The import reads data only and
-does not run Decal DLLs. The
-copyrighted GoArrow/CoD database is not bundled with this client. Atlas locations
-can be stale or differ on custom servers; nearby live portals remain authoritative.
+no usable locations preserve the previous atlas. The bundled `locations.xml`
+contains navigation data from Warcry Crossroads of Dereth, with later additions
+by DarkTorizo and town updates from the Asheron's Call wiki. Custom servers may
+use different locations or portal exits.
 
-The imported atlas is stored at `Saved/ClientPlugins/Waypoint/locations.json`.
+Waypoint keeps your import in `Saved/ClientPlugins/Waypoint/locations.json`.
+Updates and reinstalls that retain your Saved folder keep using that atlas, even
+if the bundled atlas changes or you move the original XML file.
 On Quest, use its app-private Saved location; copying a file there requires ADB.
 Waypoint saves the floating arrow choice in `Saved/ClientPlugins/Waypoint/floating-arrow.txt`.
 The destination and other display options are under `Saved/ClientPlugins/Profiles/waypoint`.
@@ -212,8 +213,7 @@ Reference behavior: https://www.virindi.net/wiki/index.php/GoArrow_(VVS_Edition)
   persistence and import rejection checks; native VR chat passed too.
 - Desktop chat input, multiline selection and copy/paste passed on an isolated
   rerun after the combined run encountered Windows `OpenClipboard` error 5.
-- The installed GoArrow atlas imported **5,066** locations without executing any
-  plugin binaries. That atlas was used only in temporary test storage.
+- The included atlas has **5,066** locations and **869** travel exits.
 - World map, arrow and dungeon `0x0143` rendered against real DAT files. Settings
   and map panels were rendered and inspected at 450px and 780px widths.
 - This is offline validation, not a live-server or headset playtest. No release

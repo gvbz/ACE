@@ -14,7 +14,7 @@ public:
         FIntPoint Requested, FIntPoint Desktop, bool ExplicitResolution);
     static FIntPoint GetMonitorResolution(AACEPlayerController* Controller);
     /** Display modes for the monitor containing the game window, plus usable window sizes. */
-    static TArray<FIntPoint> GetAvailableResolutions(AACEPlayerController* Controller);
+    static TArray<FIntPoint> GetAvailableResolutions(AACEPlayerController* Controller, EWindowMode::Type Mode = EWindowMode::Fullscreen);
     static TArray<FIntPoint> BuildResolutionOptions(const TArray<FIntPoint>& Reported,
         FIntPoint Desktop, FIntPoint Current, bool IncludeCommonSizes);
     /** Preview display changes for 15 seconds before saving them. */

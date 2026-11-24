@@ -28,6 +28,9 @@
 #include "Misc/ScopeExit.h"
 #include "Misc/App.h"
 #include "Slate/WidgetRenderer.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Widgets/SVirtualWindow.h"
+#include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -335,7 +338,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
     TestFalse(TEXT("War and void never use fast-buff movement"),ACEPluginCastMotion::FastBuff(1,25,0,0)||ACEPluginCastMotion::FastBuff(5,25,0,0));
     const FString Root=FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()/TEXT("Automation")/(TEXT("PluginTest-")+FGuid::NewGuid().ToString(EGuidFormats::Digits)));
     H->StorageRoot=Root;H->Settings=MakeShared<FJsonObject>();H->Discover();
-    TestTrue(TEXT("UCM Micro is discovered as a controls-only plugin"),H->Find(TEXT("ucmmicro"))&&H->Find(TEXT("ucmmicro"))->Permissions.IsEmpty());
+    TestTrue(TEXT("UCM Micro has its own opt-in policy"),H->Find(TEXT("ucmmicro"))&&H->Find(TEXT("ucmmicro"))->UsesCompactControls()&&!H->Find(TEXT("ucmmicro"))->Enabled);
     {
         auto Queue=[&](){auto E=Json(TEXT(R"({"target":100,"spell":42,"category":42,"power":100,"duration":120,"confirmation":"You cast Magic Yield Other I on Target","resist":"Target resists your spell"})"));E->SetNumberField(TEXT("sent"),FPlatformTime::Seconds());H->PendingDebuffCasts.Add(MakeShared<FJsonValueObject>(E));};
         Queue();H->ObserveUseDone(0);TestTrue(TEXT("UseDone alone never confirms offensive enchantments"),H->Debuffs.IsEmpty());
@@ -427,7 +430,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
         TestFalse(TEXT("Upgrading preserves a legacy profile's hidden idle arrow"),H->ShouldShowWaypointArrow());
         TestTrue(TEXT("Save another Waypoint profile with its original visible default"),H->SaveProfile(WaypointId,TEXT("Default"),OriginalProfile,false));
         auto Panel=H->MakeWaypointPanel();
-        auto Preview=FindControl(Panel,TEXT("SWaypointArrow"));
+        auto Preview=FindControl(Panel,TEXT("Waypoint.ArrowPreview"));
         auto Checkbox=StaticCastSharedPtr<SCheckBox>(FindControl(Panel,TEXT("Waypoint.ShowFloatingArrow")));
         if(!TestTrue(TEXT("Found the arrow checkbox and coordinate preview in Waypoint settings"),Checkbox&&Preview))return false;
         Panel->SlatePrepass(1.f);
@@ -436,6 +439,55 @@ bool FACEPluginHostTest::RunTest(const FString&)
         Checkbox->ToggleCheckedState();Panel->SlatePrepass(1.f);
         auto IdleDock=SNew(SACEPluginDesktop).Host(H);
         TestTrue(TEXT("Explicitly showing the idle arrow enables both preview and HUD"),Preview->GetVisibility().IsVisible()&&IdleDock->IsOpen(ArrowId));
+        TestEqual(TEXT("Existing settings start with the original arrow size"),H->WaypointArrowScale(),1.f);
+        auto* Manager=GI->GetSubsystem<UACEClientSubsystem>()->GetUIElementManager();
+        Manager->SetUiLocked(true);
+        IdleDock->Resize(ArrowId,FVector2D(-145,-112.5),false);
+        TestEqual(TEXT("The locked HUD ignores resize attempts"),H->WaypointArrowScale(),1.f);
+        Manager->SetQuickShowUi(true);
+        if(FApp::CanEverRender())
+        {
+            const FVector2D Size(1024,768);
+            auto Window=SNew(SVirtualWindow).Size(Size);
+            Window->SetContent(SNew(SDPIScaler).DPIScale(1.35f)[IdleDock]);
+            auto& App=FSlateApplication::Get();
+            App.RegisterVirtualWindow(Window);
+            FWidgetRenderer Renderer(false,true);
+            auto* Target=FWidgetRenderer::CreateTargetFor(Size,TF_Bilinear,true);
+            ON_SCOPE_EXIT{App.ReleaseAllPointerCapture();App.UnregisterVirtualWindow(Window);Target->ReleaseResource();};
+            auto Frame=[&]{++GFrameCounter;Renderer.DrawWindow(Target,Window->GetHittestGrid(),Window,1.f,Size,.016f);FlushRenderingCommands();};
+            Frame();Frame();
+            auto& Arrow=IdleDock->Windows[ArrowId];
+            const auto Grip=FindControl(Arrow.Widget.ToSharedRef(),TEXT("PluginResizeGrip"));
+            if(!TestTrue(TEXT("The floating arrow has a resize grip"),Grip.IsValid()))return false;
+            const auto G=Grip->GetCachedGeometry();
+            const FVector2D From=G.LocalToAbsolute(G.GetLocalSize()*.5);
+            const FVector2D To=G.LocalToAbsolute(FVector2D(G.GetLocalSize())*.5-FVector2D(145,112.5));
+            auto Path=[&](const FVector2D& At){return App.LocateWindowUnderMouse(At,{Window},false,0);};
+            TestTrue(TEXT("Quick-show exposes the actual corner to hit testing"),Path(From).ContainsWidget(Grip.Get()));
+            const auto Origin=Arrow.Position;
+            App.RoutePointerDownEvent(Path(From),FPointerEvent(0,From,From,{EKeys::LeftMouseButton},EKeys::LeftMouseButton,0,FModifierKeysState()));
+            App.RoutePointerMoveEvent(Path(To),FPointerEvent(0,To,From,{EKeys::LeftMouseButton},EKeys::Invalid,0,FModifierKeysState()),false);
+            App.RoutePointerUpEvent(Path(To),FPointerEvent(0,To,To,{},EKeys::LeftMouseButton,0,FModifierKeysState()));
+            TestEqual(TEXT("Dragging the HUD corner halves both axes at 135 percent DPI"),H->WaypointArrowScale(),.5f,.001f);
+            TestEqual(TEXT("Corner resizing keeps the arrow anchored"),Arrow.Position,Origin);
+        }
+        IdleDock->Resize(ArrowId,FVector2D(600,600),false);
+        TestEqual(TEXT("Dragging outward restores the original size"),H->WaypointArrowScale(),1.f);
+        IdleDock->Resize(ArrowId,FVector2D(-600,-600),false);
+        IdleDock->Resize(ArrowId,FVector2D::ZeroVector,true);
+        Manager->SetQuickShowUi(false);
+        TestEqual(TEXT("The arrow remains grabbable at its minimum size"),H->WaypointArrowScale(),.25f);
+        Panel->SlatePrepass(1.f);
+        TestEqual(TEXT("The settings preview tracks the resized HUD"),FVector2D(Preview->GetDesiredSize()),FVector2D(72.5,56.25));
+        IdleDock->Tick(FGeometry::MakeRoot(FVector2D(1920,1080),FSlateLayoutTransform()),1,.016f);
+        const auto ArrowBounds=IdleDock->Windows[ArrowId].Slot->GetOffset();
+        TestEqual(TEXT("The open HUD arrow's drag area shrinks with its content"),FVector2D(ArrowBounds.Right,ArrowBounds.Bottom),FVector2D(72.5,56.25));
+        FString SavedSettings;
+        if(!TestTrue(TEXT("Arrow settings were written to disk"),FFileHelper::LoadFileToString(SavedSettings,*(Root/TEXT("settings.json")))))return false;
+        H->Settings=Json(*SavedSettings);
+        if(!TestTrue(TEXT("Saved Waypoint settings parse on login"),H->Settings.IsValid()))return false;
+        TestEqual(TEXT("The smaller arrow size persists on disk"),H->WaypointArrowScale(),.25f);
         Checkbox->ToggleCheckedState();Panel->SlatePrepass(1.f);IdleDock->Refresh();
         TestTrue(TEXT("Unchecking the idle arrow hides the settings preview and HUD"),Preview->GetVisibility()==EVisibility::Collapsed&&!IdleDock->IsOpen(ArrowId));
         IdleDock->Toggle(ArrowId);IdleDock->Refresh();
@@ -444,6 +496,8 @@ bool FACEPluginHostTest::RunTest(const FString&)
         TestFalse(TEXT("Closing an enabled idle arrow persists through dock refresh"),H->WaypointOption(TEXT("arrow"))||IdleDock->IsOpen(ArrowId));
         H->SetEnabled(WaypointId,false);H->SetEnabled(WaypointId,true);
         H->LoadProfile(WaypointId,TEXT("Default"));H->Discover();P=H->Find(TEXT("ucm"));
+        TestEqual(TEXT("Arrow size survives reloading while hidden"),H->WaypointArrowScale(),.25f);
+        H->SetWaypointArrowScale(1.f);
         auto LoginDock=SNew(SACEPluginDesktop).Host(H);
         TestFalse(TEXT("Plugin restart, profile reload and HUD recreation preserve the idle opt-out"),H->ShouldShowWaypointArrow()||LoginDock->IsOpen(ArrowId));
     }
@@ -473,7 +527,12 @@ bool FACEPluginHostTest::RunTest(const FString&)
             if(TestTrue(*FString::Printf(TEXT("%s is enabled through its widget ancestry"),Name),IsControlEnabled(Panel,B)))B->SimulateClick();
             B->UpdateAllAttributes();Panel->SlatePrepass(1.f);
         };
-        TestTrue(TEXT("Browse-before-import fixture starts with no atlas"),H->GetWaypointLocations().IsEmpty());
+        const auto Bundled=H->GetWaypointLocations();
+        if(!TestTrue(TEXT("The included atlas supplies towns and portal exits before import"),
+            Bundled.ContainsByPredicate([](const auto& P){return P.Name==TEXT("Arwic")&&P.Type==TEXT("Town")&&P.Coordinates.Equals(FVector2D(56.6,33.3),.001);})
+            &&Bundled.ContainsByPredicate([](const auto& P){return P.TravelExit.IsSet();})&&H->bWaypointAtlasHasRoutingData))return false;
+        TestFalse(TEXT("Using the included atlas does not create a personal import"),IFileManager::Get().FileExists(*(H->UserDirectory()/TEXT("Waypoint/locations.json"))));
+        auto BundledUnchanged=[&]{return SameWaypointLocations(Bundled,H->GetWaypointLocations());};
         ACEWaypointFilePicker::FComplete PickerComplete;
         FString PickerInitialPath;int32 PickerRequests=0;
         ACEWaypointFilePicker::SetTestPicker([&](const FString& InitialPath,ACEWaypointFilePicker::FComplete Complete)
@@ -495,7 +554,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
             // process the same attribute/layout update the next UI frame performs.
             Browse->UpdateAllAttributes();Panel->SlatePrepass(1.f);
         };
-        TestTrue(TEXT("XML Browse is enabled before any path or atlas exists"),PathBox->GetText().IsEmpty()&&IsControlEnabled(Panel,Browse));
+        TestTrue(TEXT("XML Browse is enabled before importing"),PathBox->GetText().IsEmpty()&&IsControlEnabled(Panel,Browse));
         Click(TEXT("Browse XML file"));
         TestEqual(TEXT("Browse requests one XML chooser"),PickerRequests,1);
         TestTrue(TEXT("Chooser starts without a typed path"),PickerInitialPath.IsEmpty());
@@ -504,7 +563,7 @@ bool FACEPluginHostTest::RunTest(const FString&)
         if(!TestTrue(TEXT("XML chooser supplies an asynchronous completion"),bool(PickerComplete)))return false;
         CompletePicker(Atlas,FString(),false);
         TestEqual(TEXT("Selected XML populates the editable path"),PathBox->GetText().ToString(),Atlas);
-        TestTrue(TEXT("Selecting an XML waits for the explicit Import button"),H->GetWaypointLocations().IsEmpty()
+        TestTrue(TEXT("Selecting an XML waits for the explicit Import button"),BundledUnchanged()
             &&FindControl(Panel,TEXT("Waypoint.AtlasPath"))==PathBox&&!FindControl(Panel,TEXT("Waypoint.AtlasResults")).IsValid());
         TestTrue(TEXT("Browse is available again after choosing a file"),!ACEWaypointFilePicker::IsOpen()&&IsControlEnabled(Panel,Browse));
         Click(TEXT("Browse XML file"));
@@ -519,28 +578,28 @@ bool FACEPluginHostTest::RunTest(const FString&)
         if(!TestTrue(TEXT("Picker cancellation callback is available"),bool(PickerComplete)))return false;
         CompletePicker(FString(),FString(),true);
         TestTrue(TEXT("Cancelling the XML chooser preserves path, feedback and imported data"),PathBox->GetText().ToString()==Atlas
-            &&PickerStatus->GetText().ToString()==BeforeCancel&&H->GetWaypointLocations().IsEmpty());
+            &&PickerStatus->GetText().ToString()==BeforeCancel&&BundledUnchanged());
         Click(TEXT("Browse XML file"));
         if(!TestTrue(TEXT("Typed filename validation callback is available"),bool(PickerComplete)))return false;
         CompletePicker(Root/TEXT("not an atlas.txt"),FString(),false);
         TestTrue(TEXT("A typed non-XML filename cannot bypass the chooser filter"),PathBox->GetText().ToString()==Atlas
-            &&PickerStatus->GetText().ToString().Contains(TEXT("Choose a GoArrow or CoD XML file"))&&H->GetWaypointLocations().IsEmpty());
+            &&PickerStatus->GetText().ToString().Contains(TEXT("Choose a GoArrow or CoD XML file"))&&BundledUnchanged());
         Click(TEXT("Browse XML file"));
         if(!TestTrue(TEXT("Uppercase XML filename callback is available"),bool(PickerComplete)))return false;
         const FString UppercaseAtlas=Root/TEXT("Locations.XML");
         CompletePicker(UppercaseAtlas,FString(),false);
         TestEqual(TEXT("XML selection accepts case-insensitive extensions"),PathBox->GetText().ToString(),UppercaseAtlas);
-        TestTrue(TEXT("Choosing XML still leaves import under user control"),H->GetWaypointLocations().IsEmpty()
+        TestTrue(TEXT("Choosing XML still leaves import under user control"),BundledUnchanged()
             &&PickerStatus->GetText().ToString().Contains(TEXT("Import locations")));
         Click(TEXT("Search locations"));
-        auto EmptyStatus=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.AtlasStatus")));
-        auto EmptyResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
-        if(!TestTrue(TEXT("Search locations opens an empty atlas with guidance back to import"),EmptyStatus&&EmptyResults
-            &&EmptyResults->GetItems().IsEmpty()&&EmptyStatus->GetText().ToString().Contains(TEXT("No locations imported"))
-            &&EmptyStatus->GetText().ToString().Contains(TEXT("Back"))))return false;
+        auto DefaultResults=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindControl(Panel,TEXT("Waypoint.AtlasResults")));
+        auto DefaultSearch=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasSearch")));
+        if(!TestTrue(TEXT("Search lists the included atlas before import"),DefaultSearch&&DefaultResults&&DefaultResults->GetItems().Num()==Bundled.Num()))return false;
+        DefaultSearch->SetText(FText::FromString(TEXT("Arwic")));
+        if(!TestTrue(TEXT("Bundled atlas search filters by town"),DefaultResults->GetItems().Num()>0&&DefaultResults->GetItems().Num()<Bundled.Num()))return false;
         Click(TEXT("Back"));
         PathBox=StaticCastSharedPtr<SEditableTextBox>(FindControl(Panel,TEXT("Waypoint.AtlasPath")));
-        if(!TestTrue(TEXT("Back from an empty browser restores the import path"),PathBox.IsValid()))return false;
+        if(!TestTrue(TEXT("Back from the bundled atlas preserves the chosen XML path"),PathBox&&PathBox->GetText().ToString()==UppercaseAtlas))return false;
         PathBox->SetText(FText::FromString(FString::Printf(TEXT("  \"%s\"  "),*Atlas)));
         Click(TEXT("Import locations"));
         auto Status=StaticCastSharedPtr<STextBlock>(FindControl(Panel,TEXT("Waypoint.AtlasStatus")));

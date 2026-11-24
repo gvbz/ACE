@@ -1,5 +1,7 @@
 #include "Mods/ACEPluginSubsystem.h"
 #include "Mods/ACEPluginColor.h"
+#include "Mods/ACEPluginCatalog.h"
+#include "HAL/PlatformFileManager.h"
 #include "ACEClientSubsystem.h"
 #include "ACEPlayerController.h"
 #include "ACESession.h"
@@ -70,7 +72,7 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::PublicSnapshot(FACEClientPlugin& P)
     static const TSet<FString> Lightweight={TEXT("char_strings"),TEXT("char_ints"),TEXT("char_quads"),TEXT("char_doubles"),TEXT("char_bools"),
         TEXT("inventory"),TEXT("inventory_revision"),TEXT("appraisal_revision"),TEXT("window_chrome_hidden"),TEXT("level"),TEXT("character_name"),TEXT("action_serial"),TEXT("action_error"),TEXT("last_spell"),TEXT("last_spell_confirmed"),
         TEXT("profile_name"),TEXT("waiting_action"),TEXT("log"),TEXT("panel"),TEXT("activity_failure"),TEXT("capabilities"),TEXT("automation_owner"),TEXT("action_events"),
-        TEXT("inventory_failure_serial"),TEXT("inventory_failure_item"),TEXT("inventory_failure_error"),
+        TEXT("inventory_failure_serial"),TEXT("inventory_failure_item"),TEXT("inventory_failure_error"),TEXT("hunt_ledger"),TEXT("supply_ledger"),
         TEXT("objects"),TEXT("objects_truncated"),TEXT("selection"),TEXT("tracked_targets"),TEXT("target_effects"),TEXT("client_bus")};
     bool FullData=!P.SelectiveSnapshot;
     if(P.SelectiveSnapshot)for(const auto& Field:P.SnapshotFields)if(!Common->HasField(Field)&&!Lightweight.Contains(Field)){FullData=true;break;}
@@ -102,6 +104,37 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::PublicSnapshot(FACEClientPlugin& P)
             Result->SetNumberField(TEXT("inventory_failure_error"),Session->GetInventoryFailureError());
         }
     }
+    if(DataAllowed && P.WantsSnapshotField(TEXT("hunt_ledger")) && UpdateLedgerCharacter())
+    {
+        const double Now=FPlatformTime::Seconds();
+        const auto Recent=HuntLedger.LastFiveMinutes(Now);
+        auto Hunt=MakeShared<FJsonObject>();
+        Hunt->SetNumberField(TEXT("elapsed_seconds"),HuntLedger.Elapsed(Now));
+        Hunt->SetNumberField(TEXT("xp"),HuntLedger.XP);
+        Hunt->SetNumberField(TEXT("luminance"),HuntLedger.Lum);
+        Hunt->SetNumberField(TEXT("xp_last_five_minutes"),Recent.XP);
+        Hunt->SetNumberField(TEXT("luminance_last_five_minutes"),Recent.Lum);
+        Result->SetObjectField(TEXT("hunt_ledger"),Hunt);
+    }
+    if(DataAllowed && P.WantsSnapshotField(TEXT("supply_ledger")) && UpdateLedgerCharacter())
+    {
+        UpdateLedgers();
+        TArray<TSharedPtr<FJsonValue>> Supplies;
+        for(const auto& Supply:LedgerSupplies)
+        {
+            auto Row=MakeShared<FJsonObject>();
+            Row->SetStringField(TEXT("name"),Supply.Name);
+            Row->SetNumberField(TEXT("wcid"),uint32(Supply.ClassId));
+            Row->SetNumberField(TEXT("count"),Supply.Count);
+            Row->SetNumberField(TEXT("icon"),uint32(Supply.Icon));
+            Row->SetNumberField(TEXT("overlay"),uint32(Supply.Overlay));
+            Row->SetNumberField(TEXT("underlay"),uint32(Supply.Underlay));
+            Row->SetNumberField(TEXT("effects"),uint32(Supply.Effects));
+            Row->SetNumberField(TEXT("item_type"),uint32(Supply.ItemType));
+            Supplies.Add(MakeShared<FJsonValueObject>(Row));
+        }
+        Result->SetArrayField(TEXT("supply_ledger"),Supplies);
+    }
     if(DataAllowed && P.WantsSnapshotField(TEXT("character_name")))
         if(auto Session=GetGameInstance()->GetSubsystem<UACEClientSubsystem>()->GetSession())Result->SetStringField(TEXT("character_name"),Session->GetPlayerName());
     // Preserve the extended position (global coordinates) and merge observer data.
@@ -122,6 +155,13 @@ TSharedPtr<FJsonObject> UACEPluginSubsystem::PublicSnapshot(FACEClientPlugin& P)
     if(P.Permissions.Contains(TEXT("client_messaging"))&&P.WantsSnapshotField(TEXT("client_bus")))
         Result->SetObjectField(TEXT("client_bus"),ClientMessagingSnapshot(P));
     auto Owner=PolicyPlugin();Result->SetStringField(TEXT("automation_owner"),Owner&&Owner->Running?Owner->Id:FString());
+    if(P.IsPolicy()&&P.Running&&Owner.Get()==&P)
+    {
+        if(P.Permissions.Contains(TEXT("inventory")))ExtendUCMCraftSnapshot(Result);
+        if(P.Permissions.Contains(TEXT("combat")))ExtendUCMCombatSnapshot(Result);
+        if(P.Permissions.Contains(TEXT("fellowship"))&&P.Permissions.Contains(TEXT("say"))&&P.Permissions.Contains(TEXT("chat")))
+            Result->SetArrayField(TEXT("fellowship_tells"),FellowshipTells);
+    }
     if(P.SelectiveSnapshot)
     {
         static const TSet<FString> Required={TEXT("api"),TEXT("time"),TEXT("unix_time"),TEXT("player"),TEXT("server"),TEXT("state"),TEXT("error"),TEXT("events"),TEXT("capabilities")};
@@ -314,6 +354,44 @@ bool UACEPluginSubsystem::ApplyPluginServices(FACEClientPlugin& P,const TSharedP
             Service==TEXT("force_buff")?TEXT("cast"):(Service==TEXT("window")||Service==TEXT("notice"))?TEXT("ui"):Service==TEXT("policy")?TEXT("commands"):Service==TEXT("chat")?TEXT("say"):FString();
         if(Limited)Failure=TEXT("Service rate limit; retry after 0.5 seconds");
         else if(!Permission.IsEmpty()&&!P.Permissions.Contains(Permission))Failure=TEXT("Missing permission: ")+Permission;
+        else if(Service==TEXT("resources")&&Op==TEXT("read"))
+        {
+            const FString Path=FPaths::ConvertRelativePathToFull(P.Directory/TEXT("data")/Key);
+            const double Offset=N(R,TEXT("offset"));
+            if(ACEPluginCatalog::IsDataFile(Key)&&Offset>=0&&Offset<=8*1024*1024&&Offset==FMath::FloorToDouble(Offset))
+            {
+                bool Linked=false;
+                for(FString Test=Path;!Test.IsEmpty();)
+                {
+                    if(ACEPluginCatalog::IsLinked(Test)){Linked=true;break;}
+                    const FString Parent=FPaths::GetPath(Test);if(Parent==Test)break;Test=Parent;
+                }
+                TUniquePtr<FArchive> File(Linked?nullptr:IFileManager::Get().CreateFileReader(*Path));
+                if(File&&File->TotalSize()<=8*1024*1024&&Offset<=File->TotalSize())
+                {
+                    File->Seek(int64(Offset));
+                    const int32 Count=int32(FMath::Min<int64>(16384,File->TotalSize()-int64(Offset)));
+                    TArray<uint8> Bytes;Bytes.SetNumZeroed(Count+1);
+                    File->Serialize(Bytes.GetData(),Count);
+                    int32 Length=Count;
+                    if(int64(Offset)+Count<File->TotalSize())
+                    {
+                        // Read one lookahead byte to avoid splitting a UTF-8 character.
+                        File->Serialize(Bytes.GetData()+Count,1);
+                        while(Length>0&&(Bytes[Length]&0xC0)==0x80)--Length;
+                    }
+                    if(!File->IsError()&&(!Count||(Length>0&&(Bytes[0]&0xC0)!=0x80)))
+                    {
+                        FUTF8ToTCHAR Decoded(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()),Length);
+                        Reply->SetStringField(TEXT("text"),FString(Decoded.Length(),Decoded.Get()));
+                        Reply->SetNumberField(TEXT("next_offset"),Offset+Length);
+                        Reply->SetBoolField(TEXT("eof"),Offset+Length==File->TotalSize());
+                        Ok=true;
+                    }
+                }
+            }
+            if(!Ok)Failure=TEXT("Choose a packaged UTF-8 file in data/ and use its returned byte offset.");
+        }
         else if(Service==TEXT("content"))Ok=ContentService(P,R,Reply,Failure);
         else if(Service==TEXT("dev"))Ok=PersonalDevService::Handle(P,R,Reply,Failure,GetGameInstance()->GetWorld()); // personal: dev-dashboard
         else if(Service==TEXT("sound"))Ok=SoundService(P,R,Reply,Failure);
@@ -421,7 +499,7 @@ bool UACEPluginSubsystem::ApplyPluginServices(FACEClientPlugin& P,const TSharedP
         else if(Service==TEXT("waypoint"))
         {
             if(Op==TEXT("clear")){ClearWaypoint();Ok=true;}
-            else if(Op==TEXT("set")){Ok=IsWaypointEnabled()&&SetWaypoint(S(R,TEXT("coordinates")));}
+            else if(Op==TEXT("set")){Ok=SetWaypoint(S(R,TEXT("coordinates")),true);}
         }
         else if(Service==TEXT("route")&&!P.Companion)
         {

@@ -233,8 +233,8 @@ return function(s)
         }}
     end
     local setup={
-        {id="draft",type="input",text="Name to watch",value=draft,live=true},
-        {id="exact",type="checkbox",text="Exact name",value=exact,tooltip="Otherwise match any name containing this text"},
+        {id="draft",type="input",text="Name to watch",tooltip="Enter a literal name or part of a name.",value=draft,live=true},
+        {id="exact",type="checkbox",text="Exact name",value=exact,tooltip="Names ignore case. Turn off for partial matches."},
         {id="add_row",type="row",children={button("add","Add name"),button("add_selected","Add selected",selected~=nil)}},
         {id="feedback",text=feedback,wrap=false,tooltip=feedback},
         page_controls("rules",rule_page,#config.rules,rule_size)
@@ -244,8 +244,7 @@ return function(s)
         {id="chat_alerts",type="checkbox",text="Green chat alerts",value=config.chat_alerts},
         {id="world_markers",type="checkbox",text="Mark matches in the world",value=config.world_markers},
         {id="map_markers",type="checkbox",text="Mark matches on Waypoint map",value=config.map_markers},
-        {id="match_help",text="Names ignore letter case. Matches are literal. Saved automatically for this character and server.",size=12},
-        {id="limits",text="Uses nearby objects known to the client. Up to 32 world/map markers. Target plates are provided by separate addons.",size=12}
+        {id="limits",text="Up to 32 nearby matches can be marked.",size=12}
     }
     local choose_sound=button("choose_sound","Choose WAV")
     choose_sound.action="sound_file"; choose_sound.tooltip="Choose a notification WAV: PCM16 mono/stereo, 8-48 kHz, up to 10 seconds and 1 MiB"
@@ -259,7 +258,7 @@ return function(s)
         {id="sound_buttons",type="row",children={choose_sound,default_sound,test_sound}},
         {id="sound_volume",type="slider",text="Alert volume (%)",min=0,max=100,step=5,value=math.floor(config.sound_volume*100+.5)},
         {id="sound_feedback",text=sound_feedback,wrap=false,ellipsis=true,tooltip=sound_feedback},
-        {id="sound_help",text="Choose a short 16-bit WAV (up to 10 seconds). Alerts play once per detection burst.",size=12}
+        {id="sound_help",text="Matches found together play one alert.",size=12}
     }
     for i=(rule_page-1)*rule_size+1,math.min(#config.rules,rule_page*rule_size) do
         local r=config.rules[i]

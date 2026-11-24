@@ -400,96 +400,43 @@ bool FACELandblockMeshBuilder::BuildLodSections(const FACEBuiltLandblockMesh& Fu
 	return OutSections.Num() > 0;
 }
 
+FLinearColor FACELandblockMeshBuilder::GetWaterDepthsAc(uint32 PCode)
+{
+	uint32 Types[4];
+	GetTerrainCodes(PCode, Types);
+	bool Wet[4];
+	int32 WetCount = 0;
+	for (int32 I = 0; I < 4; ++I)
+	{
+		Wet[I] = Types[I] >= 0x10 && Types[I] <= 0x14;
+		WetCount += int32(Wet[I]);
+	}
+	if (!WetCount) return FLinearColor::Transparent;
+	if (WetCount == 4) return FLinearColor(.9f,.9f,.9f,.9f);
+	return FLinearColor(Wet[0] ? .45f : .1f, Wet[1] ? .45f : .1f,
+		Wet[2] ? .45f : .1f, Wet[3] ? .45f : .1f);
+}
+
 float FACELandblockMeshBuilder::GetWaterDepthAc(const FACEBuiltLandblockMesh& Mesh, float LocalX, float LocalY)
 {
-	// Retail SurfChar[32]: 1 only for terrain types 0x10..0x14 (WaterRunning..WaterDeepSea).
-	static const uint8 SurfChar[32] = {
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		1, 1, 1, 1, 1, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0
-	};
-
 	LocalX = FMath::Clamp(LocalX, 0.f, LandblockSize - KINDA_SMALL_NUMBER);
 	LocalY = FMath::Clamp(LocalY, 0.f, LandblockSize - KINDA_SMALL_NUMBER);
-
-	const int32 CellX = FMath::Clamp(FMath::FloorToInt(LocalX / CellSize), 0, CellDim - 1);
-	const int32 CellY = FMath::Clamp(FMath::FloorToInt(LocalY / CellSize), 0, CellDim - 1);
-
-	// Prefer precomputed LandCell.WaterType (matches retail ObjCell.get_water_depth).
+	const int32 X = FMath::Min(FMath::FloorToInt(LocalX / CellSize), CellDim - 1);
+	const int32 Y = FMath::Min(FMath::FloorToInt(LocalY / CellSize), CellDim - 1);
 	if (Mesh.bHasCellWater)
 	{
-		const uint8 WT = Mesh.CellWaterType[CellX * CellDim + CellY];
-		if (WT == 0)
-		{
-			return 0.f;
-		}
-		if (WT == 2)
-		{
-			return 0.89999998f;
-		}
-		// PartiallyWater → LandblockStruct.calc_water_depth
+		const uint8 Type = Mesh.CellWaterType[X * CellDim + Y];
+		if (Type == 0) return 0.f;
+		if (Type == 2) return .9f;
 	}
-	else if (Mesh.bHasTerrain)
-	{
-		bool bCellHasWater = false;
-		bool bCellFullyFlooded = true;
-		for (int32 VX = CellX * VertexPerCell; VX <= VertexPerCell * (CellX + 1); ++VX)
-		{
-			for (int32 VY = CellY * VertexPerCell; VY <= VertexPerCell * (CellY + 1); ++VY)
-			{
-				const int32 TerrainIdx = VX * VertexDim + VY;
-				if (TerrainIdx < 0 || TerrainIdx >= 81)
-				{
-					continue;
-				}
-				const uint8 SurfIdx = static_cast<uint8>((Mesh.Terrain[TerrainIdx] >> 2) & 0x1F);
-				if (SurfChar[SurfIdx] != 0)
-				{
-					bCellHasWater = true;
-				}
-				else
-				{
-					bCellFullyFlooded = false;
-				}
-			}
-		}
-		if (!bCellHasWater)
-		{
-			return 0.f;
-		}
-		if (bCellFullyFlooded)
-		{
-			return 0.89999998f;
-		}
-	}
-	else
-	{
-		return 0.f;
-	}
-
-	int32 TerrainIdx = CellX * VertexDim + CellY;
-	float InCellX = FMath::Fmod(LocalX, CellSize);
-	float InCellY = FMath::Fmod(LocalY, CellSize);
-	if (InCellX < 0.f)
-	{
-		InCellX += CellSize;
-	}
-	if (InCellY < 0.f)
-	{
-		InCellY += CellSize;
-	}
-	if (InCellX >= 12.f)
-	{
-		TerrainIdx += VertexDim;
-	}
-	if (InCellY >= 12.f)
-	{
-		TerrainIdx += 1;
-	}
-	TerrainIdx = FMath::Clamp(TerrainIdx, 0, 80);
-	const uint8 SurfIdx = static_cast<uint8>((Mesh.Terrain[TerrainIdx] >> 2) & 0x1F);
-	return SurfChar[SurfIdx] != 0 ? 0.44999999f : 0.1f;
+	if (!Mesh.bHasTerrain) return 0.f;
+	const int32 SW = X * VertexDim + Y, SE = SW + VertexDim;
+	const uint32 Code = GetPalCode(0,0,0,0, GetTerrainType(Mesh.Terrain[SW]), GetTerrainType(Mesh.Terrain[SE]),
+		GetTerrainType(Mesh.Terrain[SE+1]), GetTerrainType(Mesh.Terrain[SW+1]));
+	const FLinearColor Depths = GetWaterDepthsAc(Code);
+	const bool East = LocalX - X * CellSize >= CellSize * .5f;
+	const bool North = LocalY - Y * CellSize >= CellSize * .5f;
+	return North ? (East ? Depths.B : Depths.A) : (East ? Depths.G : Depths.R);
 }
 
 bool FACELandblockMeshBuilder::SampleHeightAc(const FACEBuiltLandblockMesh& Mesh, float LocalX, float LocalY, float& OutZAc, FVector* OutNormalAc)
@@ -677,7 +624,7 @@ void FACELandblockMeshBuilder::MergeOverlay(TArray<FColor>& Pixels, int32 Size, 
 	}
 }
 
-void FACELandblockMeshBuilder::GetTerrainCodes(uint32 PCode, uint32 OutTypes[4]) const
+void FACELandblockMeshBuilder::GetTerrainCodes(uint32 PCode, uint32 OutTypes[4])
 {
 	OutTypes[0] = (PCode >> 15) & 0x1F; // SW
 	OutTypes[1] = (PCode >> 10) & 0x1F; // SE

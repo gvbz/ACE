@@ -92,7 +92,7 @@ void DiscardLootRule()
 void LootTabs()
 {
     auto Menu=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(4,4));
-    const TCHAR* Names[]={TEXT("Rules"),TEXT("Salvage combination"),TEXT("Open / save profile"),TEXT("Looting settings")};
+    const TCHAR* Names[]={TEXT("Rules"),TEXT("Salvage combination"),TEXT("Save as"),TEXT("Looting settings")};
     for(int32 I=0;I<4;++I)
         Menu->AddSlot()[SNew(SACEPluginTab).Tag(TEXT("UCMLootTab")).Text(FText::FromString(Names[I])).ContentPadding(FMargin(FACEPluginStyle::ButtonPadding))
             .Selected_Lambda([this,I](){return I==(EditingSalvage?1:ShowLootFiles?2:ShowLootOptions?3:0);})
@@ -115,15 +115,24 @@ void LootPanel()
         LootEditIndex=FMath::Clamp(LootEditIndex,0,Rules.Num()-1);
         LootDraft=ACEUCMLootPresentation::Clone(Rules[LootEditIndex]->AsObject());LootDraftBaseline=LootDraftJson();
     }
-    const FString Source=Str(P(),TEXT("utl_source")),Saved=Str(P(),TEXT("loot_profile"));
-    FString Name=Host->UCMSectionName(TEXT("Loot"));
-    if(Name.IsEmpty())Name=!Source.IsEmpty()?FPaths::GetCleanFilename(Source):Saved;
-    if(Name.IsEmpty())Name=Rules.IsEmpty()?TEXT("No loot profile"):TEXT("Custom rules in ")+Host->UCMSectionName(TEXT("Loot"));
-    Add(Text(TEXT("Active: ")+Name+(Bool(P(),TEXT("loot_modified"))?TEXT(" (edited)"):TEXT("")),16,Accent));
+    if(Host->UCMSectionName(TEXT("Loot")).IsEmpty())
+    {
+        const FString Imported=FPaths::GetCleanFilename(Str(P(),TEXT("utl_source")));
+        const FString Source=Imported.IsEmpty()?Str(P(),TEXT("loot_profile")):Imported;
+        if(!Source.IsEmpty())Add(Text(TEXT("Source: ")+Source,16,Accent));
+    }
+    if(Bool(P(),TEXT("loot_modified")))Add(Text(TEXT("Rules edited"),14,Muted));
     LootTabs();
     if(ShowLootFiles){LootProfileFiles();return;}
     if(ShowLootOptions){LootSettings();return;}
-    Add(Text(TEXT("Rules run from top to bottom. The first match decides what to do with an item."),14,Muted));
+    const auto NewRule=LootTool(TEXT("New rule"),[this](){NewLootRule();});
+    if(Rules.IsEmpty()&&!LootDraft)
+    {
+        Add(Text(TEXT("This profile has no loot rules."),15,Muted));
+        Add(NewRule);
+        return;
+    }
+    Add(Text(TEXT("Rules run in order. The first match wins."),14,Muted));
     const auto Outer=Body,OuterSection=SectionBody;SectionBody.Reset();
     auto RuleList=SNew(SVerticalBox).Tag(TEXT("LootRuleList"));Body=RuleList;
     Add(Text(TEXT("Loot rules"),18));
@@ -150,7 +159,7 @@ void LootPanel()
                 Str(R,TEXT("action"),TEXT("keep"))+(Bool(R,TEXT("enabled"),true)?TEXT(""):TEXT(" / disabled")),
                 TAttribute<bool>::CreateLambda([this,I]{return LootEditIndex==I;}),[this,I](){SelectLootRule(I);})];
         }
-        if(Visible.IsEmpty())Rows->AddSlot().AutoHeight()[Text(Rules.IsEmpty()?TEXT("Start with New to create your first rule."):TEXT("No matching rules."),14,Muted)];
+        if(Visible.IsEmpty())Rows->AddSlot().AutoHeight()[Text(Rules.IsEmpty()?TEXT("No saved rules yet."):TEXT("No matching rules."),14,Muted)];
         LootRuleScroll=SNew(SScrollBox)+SScrollBox::Slot()[Rows];LootRuleScroll->SetScrollOffset(Offset);
         LootRowsSignature=Signature;LootRowsPage=LootPage;LootRowsSearch=LootSearch;
     }
@@ -163,24 +172,20 @@ void LootPanel()
     Paging->AddSlot().AutoWidth()[SNew(SBox).IsEnabled((LootPage+1)*50<Visible.Num())[LootTool(TEXT(">"),[this](){++LootPage;Rebuild();})]];
     Add(Paging);
     auto Tools=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(4,4));
-    Tools->AddSlot()[LootTool(TEXT("New"),[this](){NewLootRule();})];
+    Tools->AddSlot()[NewRule];
     Tools->AddSlot()[SNew(SBox).IsEnabled(Rules.IsValidIndex(LootEditIndex))[LootTool(TEXT("Clone"),[this](){SelectLootRule(LootEditIndex,true);})]];
     Tools->AddSlot()[SNew(SBox).IsEnabled(Rules.IsValidIndex(LootEditIndex))[LootTool(TEXT("Delete"),[this](){if(!CanLeaveLootRule())return;auto R=CurrentLootRules();if(R.IsValidIndex(LootEditIndex)){R.RemoveAt(LootEditIndex);WriteLootRules(R);}})]];
     for(int Direction:{-1,1})Tools->AddSlot()[SNew(SBox).IsEnabled(Rules.IsValidIndex(LootEditIndex)&&Rules.IsValidIndex(LootEditIndex+Direction))
         [LootTool(Direction<0?TEXT("Move up"):TEXT("Move down"),[this,Direction](){if(!CanLeaveLootRule())return;auto R=CurrentLootRules();if(!R.IsValidIndex(LootEditIndex+Direction))return;R.Swap(LootEditIndex,LootEditIndex+Direction);LootEditIndex+=Direction;WriteLootRules(R);})]];
     Add(Tools);
     auto Detail=SNew(SVerticalBox).Tag(TEXT("LootRuleDetail"));Body=Detail;SectionBody.Reset();
-    Add(Text(LootDraft?(LootEditIndex==INDEX_NONE?TEXT("New rule"):FString::Printf(TEXT("Rule %d"),LootEditIndex+1)):TEXT("Rule details"),18));
-    if(LootDraft)
-    {
-        auto Fields=SNew(SVerticalBox);Body=Fields;LootDetails();Body=Detail;SectionBody.Reset();
-        Detail->AddSlot().FillHeight(1)[SNew(SScrollBox)+SScrollBox::Slot()[Fields]];
-        Add(Text(TEXT("Apply rule saves these changes and stops UCM."),13,Accent));
-        auto Footer=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6,4));
-        Footer->AddSlot()[LootTool(TEXT("Apply rule"),[this](){ApplyLootRule();})];
-        Footer->AddSlot()[LootTool(TEXT("Discard changes"),[this](){DiscardLootRule();})];Add(Footer);
-    }
-    else Add(Text(TEXT("Select a rule on the left, or choose New. Changes are applied only when you save the rule."),15,Muted));
+    Add(Text(LootEditIndex==INDEX_NONE?TEXT("New rule"):FString::Printf(TEXT("Rule %d"),LootEditIndex+1),18));
+    auto Fields=SNew(SVerticalBox);Body=Fields;LootDetails();Body=Detail;SectionBody.Reset();
+    Detail->AddSlot().FillHeight(1)[SNew(SScrollBox)+SScrollBox::Slot()[Fields]];
+    Add(Text(TEXT("Apply rule saves these changes and stops UCM."),13,Accent));
+    auto Footer=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6,4));
+    Footer->AddSlot()[LootTool(TEXT("Apply rule"),[this](){ApplyLootRule();})];
+    Footer->AddSlot()[LootTool(TEXT("Discard changes"),[this](){DiscardLootRule();})];Add(Footer);
     Body=Outer;SectionBody=OuterSection;
     if(LootNarrow)Add(SNew(SVerticalBox)
         +SVerticalBox::Slot().AutoHeight()[SNew(SBox).HeightOverride(280)[Tile(RuleList)]]
@@ -337,7 +342,7 @@ void LootDetails()
 void LootNotificationSettings()
 {
     Add(Toggle(TEXT("loot_notify_pickup"),TEXT("Announce looted rule matches"),TEXT("Print the item, amount and matching rule in local chat after UCM confirms the pickup."),true));
-    Add(Toggle(TEXT("loot_notify_match"),TEXT("Announce item ID matches"),TEXT("Print matching loot rules when an item is selected or successfully assessed, even while UCM is stopped. Automatic inventory and salvage scans stay silent. Turn off to silence these messages without changing looting or pickup announcements."),true));
+    Add(Toggle(TEXT("loot_notify_match"),TEXT("Announce item ID matches"),TEXT("Show the matching rule when you select or assess an item, even with UCM stopped. Background scans stay silent."),true));
 }
 void LootSettings()
 {
@@ -346,10 +351,8 @@ void LootSettings()
     if(!Original.IsEmpty())Add(Button(TEXT("View / edit original Classic UTL copy"),[this,Original](){PreviewLegacy(Original);if(LegacyDocument){LegacyName=TEXT("Loot_edited");LegacyRule.Reset();Page=TEXT("Legacy loot");Rebuild();}}));
     Slider(TEXT("loot_range"),TEXT("Corpse search range"),1,60,15,Accent,TEXT(" m"));
     Add(Toggle(TEXT("salvage_inventory"),TEXT("Apply salvage rules to existing inventory"),TEXT("While UCM runs, destroys matching items in all packs using the active loot profile and an Ust. First matching rule wins. Skips equipped, retained, traded, tinkered and inscribed items; Keep/Skip rules protect items. Off by default.")));
-    Add(Toggle(TEXT("autostack"),TEXT("Auto-combine stackable items"),TEXT("Merges matching partial stacks across all your packs, including components, ammunition, pyreals and other stackable items. Skips equipped, retained and traded items. Runs while UCM is idle; salvage bags use the separate option below.")));
-    Add(Text(TEXT("Components, ammunition, pyreals and other matching stacks. Works across all packs; no Ust needed."),15,Muted));
+    Add(Toggle(TEXT("autostack"),TEXT("Auto-combine stackable items"),TEXT("While idle, merge partial stacks across all packs. Equipped, retained and traded items are skipped. Salvage bags have their own setting.")));
     Add(Toggle(TEXT("salvage_combine"),TEXT("Combine partial salvage bags"),TEXT("Uses imported workmanship groups and value thresholds; consumes matching bags with an Ust.")));
-    Add(Button(TEXT("Edit salvage combining groups"),[this](){EditingSalvage=true;SalvageMaterial=0;SalvageDraft.Reset();Rebuild();}));
     Add(Toggle(TEXT("loot_only_rare"),TEXT("Only rare corpses"),TEXT("Appraises corpses and checks the server's rare-generation description.")));
     Add(Toggle(TEXT("loot_fellow_corpses"),TEXT("Loot fellowship corpses"),TEXT("Honors the killer's share-loot setting and waits for reserved corpses.")));
     Add(Toggle(TEXT("loot_all_corpses"),TEXT("Loot other corpses"),TEXT("Waits 100 seconds after seeing a corpse. Another player's rare corpse remains excluded.")));
@@ -359,20 +362,16 @@ void LootSettings()
 }
 void LootProfileFiles()
 {
-    Heading(TEXT("Save / load loot rules"),TEXT("Reuse rules between hunts without changing buffs, combat or routes. Loading stops UCM; press Start when ready. Saved files are in Saved/ClientPlugins/Profiles/Loot. Edits save to the selected shared file."));
+    Add(Text(TEXT("Enter a new name to save and select a copy. Switching profiles stops UCM."),15,Muted));
     Add(SNew(SACEPluginEditableTextBox).Style(&FACEPluginStyle::Current()->Edit).Font(FACEPluginStyle::NativeFont("Regular",16)).HintText(FText::FromString(TEXT("Profile name, e.g. Copper_W7")))
         .Text(FText::FromString(LootProfileName)).OnTextChanged_Lambda([this](const FText& V){LootProfileName=V.ToString();}));
     Add(Button(TEXT("Save loot profile"),[this](){if(Host->SaveLootProfile(LootProfileName))Rebuild();}));
-    TArray<FString> Files=Host->UCMSectionProfiles(TEXT("Loot"));
-    TArray<FString> Legacy;IFileManager::Get().FindFiles(Legacy,*(Host->UserDirectory()/TEXT("LootProfiles/*.json")),true,false);
-    for(const auto& File:Legacy)Files.AddUnique(FPaths::GetBaseFilename(File));Files.Sort();
-    for(const auto& File:Files){const FString Name=FPaths::GetBaseFilename(File);Add(Button(TEXT("Load ")+Name,[this,Name](){if(!CanLeaveLootRule())return;if(Host->LoadLootProfile(Name)){LootDraft.Reset();ConditionDraft.Reset();LootProfileName=Name;Rebuild();}}));}
 }
 
 void LootConditions()
 {
     const auto& Calculated=ACEUCMLootPresentation::Calculated();
-    Heading(TEXT("Requirements"),TEXT("Choose how to combine requirements. Basic item filters above always apply."));
+    Heading(TEXT("Requirements"),TEXT("Basic item filters always apply."));
     LootChoice(TEXT("conditions_mode"),TEXT("Combine requirements"),{{TEXT("all"),TEXT("AND - all requirements")},{TEXT("any"),TEXT("OR - any requirement")}});
     const TArray<TSharedPtr<FJsonValue>>* Stored=nullptr;TArray<TSharedPtr<FJsonValue>> Conditions;
     if(LootDraft->TryGetArrayField(TEXT("conditions"),Stored))Conditions=*Stored;

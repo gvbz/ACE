@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading;
 
+using ACE.Common.Logging;
 using ACE.Database;
 using ACE.DatLoader;
 using ACE.DatLoader.FileTypes;
@@ -1314,6 +1315,7 @@ namespace ACE.Server.WorldObjects
                 {
                     Session.Network.EnqueueSend(new GameEventCommunicationTransientString(Session, "TryRemoveFromInventory failed!")); // Custom error message
                     Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, item.Guid.Full));
+                    return false;
                 }
 
                 if (itemRootOwner == this && containerRootOwner != this)

@@ -219,8 +219,8 @@ TArray<FIntPoint> FACEDesktopDisplay::BuildResolutionOptions(const TArray<FIntPo
         // compositor reports only its desktop mode. Never impose a 1080p cap.
         const FIntPoint CommonSizes[]={{800,600},{1024,768},{1280,720},{1280,800},{1280,960},{1280,1024},
             {1360,768},{1366,768},{1440,900},{1600,900},{1600,1200},{1680,1050},{1920,1080},{1920,1200},
-            {2048,1152},{2048,1536},{2560,1080},{2560,1440},{2560,1600},{2880,1620},{2880,1800},
-            {3200,1800},{3440,1440},{3840,1600},{3840,2160},{5120,1440},{5120,2160},{5120,2880},{7680,2160},{7680,4320}};
+            {2048,1152},{2048,1536},{2560,720},{2560,1080},{2560,1440},{2560,1600},{2880,1620},{2880,1800},
+            {3200,1800},{3440,1440},{3840,1080},{3840,1600},{3840,2160},{5120,1440},{5120,2160},{5120,2880},{7680,2160},{7680,4320}};
         for(const auto Size:CommonSizes)
             if(Size.X<=Bounds.X && Size.Y<=Bounds.Y)Add(Size);
     }
@@ -228,7 +228,7 @@ TArray<FIntPoint> FACEDesktopDisplay::BuildResolutionOptions(const TArray<FIntPo
     return Result;
 }
 
-TArray<FIntPoint> FACEDesktopDisplay::GetAvailableResolutions(AACEPlayerController* PC)
+TArray<FIntPoint> FACEDesktopDisplay::GetAvailableResolutions(AACEPlayerController* PC,EWindowMode::Type Mode)
 {
     TArray<FIntPoint> Reported;
 #if PLATFORM_LINUX
@@ -246,8 +246,10 @@ TArray<FIntPoint> FACEDesktopDisplay::GetAvailableResolutions(AACEPlayerControll
     const bool IncludeCommonSizes=true;
 #else
     FScreenResolutionArray Modes;RHIGetAvailableResolutions(Modes,true);
-    for(const auto& Mode:Modes)Reported.Add(FIntPoint(Mode.Width,Mode.Height));
-    const bool IncludeCommonSizes=Reported.IsEmpty();
+    for(const auto& Resolution:Modes)Reported.Add(FIntPoint(Resolution.Width,Resolution.Height));
+    // A windowed backbuffer can use a smaller 32:9 size even when the
+    // display driver advertises only the panel's native 32:9 timing.
+    const bool IncludeCommonSizes=Mode==EWindowMode::Windowed || Reported.IsEmpty();
 #endif
     const auto* Settings=UGameUserSettings::GetGameUserSettings();
     return BuildResolutionOptions(Reported,GetMonitorResolution(PC),Settings?Settings->GetScreenResolution():FIntPoint::ZeroValue,IncludeCommonSizes);
@@ -419,7 +421,7 @@ bool FACEDisplayRecoveryTest::RunTest(const FString&)
     FACEDesktopDisplay::FinishModeChange(true);
     GConfig->GetInt(TEXT("/Script/Engine.GameUserSettings"),TEXT("ResolutionSizeX"),SavedX,GGameUserSettingsIni);
     TestEqual(TEXT("Keep persists the confirmed resolution"),SavedX,1280);
-    const FIntPoint Sizes[]={{1280,800},{2560,1440},{3440,1440},{3840,2160},{1712,964}};
+    const FIntPoint Sizes[]={{1280,800},{2560,1440},{3440,1440},{3840,2160},{3840,1080},{5120,1440},{7680,2160},{1712,964}};
     for(const auto Size:Sizes)
     {
         FACEDesktopDisplay::ApplyModeChange(PC,EWindowMode::Windowed,Size);

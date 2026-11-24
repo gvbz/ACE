@@ -5,7 +5,7 @@
   "name": "Third Eye",
   "short_name": "EYE",
   "version": "1.3.0",
-  "description": "Watch for nearby spawns by name, receive optional chat and sound alerts, and select or mark detected objects. Runs independently of UCM.",
+  "description": "Watch nearby spawns by name, mark matches and receive chat or sound alerts.",
   "permissions": ["state", "ui", "markers", "waypoint", "sound"],
   "presentation": {"controls": "none", "settings": false, "status": false, "scroll": false}
 }

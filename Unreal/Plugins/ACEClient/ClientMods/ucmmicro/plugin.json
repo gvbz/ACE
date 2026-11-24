@@ -1,9 +1,12 @@
 {
-  "api": 1,
+  "api": 2,
+  "mode": "automation",
+  "policy": "ucm",
+  "native_panel": "combat_controls",
   "id": "ucmmicro",
   "short_name": "MICRO",
   "name": "UCM Micro",
-  "version": "0.1.0",
-  "description": "Compact controls for the active UCM profile. Uses UCM permissions and does not run another automation instance.",
-  "permissions": []
+  "version": "0.2.0",
+  "description": "Run combat, recovery, buffs and looting from a compact panel. Shares the full UCM controls when it is installed and enabled.",
+  "permissions": ["cast","combat","navigation","inventory","loot","say","fellowship","confirm","profiles","chat","commands"]
 }

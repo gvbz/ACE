@@ -5,6 +5,7 @@
 #include "ACESession.h"
 #include "ACEDatSubsystem.h"
 #include "ACEInputBindings.h"
+#include "ACERuntimeOptions.h"
 #include "Mods/ACEPluginSubsystem.h"
 #include "ACECharacterAppearanceComponent.h"
 #include "ACEWorldEntityActor.h"
@@ -40,7 +41,7 @@ bool FACERunSpeedParityTest::RunTest(const FString&)
  GGameUserSettingsIni=FPaths::ProjectSavedDir()/TEXT("Automation/RunSpeedFixture.ini");
  FConfigFile Config;Config.NoSave=false;Config.bCanSaveAllSections=true;
  GConfig->SetFile(GGameUserSettingsIni,&Config);ACEInputBindings::Reload();
- ON_SCOPE_EXIT{GGameUserSettingsIni=OriginalSettings;ACEInputBindings::Reload();};
+ ON_SCOPE_EXIT{GGameUserSettingsIni=OriginalSettings;ACEInputBindings::Reload();ACERuntimeOptions::Apply();};
  const auto Values=UWorld::InitializationValues().AllowAudioPlayback(false).RequiresHitProxies(false)
   .CreatePhysicsScene(true).CreateNavigation(false).CreateAISystem(false);
  auto* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Values);
@@ -247,6 +248,54 @@ bool FACERunSpeedParityTest::RunTest(const FString&)
    TestTrue(TEXT("Releasing forward/backward stops local casting movement"),FVector::Dist2D(ReleasePosition,Pawn->GetActorLocation())<.01);
    App->ClearActionMotion();
   }
+  // Start with an already transmitted move owned by automation. Its release
+  // must survive multiple frozen ticks without cancelling the pending use.
+  Key(EKeys::W,true);PC->PlayerTick(1.f/90);
+  PC->bManualMovementCommandSent=false;Session->bUseBusy=true;Key(EKeys::W,false);
+  Session->CachedC2SPackets.Reset();
+  PC->PlayerTick(1.f/90);PC->PlayerTick(1.f/90);
+  TestTrue(TEXT("Frozen release leaves the use chain and last wire move intact"),Session->CachedC2SPackets.IsEmpty() && Session->bReportedTranslation);
+  Session->bUseBusy=false;PC->PlayerTick(1.f/90);CheckMovement(false,false);
+  TestFalse(TEXT("First free tick stops the previously reported forward motion"),Session->bReportedTranslation);
+  Session->CachedC2SPackets.Reset();PC->PlayerTick(1.f/90);
+  TestTrue(TEXT("Deferred stop is sent exactly once"),Session->CachedC2SPackets.IsEmpty());
+
+  Key(EKeys::W,true);PC->PlayerTick(1.f/90);
+  FACEObjectMotionState Read;Read.ForwardCommand=0x1c;Read.CurrentStyle=ACEMotion::StanceMagic;
+  PC->HandleMotionUpdate(Self.Guid,Read);
+  Session->CachedC2SPackets.Reset();Key(EKeys::W,false);PC->PlayerTick(1.f/90);
+  TestTrue(TEXT("A reading substate can suspend a reported walk without cancelling the book"),Session->CachedC2SPackets.IsEmpty() && Session->bReportedTranslation);
+  PC->HandleUseDone(0);PC->PlayerTick(1.f/90);CheckMovement(false,false);
+  TestFalse(TEXT("Closing the book reconciles the released walk"),Session->bReportedTranslation);
+
+  Session->SetLocalMissileTravel(false);
+  for (bool Strict : {false,true})
+  {
+   ACERuntimeOptions::Set(TEXT("StationaryMissileAttacks"),Strict ? 1 : 0);ACERuntimeOptions::Apply();
+   auto CheckShot=[&](float F,float R,float T,bool Ground,bool Traveling)
+   {
+    Session->SendMoveToState(F,R,T,true,Ground);Session->CachedC2SPackets.Reset();
+    Session->bServerAttackInProgress=false;
+    Session->SendTargetedMissileAttack(101,ACEAttackHeight::Medium,.5f);
+    const bool Allowed=!Strict || !Traveling;
+    TestEqual(TEXT("Missile packet respects the player's movement preference"),Session->CachedC2SPackets.Num(),Allowed?1:0);
+    TestEqual(TEXT("Only a transmitted shot starts attack tracking"),Session->IsServerAttackInProgress(),Allowed);
+   };
+   CheckShot(1,0,0,true,true);CheckShot(-1,0,0,true,true);CheckShot(0,1,0,true,true);
+   CheckShot(0,0,0,false,true);CheckShot(0,0,1,true,false);
+   const uint32 PreviousCaps=Session->VRCapabilities;Session->VRCapabilities|=7u;
+   for (bool Walking : {true,false})
+   {
+    Session->SendMoveToState(Walking?1.f:0.f,0,0,true,true);
+    TestEqual(TEXT("Tracked missile release follows the same option"),
+     Session->SendVRCombat(3,Pose.CellId,200,0,101,FVector(0,0,1),FVector::YAxisVector,1,0),!Strict || !Walking);
+   }
+   Session->VRCapabilities=PreviousCaps;
+   Session->SetLocalMissileTravel(true);CheckShot(0,0,0,true,true);
+   Session->SetLocalMissileTravel(false);CheckShot(0,0,0,true,false);
+  }
+  ACERuntimeOptions::Set(TEXT("StationaryMissileAttacks"),0);ACERuntimeOptions::Apply();
+  Session->bServerAttackInProgress=false;
   // Strafe alone must not discard locally controlled emotes. Reclaiming
   // movement control must also preserve unfinished authored actions.
   PC->bServerControlledMotion=false;App->SetHeldActionMotion(0x43000145u,ACEMotion::StanceNonCombat);

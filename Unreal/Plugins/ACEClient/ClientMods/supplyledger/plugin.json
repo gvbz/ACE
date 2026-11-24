@@ -3,6 +3,6 @@
   "id": "supplyledger",
   "name": "Supply Ledger",
   "version": "1.0.0",
-  "description": "Track selected inventory supplies across all packs. Pin a compact item counter anywhere on your screen.",
+  "description": "Pin a counter for selected items across your packs.",
   "permissions": []
 }

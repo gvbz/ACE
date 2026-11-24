@@ -129,6 +129,7 @@ bool FACECharacterScreenRenderingTest::RunTest(const FString&)
     // same artwork without clipping it to the ownership-only synthetic root.
     for (const FIntPoint Size : {FIntPoint(800,600),FIntPoint(1280,720),FIntPoint(1920,1080),
         FIntPoint(2400,1200),FIntPoint(2560,1440),FIntPoint(3440,1440),FIntPoint(3840,2160),
+        FIntPoint(3840,1080),FIntPoint(5120,1440),FIntPoint(7680,2160),
         FIntPoint(800,1800),FIntPoint(1100,900),FIntPoint(800,600)})
     {
         auto* Target=FWidgetRenderer::CreateTargetFor(FVector2D(Size),TF_Bilinear,true);

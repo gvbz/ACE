@@ -120,9 +120,8 @@ void UACEDatSubsystem::RecomputePlayerStats(FACEPlayerVitals& V, const TArray<FA
 		Skill.Base = Innate + Formula(false);
 		float Mul, Add; Modifiers(0x10, Skill.SkillId, Mul, Add);
 		Skill.Current = FMath::Max(0, FMath::RoundToInt((Innate + Formula(true)) * Vitae * Mul + Add));
-		// Keep retail's post-enchantment ordering and raw equipment requirement
-		// value. The interface includes these permanent gains in its unbuffed
-		// baseline, so Jack/spec luminance do not masquerade as active spells.
+		// Retail applies these permanent gains after enchantments and vitae.
+		// The skill window and UCM's base-skill wield check include them in GetDisplayBase().
 		Skill.UnscaledAugmentationBonus = V.StatQualityInts.FindRef(0x146) > 0 ? 5 : 0;
 		if (Skill.AdvancementClass == 3) { Skill.UnscaledAugmentationBonus += 2 * FMath::Max(0, V.StatQualityInts.FindRef(0x158)); }
 		Skill.Current += Skill.UnscaledAugmentationBonus;

@@ -167,6 +167,7 @@ bool FACEPluginWindowTest::RunTest(const FString&)
         auto Results=StaticCastSharedPtr<SListView<TSharedPtr<FACEWaypointLandmark>>>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.AtlasResults")));
         auto Plan=StaticCastSharedPtr<SButton>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.FindRoute")));
         if(!TestTrue(TEXT("Route planning controls exist in main window"),Search&&Results&&Plan))return false;
+        TestFalse(TEXT("Search presents a single route action"),FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.ShowRoute")).IsValid());
         Search->SetText(FText::FromString(TEXT("Test village")));
         if(!TestEqual(TEXT("Route destination is selectable"),Results->GetItems().Num(),1))return false;
         Results->SetSelection(Results->GetItems()[0]);Plan->SimulateClick();
@@ -202,10 +203,13 @@ bool FACEPluginWindowTest::RunTest(const FString&)
         Host->TogglePluginWindow(TEXT("waypoint.route"));Host->OpenPluginWindow(TEXT("waypoint"));
         TestFalse(TEXT("Reopening NAV does not reopen a deliberately closed route"),Dock->IsOpen(TEXT("waypoint.route")));
         const auto Revision=Host->WaypointItineraryRevision;
+        auto Back=StaticCastSharedPtr<SButton>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.AtlasBack")));
+        if(!TestTrue(TEXT("Reopening Waypoint retains the atlas and its Back button"),Back.IsValid()))return false;
+        Back->SimulateClick();
         auto ShowRoute=StaticCastSharedPtr<SButton>(FindPluginControl(MapWidget.ToSharedRef(),TEXT("Waypoint.ShowRoute")));
         if(!TestTrue(TEXT("Main window can reopen current route"),ShowRoute.IsValid()))return false;
         ShowRoute->SimulateClick();
-        TestTrue(TEXT("Show route reuses window without recalculating"),Dock->IsOpen(TEXT("waypoint.route"))
+        TestTrue(TEXT("Current directions reuses window without recalculating"),Dock->IsOpen(TEXT("waypoint.route"))
             &&Dock->Windows.FindChecked(TEXT("waypoint.route")).Widget==RouteFrame&&Host->WaypointItineraryRevision==Revision);
         Host->SetWaypointItinerary({});Host->ClearWaypoint();NewStep->SimulateClick();RoutePanel->Tick(FGeometry(),0,0);
         TestFalse(TEXT("Clearing a route invalidates old navigation callbacks"),Host->GetWaypoint(Destination,Dungeon));

@@ -392,6 +392,7 @@ public:
 	void GetPlayerPackGuids(TArray<int32>& Out) const;
 	void GetContainerPackGuids(int32 ContainerGuid, TArray<int32>& Out) const;
 	int32 CountContainerSlots(int32 ContainerGuid, bool bPackSlots, int32 Exclude = 0) const;
+	bool HasRoomForInventoryMove(const FACEWorldObject& Item, const FACEWorldObject& Destination, int32 Amount) const;
 
 	/** GameAction Talk (0x0015) — local chat / @commands. */
 	void SendTalk(const FString& Message);
@@ -468,6 +469,8 @@ public:
 	void SendPutItemInContainer(int32 ItemGuid, int32 ContainerGuid, int32 Placement, bool bAutoMerge = true);
 	/** Retail auto-merge: first destination stack that can hold the entire selected amount. */
 	int32 FindContainerMergeTarget(int32 ItemGuid, int32 ContainerGuid, int32 Amount, bool bIncludeSourcePack = false) const;
+	/** Stack capacity still available after accounting for outstanding merge requests. */
+	int32 AvailableMergeAmount(const FACEWorldObject& Source, const FACEWorldObject& Target) const;
 
 	/** GameAction StackableMerge (0x0054) — combine stackables by guid (amount of From into To). */
 	void SendStackableMerge(int32 MergeFromGuid, int32 MergeToGuid, int32 Amount);
@@ -712,6 +715,8 @@ public:
 
 	/** GameAction TargetedMissileAttack (0x000A) — target, AttackHeight, accuracy 0..1. */
 	void SendTargetedMissileAttack(int32 TargetGuid, uint32 AttackHeight, float AccuracyLevel);
+	bool IsMissileMovementBlocked() const;
+	void SetLocalMissileTravel(bool bTravel) { bLocalMissileTravel = bTravel; }
 
 	/** Cast a known spell — targeted if TargetGuid != 0, else untargeted. */
 	void SendCastSpell(int32 SpellId, int32 TargetGuid = 0);
@@ -973,6 +978,15 @@ private:
 	void RemoveInventoryObject(int32 ItemGuid);
 	int32 PendingEquipmentGuid = 0;
 	TMap<int32,double> PendingInventoryTransfers;
+	struct FPendingStackMerge
+	{
+		int32 Source, Target, Amount, TargetAfter;
+		double ExpiresAt;
+	};
+	TArray<FPendingStackMerge> PendingStackMerges;
+	int32 StackCountWithPendingMerges(const FACEWorldObject& Target) const;
+	void ConfirmStackCount(int32 Target, int32 Count);
+	void RejectStackMerge(int32 ItemGuid);
 	// Diagnostics only; never predict consumption or keep an item owned locally.
 	TMap<int32, double> RecentGiveRequests;
 	void LogGiveUpdate(int32 ItemGuid, const TCHAR* Receipt, int32 StackSize, int32 ContainerGuid);
@@ -1203,6 +1217,8 @@ private:
 	int32 PendingEnterCharacterId = 0;
 	bool bLoginCompleteSent = false;
 	bool bMoving = false;
+	bool bReportedTranslation = false;
+	bool bLocalMissileTravel = false;
 	bool bForcePositionReporting = false;
 	/** Contact flag for periodic AutonomousPosition (0 while airborne). */
 	bool bAutoPosContact = true;

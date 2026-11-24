@@ -1,10 +1,7 @@
 # Dereth Foundry
 
-A bundled, disabled-by-default Lua content workshop inspired by
-[AceCreator](https://github.com/harliq/AceCreator). Enable **Dereth Foundry** in
-Plugin Manager and open its gold anvil / teal cube icon. The interface uses the
-shared retail-font plugin styling, centered buttons, consistent padding and
-per-character settings.
+Enable **Dereth Foundry** in Plugin Manager and open its anvil icon to edit ACE
+world content. Foundry was inspired by [AceCreator](https://github.com/harliq/AceCreator).
 
 ## Workflows
 
@@ -31,10 +28,8 @@ edit. Commands are queued individually with a one-second minimum interval.
 
 ## Local files and server permissions
 
-Foundry uses ACE's existing commands; it does not grant privileges, embed Decal,
-load arbitrary DLLs, connect to a database or execute SQL locally. The server
-must authorize each developer/admin command. A sent-command result is not proof
-that ACE accepted it: check chat for the server response.
+The server must authorize each developer or admin command. Check chat for the
+server's response.
 
 The workshop displays slash commands, while the native content service sends
 ACE's `@` command prefix in the Talk packet (for example `/ci 123` becomes
@@ -47,7 +42,7 @@ The local content folder contains `json/weenies`, `sql/weenies` and equivalent
 picker and opens files in Notepad. Other platforms use `ClientMods/Content` and
 the platform file manager/editor where available. Imports read the **server's**
 `content_folder`; for a remote server, copy the edited file there separately.
-**Show server content folder** requests that setting through ACE.
+**Show server folder** requests that setting through ACE.
 
 ## Lua integration and runtime cost
 

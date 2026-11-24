@@ -217,6 +217,28 @@ class ReleasePackagingTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             return stage.stage_release(self.root, release, self.site, **kwargs)
 
+    def test_reinstall_preserves_imported_waypoint_atlas(self):
+        self.fixture()
+        windows = self.root / 'Unreal/Saved/VRWindowsArchive/Windows'
+        saved = 'ACUnreal/Saved/ClientPlugins/Waypoint/locations.json'
+        pak = 'ACUnreal/Content/Paks/game.pak'
+        for staging in (windows, self.linux):
+            put(staging, saved, b'build machine atlas')
+            put(staging, pak, b'new packaged content')
+        release, meta = self.assemble()
+
+        zip_path = release / next(entry['name'] for entry in meta['archives'] if 'Windows' in entry['name'])
+        with zipfile.ZipFile(zip_path) as archive:
+            install = Path(self.temp.name) / 'install'
+            personal = put(install / zip_path.stem, saved, b'player import')
+            archive.extractall(install)
+            self.assertEqual(personal.read_bytes(), b'player import')
+            self.assertEqual((install / zip_path.stem / pak).read_bytes(), b'new packaged content')
+        with tarfile.open(release / meta['linux']['file'], 'r:gz') as archive:
+            paths = {entry.name.split('/', 1)[-1] for entry in archive if entry.isfile()}
+            self.assertIn(pak, paths)
+            self.assertNotIn(saved, paths)
+
     def test_linux_tar_preserves_launch_modes_and_excludes_private_build_files(self):
         self.fixture()
         excluded = (

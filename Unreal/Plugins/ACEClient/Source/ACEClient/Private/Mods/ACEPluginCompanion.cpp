@@ -325,10 +325,10 @@ bool UACEPluginSubsystem::CompanionAction(FACEClientPlugin& P,const TSharedPtr<F
             if(Owned||InContainer)C->SelectInventoryObject(O.Guid);else C->SelectObject(O.Guid);
             return C->GetSelectedObject().Guid==O.Guid;
         }
-        if(!IsWaypointEnabled()){Error=TEXT("Enable Waypoint to show the navigation arrow");return false;}
+        // The navigation HUD is a host service, including when the atlas is absent.
         const FVector2D Coordinates=ACEWaypoint::Coordinates(O.Position);const uint32 Dungeon=(uint32(O.Position.CellId)&65535)>=256?(uint32(O.Position.CellId)&0xFFFF0000):0;
         FVector2D Previous;uint32 PreviousDungeon=0;
-        if(!GetWaypoint(Previous,PreviousDungeon)||PreviousDungeon!=Dungeon||!Coordinates.Equals(Previous,.002))SetWaypoint(Coordinates,Dungeon);
+        if(!IsWaypointEnabled()||!GetWaypoint(Previous,PreviousDungeon)||PreviousDungeon!=Dungeon||!Coordinates.Equals(Previous,.002))SetWaypoint(Coordinates,Dungeon,true);
         return true;
     }
     if(FPlatformTime::Seconds()<P.NextCommand){Error=TEXT("Command rate limit (one per second)");return false;}

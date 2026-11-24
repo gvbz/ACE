@@ -44,7 +44,12 @@ inline FString WieldFailure(const FACEAppraisalInfo& Appraisal,const FACEPlayerV
         case 1: case 2: case 8:
             Label=FString::Printf(TEXT("%s skill %d"),Kind==1?TEXT("current"):Kind==2?TEXT("base"):TEXT("training for"),Id);
             for(const auto& Skill:Vitals.Skills)if(Skill.SkillId==Id)
-            {Actual=Kind==1?Skill.Current:Kind==2?Skill.Base:Skill.AdvancementClass;break;}
+            {
+                if(Kind==1) Actual=Skill.Current;
+                else if(Kind==2) Actual=Skill.GetDisplayBase();
+                else Actual=Skill.AdvancementClass;
+                break;
+            }
             break;
         case 3: case 4:
             Label=FString::Printf(TEXT("%s attribute %d"),Kind==3?TEXT("current"):TEXT("base"),Id);

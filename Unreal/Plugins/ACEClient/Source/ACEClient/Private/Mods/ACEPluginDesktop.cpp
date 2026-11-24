@@ -17,6 +17,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
@@ -26,6 +27,13 @@
 namespace
 {
     const FString BarId = TEXT("__bar");
+    const FVector2D WaypointArrowFrameSize(290,225);
+    void ResizeWaypointArrow(UACEPluginSubsystem& Host, FVector2D Delta, bool Save)
+    {
+        // Project the drag onto the frame diagonal so both axes resize the readout uniformly.
+        const double Change = FVector2D::DotProduct(Delta, WaypointArrowFrameSize) / WaypointArrowFrameSize.SizeSquared();
+        Host.SetWaypointArrowScale(Host.WaypointArrowScale() + Change, Save);
+    }
     // Hunt Ledger was fixed-size; its old .size entry stored a snapshot with
     // editor chrome. Only new user resizes should override its automatic height.
     FString SizeKey(const FString& Id){return Id+(Id==TEXT("huntledger")?TEXT(".body_size"):TEXT(".size"));}
@@ -64,7 +72,15 @@ namespace
             Locked=Args._Locked;
             Frameless=Args._Frameless;
             CanManipulate=Args._CanManipulate;
-            if(Frameless){ChildSlot[Args._Content.Widget];return;}
+            if(Frameless)
+            {
+                if(Id==TEXT("waypoint.arrow"))
+                    ChildSlot[SNew(SOverlay)
+                        +SOverlay::Slot()[Args._Content.Widget]
+                        +SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Bottom)[MakeResizeGrip()]];
+                else ChildSlot[Args._Content.Widget];
+                return;
+            }
             auto Title = SNew(SHorizontalBox);
             const bool IsBar=bool(Args._ToggleMinimized);
             if(IsBar)
@@ -106,9 +122,7 @@ namespace
                 +SVerticalBox::Slot().FillHeight(1)[SNew(SBox).Padding(0,IsBar?0:3)
                     .Tag(Args._CompactWhenLocked?FName(TEXT("LedgerContent")):FName(NAME_None))
                     .Visibility_Lambda([Mini=Args._Minimized](){return Mini.Get(false)?EVisibility::Collapsed:EVisibility::Visible;})[Args._Content.Widget]]
-                +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)[SNew(SBorder).Padding(FMargin(12,2)).Visibility_Lambda([this]{return Resize&&(!CanManipulate||CanManipulate())?EVisibility::Visible:EVisibility::Collapsed;})
-                    .ToolTip(FACEPluginStyle::Tooltip(FText::FromString(TEXT("Drag to resize")))).Cursor(EMouseCursor::ResizeSouthEast)
-                    .OnMouseButtonDown_Lambda([this](const FGeometry&,const FPointerEvent& E){if(E.GetEffectingButton()!=EKeys::LeftMouseButton||(CanManipulate&&!CanManipulate()))return FReply::Unhandled();Resizing=true;return FReply::Handled().CaptureMouse(SharedThis(this));})[Caption(TEXT("◢"))]]]];
+                +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)[MakeResizeGrip()]]];
         }
         virtual void Tick(const FGeometry& G,double Time,float Delta) override
         {
@@ -135,6 +149,7 @@ namespace
             if(!Frameless||E.GetEffectingButton()!=EKeys::LeftMouseButton||(CanManipulate&&!CanManipulate()))return FReply::Unhandled();
             const auto At=G.AbsoluteToLocal(E.GetScreenSpacePosition());
             Resizing=Resize&&At.X>=G.GetLocalSize().X-24&&At.Y>=G.GetLocalSize().Y-24;
+            if(!Resizing&&!Move)return FReply::Unhandled();
             Dragging=!Resizing;return FReply::Handled().CaptureMouse(SharedThis(this));
         }
         virtual FReply OnMouseMove(const FGeometry& G,const FPointerEvent& E) override
@@ -154,6 +169,17 @@ namespace
         virtual void OnMouseCaptureLost(const FCaptureLostEvent& E) override
         { if(Dragging)Move(FVector2D::ZeroVector,true);if(Resizing&&Resize)Resize(FVector2D::ZeroVector,true);Dragging=Resizing=false;SCompoundWidget::OnMouseCaptureLost(E); }
     private:
+        TSharedRef<SWidget> MakeResizeGrip()
+        {
+            return SNew(SBorder).Tag(TEXT("PluginResizeGrip")).Padding(Frameless?FMargin(5,2):FMargin(12,2))
+                .Visibility_Lambda([this]{return Resize&&(!CanManipulate||CanManipulate())?EVisibility::Visible:EVisibility::Collapsed;})
+                .ToolTip(FACEPluginStyle::Tooltip(FText::FromString(TEXT("Drag to resize")))).Cursor(EMouseCursor::ResizeSouthEast)
+                .OnMouseButtonDown_Lambda([this](const FGeometry&,const FPointerEvent& E)
+                {
+                    if(E.GetEffectingButton()!=EKeys::LeftMouseButton||!Resize||(CanManipulate&&!CanManipulate()))return FReply::Unhandled();
+                    Resizing=true;return FReply::Handled().CaptureMouse(SharedThis(this));
+                })[Caption(TEXT("◢"))];
+        }
         TSharedPtr<FACEPluginStyle> Retail;
         TWeakObjectPtr<UACEPluginSubsystem> Host;FString Id;
         float LastOpacity=-1;bool LastHidden=false;
@@ -164,6 +190,19 @@ namespace
         TAttribute<bool> Locked;
         TFunction<bool()> CanManipulate;
     };
+}
+
+TSharedRef<SWidget> UACEPluginSubsystem::MakeWaypointArrowPreview()
+{
+    // The embedded preview also provides a resize corner on clients with a fixed HUD panel.
+    const TWeakObjectPtr<UACEPluginSubsystem> H(this);
+    return SNew(SBox).Tag(TEXT("Waypoint.ArrowPreview"))
+        .Visibility_Lambda([H]{return H.IsValid()&&H->ShouldShowWaypointArrow()?EVisibility::SelfHitTestInvisible:EVisibility::Collapsed;})
+        .WidthOverride_Lambda([H]{return WaypointArrowFrameSize.X*(H.IsValid()?H->WaypointArrowScale():1.f);})
+        .HeightOverride_Lambda([H]{return WaypointArrowFrameSize.Y*(H.IsValid()?H->WaypointArrowScale():1.f);})
+        [SNew(SPluginFrame).Frameless(true).WindowId(TEXT("waypoint.arrow"))
+            .Resize([H](FVector2D Delta,bool Save){if(H.IsValid())ResizeWaypointArrow(*H.Get(),Delta,Save);})
+            [MakeWaypointPanel(false,true)]];
 }
 
 void SACEPluginDesktop::Construct(const FArguments& Args)
@@ -206,6 +245,7 @@ FVector2D SACEPluginDesktop::DisplaySize(const FWindow& W) const
         }
         if(W.PluginBar&&Host->IsPluginBarMinimized())return FVector2D(Host->IsPluginBarHorizontal()?70:38,18);
         if(W.MapOverlay&&Host->WaypointOption(TEXT("map_minimized"),false))return FVector2D(70,26);
+        if(W.Id==TEXT("waypoint.arrow"))return W.Size*Host->WaypointArrowScale();
     }
     auto Size=W.Size;
     if(W.Id==TEXT("actiondeck")&&Host.IsValid())
@@ -260,7 +300,8 @@ void SACEPluginDesktop::Tick(const FGeometry& G,double Time,float Delta)
     for(auto& Pair:Windows)
     {
         const bool Hidden=Host.IsValid()&&Host->IsPluginWindowChromeHidden(Pair.Key);
-        if(BoundsChanged||Hidden!=Pair.Value.HiddenChrome||!Pair.Value.LedgerId.IsEmpty()||Pair.Key==TEXT("actiondeck"))Layout(Pair.Value);
+        if(BoundsChanged||Hidden!=Pair.Value.HiddenChrome||!Pair.Value.LedgerId.IsEmpty()||Pair.Key==TEXT("actiondeck")
+            ||(Pair.Value.Open&&Pair.Key==TEXT("waypoint.arrow")))Layout(Pair.Value);
         Pair.Value.HiddenChrome=Hidden;
     }
 }
@@ -285,7 +326,7 @@ void SACEPluginDesktop::SaveOverlayLayout()
     for(const auto& Pair:Windows)
     {
         Host->SavePluginWindowPosition(Pair.Key,Pair.Value.Position);
-        if(!Pair.Value.PluginBar)Host->SavePluginWindowPosition(SizeKey(Pair.Key),Pair.Value.Size);
+        if(!Pair.Value.PluginBar&&Pair.Key!=TEXT("waypoint.arrow"))Host->SavePluginWindowPosition(SizeKey(Pair.Key),Pair.Value.Size);
     }
 }
 void SACEPluginDesktop::Resize(const FString& Id,FVector2D Delta,bool Save)
@@ -293,6 +334,11 @@ void SACEPluginDesktop::Resize(const FString& Id,FVector2D Delta,bool Save)
     if(!Delta.IsNearlyZero()&&(!Host.IsValid()||!Host->CanManipulatePluginWindow(Id)))return;
     if(auto* W=Windows.Find(Id))
     {
+     if(Id==TEXT("waypoint.arrow"))
+     {
+         if(Host.IsValid()){ResizeWaypointArrow(*Host.Get(),Delta,Save);Layout(*W);}
+         return;
+     }
      if(UACEPluginSubsystem::IsLedger(Id))
      {
          // Persist the list area; pinning only hides the editor chrome.
@@ -351,8 +397,8 @@ bool SACEPluginDesktop::Open(const FString& RequestedId)
     const FString Id=ResolveWindowId(RequestedId);
     const bool Manager=Id==TEXT("__manager");
     TSharedPtr<FACEClientPlugin> Plugin;
-    for(auto P:Host->Plugins)if((P->Id==Id || (Id.StartsWith(TEXT("waypoint."))&&P->Id==TEXT("waypoint")) || (Id==TEXT("ucm.log")&&P->Id==TEXT("ucm")))&&(P->Enabled||Id==TEXT("ucm.log")))Plugin=P;
-    if(!Plugin&&!Manager)return false;
+    for(auto P:Host->Plugins)if((P->Id==Id || (Id.StartsWith(TEXT("waypoint."))&&P->Id==TEXT("waypoint")) || (Id==TEXT("ucm.log")&&(P->Id==TEXT("ucm")||P->UsesCompactControls())))&&(P->Enabled||Id==TEXT("ucm.log")))Plugin=P;
+    if(!Plugin&&!Manager&&!(Id==TEXT("waypoint.arrow")&&Host->ShouldShowWaypointArrow()))return false;
     if(Id==TEXT("waypoint.route")&&Host->WaypointItinerary.IsEmpty())return false;
     FACEPluginStyle::Use(Host.Get());
     const bool Arrow=Id==TEXT("waypoint.arrow");
@@ -378,7 +424,7 @@ bool SACEPluginDesktop::Open(const FString& RequestedId)
     if(Id==TEXT("ucm.log"))W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(700,440));
     if(Id==TEXT("waypoint.route"))W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(440,360));
     if(Manager)W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(740,600));
-    if(Arrow)W.Size=FVector2D(290,225);
+    if(Arrow)W.Size=WaypointArrowFrameSize;
     if(Dungeon)W.Size=Host->GetPluginWindowPosition(Id+TEXT(".size"),FVector2D(420,420));
     W.Widget=SNew(SPluginFrame).Host(Host.Get()).WindowId(Id).Title_Lambda([Id,Manager,Arrow,Plugin](){return Manager?TEXT("Plugin Manager"):Id==TEXT("ucm.log")?TEXT("UCM Log"):Arrow?TEXT("Waypoint · drag when unlocked"):Id==TEXT("waypoint.map")?TEXT("Waypoint Map"):Id==TEXT("waypoint.route")?TEXT("Waypoint Route"):Plugin->DisplayTitle();})
         .Frameless(Arrow||Dungeon)
@@ -386,7 +432,7 @@ bool SACEPluginDesktop::Open(const FString& RequestedId)
         .Locked_Lambda([H=Host,Id]{return H.IsValid()&&H->IsPluginWindowChromeHidden(Id);})
         .CanManipulate([H=Host,Id]{return H.IsValid()&&H->CanManipulatePluginWindow(Id);})
         .Move([this,Id](FVector2D D,bool Save){Move(Id,D,Save);})
-        .Resize(Arrow?TFunction<void(FVector2D,bool)>():TFunction<void(FVector2D,bool)>([this,Id](FVector2D D,bool Save){Resize(Id,D,Save);}))
+        .Resize([this,Id](FVector2D D,bool Save){Resize(Id,D,Save);})
         .Raise([this,Id](){Raise(Id);}).Close([this,Id,Manager](){if(Manager&&ManagerOnly){Host->CloseDesktopPluginManager();return;}Hide(Id);})[Manager?Host->MakePanel():Dungeon?Host->MakeWaypointDungeonOverlay():Arrow?Host->MakeWaypointPanel(false,true):Host->MakePanel(Id)];
     if(Dungeon)W.Widget->SetVisibility(EVisibility::Collapsed); // Tick validates the current cell before showing it.
     if(Arrow)W.Widget->SetVisibility(OpenVisibility);
@@ -404,7 +450,7 @@ void SACEPluginDesktop::Refresh()
     const bool Horizontal=Host->IsPluginBarHorizontal();
     FString Next=(Horizontal?FString(TEXT("horizontal|")):FString(TEXT("vertical|")))+FString::FromInt(Host->GetPluginOrderRevision())+TEXT("|");TSet<FString> Enabled;
     for(auto P:Host->Plugins)if(P->Enabled){Next+=P->Id+TEXT("|");Enabled.Add(P->Id);}
-    if(Host->Plugins.ContainsByPredicate([](const auto& P){return P->Id==TEXT("ucm");}))Enabled.Add(TEXT("ucm.log"));
+    if(Host->Plugins.ContainsByPredicate([](const auto& P){return P->Id==TEXT("ucm")||P->UsesCompactControls();}))Enabled.Add(TEXT("ucm.log"));
     for(const TCHAR* Id:{TEXT("ucm.log"),TEXT("waypoint.map")})
         if((Enabled.Contains(Id)||(FString(Id)==TEXT("waypoint.map")&&Enabled.Contains(TEXT("waypoint"))))
             &&Host->WasPluginWindowOpen(Id)&&!Windows.Contains(ResolveWindowId(Id)))Open(Id);
@@ -412,13 +458,17 @@ void SACEPluginDesktop::Refresh()
     {
         Enabled.Add(TEXT("waypoint.map"));Enabled.Add(TEXT("waypoint.arrow"));Enabled.Add(TEXT("waypoint.dungeon"));Enabled.Add(TEXT("waypoint.route"));
         if(!Host->WaypointItinerary.IsEmpty()&&Host->WasPluginWindowOpen(TEXT("waypoint.route"))&&!Windows.Contains(TEXT("waypoint.route")))Open(TEXT("waypoint.route"));
-        const bool Show=Host->ShouldShowWaypointArrow();
-        if(Show && !IsOpen(TEXT("waypoint.arrow")))Toggle(TEXT("waypoint.arrow"));
-        else if(!Show && IsOpen(TEXT("waypoint.arrow")))Hide(TEXT("waypoint.arrow"),false);
+
         const bool Pin=Host->WaypointOption(TEXT("dungeon_overlay"));
         if(Pin&&!IsOpen(TEXT("waypoint.dungeon")))Toggle(TEXT("waypoint.dungeon"));
         else if(!Pin&&IsOpen(TEXT("waypoint.dungeon")))Hide(TEXT("waypoint.dungeon"));
     }
+    if(Host->ShouldShowWaypointArrow())
+    {
+        Enabled.Add(TEXT("waypoint.arrow"));
+        if(!IsOpen(TEXT("waypoint.arrow")))Open(TEXT("waypoint.arrow"));
+    }
+    else if(IsOpen(TEXT("waypoint.arrow")))Hide(TEXT("waypoint.arrow"),false);
     if(Next==Signature&&Buttons->NumSlots())return;
     Signature=Next;
     for(auto It=Windows.CreateIterator();It;++It)if(It.Key()!=BarId&&!Enabled.Contains(It.Key()))

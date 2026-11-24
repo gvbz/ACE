@@ -80,11 +80,11 @@ bool FACEWeaponSkillLootTest::RunTest(const FString&)
             if(!TestTrue(TEXT("Requested skill entry exists"),Entry.IsValid()))return false;
             StaticCastSharedPtr<SButton>(Entry)->SimulateClick();return true;
         };
-        if(!Click(TEXT("UCMLootTool.New"))||!Click(TEXT("UCMLootTool.Weapon skill"))||!Choose(TEXT("Missile Weapons (47)")))return false;
+        if(!Click(TEXT("UCMLootTool.New rule"))||!Click(TEXT("UCMLootTool.Weapon skill"))||!Choose(TEXT("Missile Weapons (47)")))return false;
         if(!Click(TEXT("UCMChoice.Apply requirement"))||!Click(TEXT("UCMLootTool.Apply rule")))return false;
-        if(!Click(TEXT("UCMLootTool.New"))||!Click(TEXT("UCMLootTool.Wield requirement skill"))||!Choose(TEXT("Mana Conversion (16)")))return false;
+        if(!Click(TEXT("UCMLootTool.New rule"))||!Click(TEXT("UCMLootTool.Wield requirement skill"))||!Choose(TEXT("Mana Conversion (16)")))return false;
         if(!Click(TEXT("UCMChoice.Apply requirement"))||!Click(TEXT("UCMLootTool.Apply rule")))return false;
-        if(!Click(TEXT("UCMLootTool.New"))||!Click(TEXT("UCMLootTool.Weapon skill")))return false;
+        if(!Click(TEXT("UCMLootTool.New rule"))||!Click(TEXT("UCMLootTool.Weapon skill")))return false;
         auto Custom=StaticCastSharedPtr<SSpinBox<int32>>(Find(Panel,TEXT("UCMLootID.weapon_skill"),true));
         if(!TestTrue(TEXT("Custom skill IDs remain editable"),Custom.IsValid()))return false;
         Custom->SetValue(600,true);

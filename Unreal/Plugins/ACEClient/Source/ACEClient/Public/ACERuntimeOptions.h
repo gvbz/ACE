@@ -31,6 +31,8 @@ inline constexpr FOption Values[] = {
  {TEXT("ConstrainUIWindows"),TEXT("Keep UI windows on screen"),1,0,1},
  {TEXT("DynamicLightingQuality"),TEXT("Dynamic lights"),2,0,2},
  {TEXT("CameraAlignToSlope"),TEXT("Align camera to slope"),1,0,1},
+ {TEXT("ClassicMovement"),TEXT("Classic movement"),0,0,1},
+ {TEXT("StationaryMissileAttacks"),TEXT("Stand still to shoot"),0,0,1},
  {TEXT("EffectLightLimit"),TEXT("Effect light limit"),8,0,64},
  {TEXT("PersonalFarTerrain"),TEXT("Far Terrain"),0,0,1}, // personal: far-terrain
  {TEXT("PersonalFarTerrainRadius"),TEXT("Far Terrain Radius"),43,43,96}, // personal: far-terrain
@@ -50,6 +52,8 @@ ACECLIENT_API void Apply();
 ACECLIENT_API int32 DynamicLightingQuality();
 ACECLIENT_API bool UniformDungeonLighting();
 ACECLIENT_API bool LegionsSky();
+ACECLIENT_API bool ClassicMovement();
+ACECLIENT_API bool StationaryMissileAttacks();
 ACECLIENT_API float SoundGain(bool bAmbient);
 /** Retail EnumIDMap 25000012; actual glyph atlases from the user's DAT on every platform. */
 ACECLIENT_API uint32 ChatFontId();

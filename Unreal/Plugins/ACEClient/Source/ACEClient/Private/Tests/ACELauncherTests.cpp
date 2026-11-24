@@ -342,6 +342,7 @@ bool FACELauncherWidgetTest::RunTest(const FString&)
         TestTrue(TEXT("Launch fits inside headset panel without scrolling"),W->LoginButton->GetCachedGeometry().GetAbsolutePosition().Y+W->LoginButton->GetCachedGeometry().GetLocalSize().Y<900);
         Capture(TEXT("Window720p"),FIntPoint(1280,720));
         Capture(TEXT("Desktop4K"),FIntPoint(3840,2160));
+        Capture(TEXT("Desktop32x9"),FIntPoint(3840,1080));
         Capture(TEXT("Narrow"),FIntPoint(650,1000));
         Capture(TEXT("SmallWindow"),FIntPoint(800,600));
         const auto SavedAccounts=W->Profile.Accounts;

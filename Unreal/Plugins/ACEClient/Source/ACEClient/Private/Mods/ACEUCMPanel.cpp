@@ -82,7 +82,7 @@ namespace ACEUCMPanelPrivate
         SLATE_BEGIN_ARGS(SUCMPanel):_ShowTitle(true){} SLATE_ARGUMENT(UACEPluginSubsystem*,Host) SLATE_ARGUMENT(FString,InitialPage) SLATE_ARGUMENT(bool,ShowTitle) SLATE_END_ARGS()
         void Construct(const FArguments& A)
         {
-            Host=A._Host;ShowTitle=A._ShowTitle;FACEPluginStyle::Use(A._Host,A._InitialPage==TEXT("Standalone loot")?TEXT("looteditor"):TEXT("ucm"));if(!A._InitialPage.IsEmpty())Page=A._InitialPage;for(auto P:Host->Plugins)if(P->Id==TEXT("ucm"))Plugin=P;
+            Host=A._Host;ShowTitle=A._ShowTitle;FACEPluginStyle::Use(A._Host,A._InitialPage==TEXT("Standalone loot")?TEXT("looteditor"):TEXT("ucm"));if(!A._InitialPage.IsEmpty())Page=A._InitialPage;Plugin=Host->ProfileOwner(TEXT("ucm"));
             if(!Plugin)return;
             if(Page==TEXT("Rules")||Page==TEXT("Mobs")||Page==TEXT("Mob"))Page=TEXT("Monsters");
             if(Page==TEXT("Profiles"))Page=TEXT("Import");
@@ -183,6 +183,18 @@ namespace ACEUCMPanelPrivate
             else CreationError=Host->Notice;
             Rebuild();
         }
+        TArray<FString> ProfileNames(const FString& Section) const
+        {
+            TArray<FString> Profiles=Host->UCMSectionProfiles(Section);
+            if(Section==TEXT("Loot"))
+            {
+                TArray<FString> Legacy;
+                IFileManager::Get().FindFiles(Legacy,*(Host->UserDirectory()/TEXT("LootProfiles/*.json")),true,false);
+                for(const FString& File:Legacy)Profiles.AddUnique(FPaths::GetBaseFilename(File));
+                Profiles.Sort();
+            }
+            return Profiles;
+        }
         TSharedRef<SWidget> ProfileChoice(const FString& Section)
         {
             return SNew(SACEPluginComboButton).Tag(FName(*(TEXT("UCMProfile.")+Section))).ComboButtonStyle(&FACEPluginStyle::Current()->Combo)
@@ -192,9 +204,11 @@ namespace ACEUCMPanelPrivate
                         return FText::FromString((Section==TEXT("Monsters")?FString():SectionLabel(Section)+TEXT(": "))+(Name.IsEmpty()?TEXT("Unsaved"):Name));})]
                 .OnGetMenuContent_Lambda([this,Section]()->TSharedRef<SWidget>{
                     auto List=SNew(SVerticalBox);
-                    for(const auto& Name:Host->UCMSectionProfiles(Section))List->AddSlot().AutoHeight()[MenuButton(Name,[this,Section,Name](){
+                    const bool Loot=Section==TEXT("Loot");
+                    for(const auto& Name:ProfileNames(Section))List->AddSlot().AutoHeight()[MenuButton(Name,[this,Section,Name,Loot](){
                         if(!CanLeaveLootRule())return;
-                        if(Host->SelectUCMSection(Section,Name)){ResetProfileEditors();CreatingSection.Empty();DeletingSection.Empty();}
+                        if(Loot?Host->LoadLootProfile(Name):Host->SelectUCMSection(Section,Name))
+                        {ResetProfileEditors();CreatingSection.Empty();DeletingSection.Empty();if(Loot)LootProfileName=Name;}
                         FSlateApplication::Get().DismissAllMenus();Rebuild();})];
                     if(List->NumSlots()==0)List->AddSlot().AutoHeight()[Text(TEXT("No saved profiles yet. Use New in this section's tab."),14,Muted)];
                     return SNew(SBox).MaxDesiredHeight(240).MinDesiredWidth(280)[SNew(SScrollBox)+SScrollBox::Slot()[List]];
@@ -219,7 +233,7 @@ namespace ACEUCMPanelPrivate
                     .Text(FText::FromString(SectionNewNames.FindRef(Section))).HintText(FText::FromString(Section==TEXT("Routes")?TEXT("Route name, e.g. Academy Loop"):TEXT("New profile name")))
                     .OnTextChanged_Lambda([this,Section](const FText& Value){SectionNewNames.Add(Section,Value.ToString());})
                     .OnTextCommitted_Lambda([this,Section](const FText&,ETextCommit::Type How){if(How==ETextCommit::OnEnter)CreateSection(Section);}));
-                Add(Text(Section==TEXT("Routes")?TEXT("Creates and selects an empty route file immediately. Use letters, numbers, spaces, _ or - (up to 64 characters). Your previous route is kept."):TEXT("Creates and selects a profile with default settings."),14,Muted));
+                Add(Text(Section==TEXT("Routes")?TEXT("Use up to 64 letters, numbers, spaces, underscores or hyphens."):TEXT("Creates and selects a profile with default settings."),14,Muted));
                 if(!CreationError.IsEmpty())Add(SNew(SACEPluginText).Tag(TEXT("UCMProfileCreateError"))
                     .Text(FText::FromString(CreationError)).Font(FACEPluginStyle::NativeFont("Regular",14)).ColorAndOpacity(Accent).AutoWrapText(true));
                 auto Actions=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6,6));
@@ -242,7 +256,7 @@ namespace ACEUCMPanelPrivate
         }
         void Configuration()
         {
-            Heading(TEXT("Configuration"),TEXT("Start or pause activities here or in UCM Micro. Configure each activity in its own tab; use the Mobs chart for attacks, debuffs and pet choices. Changes save automatically."));
+            Heading(TEXT("Configuration"),TEXT("Choose activities and profiles. Changes save automatically."));
             if(!Plugin->Enabled)Add(Button(TEXT("Enable UCM capabilities"),[this](){Host->SetEnabled(Plugin->Id,true);Rebuild();}));
             auto Activities=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(12,4));
             Activities->AddSlot()[CombatToggle(TEXT("Enable Combat"))];
@@ -273,7 +287,7 @@ namespace ACEUCMPanelPrivate
         {
             if(EditorOnly)return SNew(SVerticalBox)
                 +SVerticalBox::Slot().AutoHeight()[SNew(SBox).Visibility(ShowTitle?EVisibility::Visible:EVisibility::Collapsed)[Text(TEXT("Loot Profile Editor"),28)]]
-                +SVerticalBox::Slot().AutoHeight().Padding(0,4,0,0)[Text(TEXT("Edits UCM's active loot profile. Opening or closing this window does not toggle looting."),14,Muted)];
+                +SVerticalBox::Slot().AutoHeight().Padding(0,4,0,0)[Text(TEXT("Edits UCM's active loot profile."),14,Muted)];
             auto Row=SNew(SHorizontalBox);
             Row->AddSlot().FillWidth(1)[SNew(SVerticalBox)+SVerticalBox::Slot().AutoHeight()[SNew(SBox).Visibility(ShowTitle?EVisibility::Visible:EVisibility::Collapsed)[Text(TEXT("UCM"),22)]]
                 +SVerticalBox::Slot().AutoHeight().Padding(0,6)[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",14)).ColorAndOpacity(Accent).AutoWrapText(true)
@@ -387,8 +401,8 @@ namespace ACEUCMPanelPrivate
             auto* C=Host->GetGameInstance()->GetSubsystem<UACEClientSubsystem>();TSet<int32> Seen;
             const TCHAR* Key=Consumables?TEXT("consumables"):TEXT("weapon_items");
             Heading(Consumables?TEXT("Recovery items"):TEXT("Equipment pool"),Consumables
-                ?TEXT("An empty list allows automatic selection. Add supply types to restrict the pool. Refresh updates this list after inventory changes.")
-                :TEXT("Select weapons to restrict automatic equipment selection. Selecting only essences leaves weapon selection automatic. In a selected pool, only selected essences are summoned or refilled. An empty pool allows automatic selection of both. Refresh updates this list after inventory changes."));
+                ?TEXT("Leave the list empty to allow all supplies. Refresh after inventory changes.")
+                :TEXT("An empty pool allows all weapons and essences. Selecting only essences keeps weapon choice automatic. In a custom pool, only selected essences are summoned or refilled."));
             Add(Button(TEXT("Refresh inventory"),[this](){Rebuild();}));
             for(const auto& O:C->GetWorldObjects())
             {
@@ -546,7 +560,7 @@ namespace ACEUCMPanelPrivate
                 Add(SNew(SACEPluginComboButton).ComboButtonStyle(&FACEPluginStyle::Current()->Combo).ButtonContent()[LiveText([this,Key,Bane,Labels](){return (Bane?TEXT("Banes: "):TEXT("Protections: "))+Labels[FMath::Clamp(int32(Num(P(),*Key,2))-1,0,7)];})]
                     .OnGetMenuContent_Lambda([this,Key,Labels]()->TSharedRef<SWidget>{auto List=SNew(SVerticalBox);
                         for(int32 I=0;I<Labels.Num();++I)List->AddSlot().AutoHeight()[MenuButton(Labels[I],[this,Key,I](){P()->SetNumberField(Key,I+1);Save();FSlateApplication::Get().DismissAllMenus();})];return List;}));
-                Add(SNew(SACEPluginEditableTextBox).Visibility_Lambda([this,Key](){return Num(P(),*Key,2)==1?EVisibility::Visible:EVisibility::Collapsed;}).Style(&FACEPluginStyle::Current()->Edit).Text(FText::FromString(Str(P(),*Custom,TEXT("ALL")))).HintText(FText::FromString(TEXT("A acid, B bludgeon, C cold, L lightning, F fire, P pierce, S slash")))
+                Add(SNew(SACEPluginEditableTextBox).Visibility_Lambda([this,Key](){return Num(P(),*Key,2)==1?EVisibility::Visible:EVisibility::Collapsed;}).Style(&FACEPluginStyle::Current()->Edit).Text(FText::FromString(Str(P(),*Custom,TEXT("ALL")))).HintText(FText::FromString(TEXT("Damage letters, e.g. BPS")))
                     .OnTextCommitted_Lambda([this,Custom](const FText& Value,ETextCommit::Type){FString Letters=Value.ToString().ToUpper();if(Letters.Len()<=7){P()->SetStringField(Custom,Letters);Save();}}));
             }
             Add(Text(TEXT("A = acid, B = bludgeoning, C = cold, L = lightning, F = fire, P = piercing, S = slashing."),14,Muted));
@@ -558,7 +572,7 @@ namespace ACEUCMPanelPrivate
             Row->AddSlot().AutoWidth().Padding(8,0)[SNew(SACEPluginButton).ContentPadding(FMargin(FACEPluginStyle::ButtonPadding)).ButtonStyle(&Style()).IsFocusable(false)
                 .IsEnabled_Lambda([this](){return Host->IsForceBuffRequested();})
                 .OnClicked_Lambda([this](){Host->CancelForceBuff();return FReply::Handled();})[Text(TEXT("Cancel refresh"))]];
-            Add(Row);Add(Text(TEXT("Refresh all enabled buff families now, regardless of remaining time. If UCM is stopped, runs only buffs and recovery, then stops."),14,Muted));
+            Add(Row);Add(Text(TEXT("Force Buff refreshes all enabled buffs. If UCM is stopped, only buffs and recovery run for this cycle."),14,Muted));
         }
         double BuffMargin()const{return Num(P(),TEXT("buff_skill_margin"),Num(P(),TEXT("skill_margin"),30));}
         int32 BuffSchoolSkill(uint32 School)const
@@ -573,7 +587,7 @@ namespace ACEUCMPanelPrivate
         void BuffDifficultyControls()
         {
             Add(Text(TEXT("Spell level by school"),18));
-            Add(Text(TEXT("Automatic highest chooses the strongest learned, usable buff. A selected level casts that exact tier; unavailable spells are skipped. These choices affect self buffs and buff requests, not vital recovery."),14,Muted));
+            Add(Text(TEXT("Choose Auto for the highest usable tier, or a fixed tier for self buffs and requests. Unavailable fixed tiers are skipped."),14,Muted));
             for(const auto& School:TArray<TPair<FString,FString>>{{TEXT("creature_buff_level"),TEXT("Creature Magic")},{TEXT("life_buff_level"),TEXT("Life Magic")},{TEXT("item_buff_level"),TEXT("Item Magic")}})
             {
                 const FString Key=School.Key;
@@ -589,7 +603,7 @@ namespace ACEUCMPanelPrivate
             }
             Slider(TEXT("buff_skill_margin"),TEXT("Extra skill required above spell difficulty"),0,150,
                 float(Num(P(),TEXT("skill_margin"),30)),Accent,TEXT(" points"));
-            Add(Text(TEXT("UCM chooses the strongest learned buff whose difficulty plus this buffer fits your current magic skill. Raising the buffer favors easier casts but can lower the spell level. Lower it to allow stronger buffs. This is a skill difference, not a success percentage."),14,Muted));
+            Add(Text(TEXT("UCM casts the highest tier whose difficulty plus this margin fits your skill."),14,Muted));
             auto Presets=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6,4));
             Presets->AddSlot()[Button(TEXT("Highest tiers (0 extra)"),[this](){P()->SetNumberField(TEXT("buff_skill_margin"),0);Save();})];
             Presets->AddSlot()[Button(TEXT("Default (30 extra)"),[this](){P()->SetNumberField(TEXT("buff_skill_margin"),30);Save();})];
@@ -621,7 +635,7 @@ namespace ACEUCMPanelPrivate
                         return FText::FromString(FString::Printf(TEXT("%s: skill %d - buffer %d = difficulty %d max\n%s"),*Name,Skill,Buffer,Limit,*Result));
                     })));
             }
-            Add(Text(TEXT("Live skill preview, including skill buffs. Individual buff families may have lower learned tiers; components, exclusions and temporary cast failures can also limit the final choice."),14,Muted));
+            Add(Text(TEXT("Preview uses your current buffed skill. Learned spells and available components can limit the tier."),14,Muted));
         }
         void Rebuild()
         {
@@ -647,8 +661,8 @@ namespace ACEUCMPanelPrivate
                 BuffDifficultyControls();
                 Add(Toggle(TEXT("item_buffs_enabled"),TEXT("Item enchantment buffs"),TEXT("Maintain item-magic buffs, including armor banes and weapon auras. Turning this off also excludes manually selected item spells."),true));
                 Slider(TEXT("refresh_seconds"),TEXT("Rebuff before expiry"),10,300,300,Accent,TEXT(" sec"));
-                Add(Text(TEXT("Refreshes before timers expire; nearby expirations are grouped during a buff cycle. Saved refresh settings are preserved."),14,Muted));
-                Add(Toggle(TEXT("idle_buff_topoff"),TEXT("Buff only while idle"),TEXT("Waits until nearby monsters are gone before routine self buffs or consumable buffs. Refreshes only in the last 10% of each buff's duration, within the configured window. Recovery and explicit Force Buff remain available during combat.")));
+                Add(Text(TEXT("Buffs expiring within this window refresh together."),14,Muted));
+                Add(Toggle(TEXT("idle_buff_topoff"),TEXT("Buff only while idle"),TEXT("Wait for nearby monsters to clear. Refresh only within the idle window and the final 10% of duration. Recovery and Force Buff can still run in combat.")));
                 Slider(TEXT("idle_buff_seconds"),TEXT("Idle buff refresh window"),60,3600,1200,Accent,TEXT(" sec"));
                 ProtectionControls();
                 Heading(TEXT("Buff exceptions"),TEXT("Override individual buff families when needed."));
@@ -691,7 +705,7 @@ namespace ACEUCMPanelPrivate
                 Add(Toggle(TEXT("fellowship_votes"),TEXT("Allow member votes"),TEXT("Members can propose kick, ban, giveleader or setopen. A majority of votes cast wins after two minutes; no quorum is required."),true));
                 Slider(TEXT("fellowship_capacity"),TEXT("Server fellowship capacity"),2,100,9,Accent,TEXT(" members"));
                 Add(SNew(SACEPluginText).AutoWrapText(true).ColorAndOpacity(Accent).Text_Lambda([H=Host](){return FText::FromString(H.IsValid()?H->FellowshipManagerStatus:FString());}));
-                Add(Text(TEXT("A reserved spot lasts five minutes; return nearby and tell xp to claim it. Members: startvote kick/ban/giveleader NAME or startvote setopen true/false, then vote ID yes/no. Leader chat: /ucm fellow vote ID yes/no/abort, /ucm fellow clear, /ucm fellow unban NAME."),14,Muted));
+                Add(Text(TEXT("Tell xp within five minutes to claim a reserved spot. Members can tell startvote kick/ban/giveleader NAME or startvote setopen true/false, then vote ID yes/no."),14,Muted));
                 Heading(TEXT("Tell keywords"),TEXT("Edit a role's tell keyword and press Enter to save."));
                 const auto Commands=Host->BuffCommands();
                 for(int32 I=0;I<Commands.Num();++I)
@@ -706,16 +720,16 @@ namespace ACEUCMPanelPrivate
                          V[I]->AsObject()->SetStringField(TEXT("keyword"),Key);P()->SetArrayField(TEXT("buff_commands"),V);Save();})];
                     Add(Tile(Row));
                 }
-                Add(Text(TEXT("Melee roles include Dual Wield, Dirty Fighting, Recklessness, Sneak Attack and Shield. Unarmed uses Light Weapons in modern retail. Players receive tells with their queue position, turn and completion status."),15,Muted));
-                Add(Text(TEXT("Every role includes all six attributes, melee/missile/magic defense, life protections and regeneration, run, jump, healing, lore and mana conversion. Mage adds magic schools; weapon roles add their attack skills. Uses the highest known Other spells within your skill margin, including item buffs on the requester's server-visible equipped gear."),15,Muted));
-                Add(Text(TEXT("Keep the intended weapon equipped. Servers may not expose other players' armor as targetable items; UCM reports unavailable buffs instead of claiming those banes succeeded. Self-only spells cannot be cast on someone else."),15,Muted));
+                Add(Text(TEXT("Melee roles add Dual Wield, Dirty Fighting, Recklessness, Sneak Attack and Shield. Unarmed uses Light Weapons."),15,Muted));
+                Add(Text(TEXT("All roles receive attribute, defense, life and utility buffs. Mages also receive magic-school buffs. Weapon roles receive their attack skills."),15,Muted));
+                Add(Text(TEXT("Keep the weapon equipped. Gear buffs require equipment the server exposes to other players."),15,Muted));
 
             }
             else if(Page==TEXT("Combat"))
             {
                 SectionSelector(TEXT("Character"));
-                Heading(TEXT("Automatic Combat"),TEXT("Automatically ranks usable equipment and known attack spells based on assessed resistances. Unknown resistances use neutral values; select an element override if needed. Make sure you have a weapon or wand configured in your Equipment Pool for automatic equipment selection to work."));
-                Add(Text(TEXT("Choose default and per-mob attacks, debuffs, damage and pet types in the Mobs chart. Start or pause activities in Overview / Micro."),15,Muted));
+                Heading(TEXT("Automatic Combat"),TEXT("Uses assessed resistances to choose equipment and spells. Unknown resistances count as neutral."));
+                Add(Text(TEXT("Set attacks, debuffs, elements and pets in Mobs."),15,Muted));
                 const int32 Selection=FMath::Clamp(int32(Num(P(),TEXT("target_select"),1)),1,3);
                 const TCHAR* SelectionNames[]={TEXT(""),TEXT("Distance"),TEXT("Angle"),TEXT("Angle nearby, distance farther away")};
                 Add(LiveButton([this,SelectionNames](){return FString(TEXT("Target preference: "))+SelectionNames[FMath::Clamp(int(Num(P(),TEXT("target_select"),1)),1,3)];},[this](){P()->SetNumberField(TEXT("target_select"),int(Num(P(),TEXT("target_select"),1))%3+1);Save();}));
@@ -729,7 +743,7 @@ namespace ACEUCMPanelPrivate
                     .Text_Lambda([P=Plugin](){return FText::FromString(P->Running?P->TargetingStatus:FString());}));
                 Slider(TEXT("monster_attempts"),TEXT("Environment misses before skipping target"),0,20,4);
                 Slider(TEXT("monster_blacklist_seconds"),TEXT("Skip unreachable target for"),0,600,120,Accent,TEXT(" s"));
-                Add(Text(TEXT("Acquisition is the maximum search distance; 0 uses attack range for imported stationary profiles. Enable pursuit to approach a visible mob before firing. Walls and closed doors exclude targets. Route priority and meta/state settings can override normal combat; the live search status above shows the settings in effect."),15,Muted));
+                Add(Text(TEXT("An acquisition range of 0 uses attack range. Walls and closed doors block targets. Route priority and metas can override combat."),15,Muted));
                 Slider(TEXT("power_percent"),TEXT("Attack power / accuracy"),0,100,50);
                 Add(Toggle(TEXT("auto_attack_power"),TEXT("Automatic attack power"),TEXT("Chooses power for the weapon's attack pattern and damage element."),true));
                 Add(Toggle(TEXT("use_recklessness"),TEXT("Use Recklessness"),TEXT("Keeps automatic power in the Recklessness range when the skill is usable.")));
@@ -762,7 +776,6 @@ namespace ACEUCMPanelPrivate
                 Heading(TEXT("Mob defaults"),TEXT("Fallbacks for mobs without an explicit rule override. Higher priority is attacked first; negative priority ignores a mob. Leave range at 0 to use the melee or missile / spell attack distance."));
                 IntegerSetting(P(),TEXT("monster_default_priority"),TEXT("Default mob priority"),-1,10,TEXT(""));
                 IntegerSetting(P(),TEXT("monster_default_range"),TEXT("Default mob attack range"),0,100,TEXT(" m"));
-                Add(Text(TEXT("Mob rules inherit these defaults unless overridden. Range 0 uses the melee or missile / spell distance above."),14,Muted));
                 Inventory(false);
             }
             else if(Page==TEXT("Recovery"))
@@ -823,7 +836,7 @@ namespace ACEUCMPanelPrivate
                 const TCHAR* CraftKeys[]={TEXT("craft_health_kits"),TEXT("craft_stamina_kits"),TEXT("craft_mana_kits"),TEXT("craft_health_food"),TEXT("craft_stamina_food"),TEXT("craft_mana_food")};
                 const TCHAR* CraftLabels[]={TEXT("Idle health kits"),TEXT("Idle stamina kits"),TEXT("Idle mana kits"),TEXT("Idle health food"),TEXT("Idle stamina food"),TEXT("Idle mana food")};
                 for(int32 I=0;I<6;++I)Slider(CraftKeys[I],CraftLabels[I],0,10000,0,Accent,TEXT(" items"));
-                Add(Text(TEXT("Idle counts apply to imported assist item categories. Add other supplies below by selecting an inventory item. A zero idle count still replaces a missing supply. Unknown recipes or missing ingredients are skipped. After a failed or uncertain craft, that supply stays skipped until UCM restarts or automatic crafting is toggled."),14,Muted));
+                Add(Text(TEXT("Idle counts apply to imported supplies. Zero still replaces a missing supply. Restart UCM or toggle crafting to retry a failed craft."),14,Muted));
                 Add(Button(TEXT("+ Maintain selected inventory item"),[this]()
                 {
                     auto* C=Host->GetGameInstance()->GetSubsystem<UACEClientSubsystem>();FACEWorldObject Item;
@@ -891,7 +904,7 @@ namespace ACEUCMPanelPrivate
                             })];
                     Add(Tile(CardBody));
                 }
-                Heading(TEXT("Special steps"),TEXT("Add an interaction, portal, jump, pause or recall at the end of the route. After a portal, add the next waypoint at your destination."));
+                Heading(TEXT("Special steps"),TEXT("After a portal, record the next waypoint at its destination."));
                 auto Buttons=SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(5,5));
                 Buttons->AddSlot()[Button(TEXT("+ Use selected"),[this](){AddRoutePoint(TEXT("use"));})];
                 Buttons->AddSlot()[Button(TEXT("+ Portal selected"),[this](){AddRoutePoint(TEXT("portal"));})];
@@ -1108,7 +1121,7 @@ bool FACEUCMLootEditorTest::RunTest(const FString&)
     auto* GI=NewObject<UGameInstance>();GI->Init();ON_SCOPE_EXIT{GI->Shutdown();};
     TestTrue(TEXT("Retail fonts load for the actual loot editor"),GI->GetSubsystem<UACEDatSubsystem>()->LoadDatDirectory(TEXT("C:/Turbine/Asheron's Call")));
     auto* Host=GI->GetSubsystem<UACEPluginSubsystem>();TSharedPtr<FACEClientPlugin> Plugin;
-    for(auto P:Host->Plugins)if(P->Id==TEXT("ucm"))Plugin=P;
+    Plugin=Host->ProfileOwner(TEXT("ucm"));
     if(!Plugin)return false;
     const auto Original=Plugin->Profile;ON_SCOPE_EXIT{Plugin->Profile=Original;};
     auto Parse=[](const TCHAR* Text){TSharedPtr<FJsonObject> O;FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text),O);return O;};
@@ -1234,20 +1247,22 @@ bool FACEUCMLootEditorTest::RunTest(const FString&)
             Panel->LootSearch.Reset();Panel->LootPage=0;Panel->Rebuild();Target->ReleaseResource();
         }
         Plugin->Profile=SampleProfile;Panel->Rebuild();
-        for(int Width:{780,450})for(const FString View:{TEXT("Rules"),TEXT("Condition"),TEXT("Classic"),TEXT("Imported")})
+        for(int Width:{780,450})for(const FString View:{TEXT("Rules"),TEXT("Condition"),TEXT("Classic"),TEXT("Imported"),TEXT("Empty")})
         {
             Plugin->Profile=View==TEXT("Imported")&&ImportedProfile?ImportedProfile:SampleProfile;
+            if(View==TEXT("Empty"))Plugin->Profile=MakeShared<FJsonObject>();
             Panel->Page=TEXT("Loot");Panel->LootDraft.Reset();Panel->ConditionDraft.Reset();
             if(View==TEXT("Condition")){Panel->LootDraft=ACEUCMLootPresentation::Clone(Rule);Panel->ConditionDraft=Parse(TEXT(R"({"field":"legacy","key":2008,"args":[70,1.15,1.12]})"));}
             if(View==TEXT("Classic")){Panel->Page=TEXT("Legacy loot");Panel->LegacyDocument=Document;Panel->LegacyRule=Parse(TEXT(R"({"label":"Amuli chest color","action_id":10,"amount":4,"priority":0,"expression":"","requirements":[{"type":15,"body":"255\r\n0\r\n0\r\n10\r\n0.1\r\nAmuli Coat (Chest)\r\n"}]})"));}
             Panel->Rebuild();const FVector2D Size(Width,1100);auto* Target=FWidgetRenderer::CreateTargetFor(Size,TF_Bilinear,true);
             for(int Pass=0;Pass<6;++Pass){++GFrameCounter;Renderer.DrawWidget(Target,Panel,Size,0);FlushRenderingCommands();}
-            TArray<TSharedRef<SWidget>> Tabs;int Lists=0,Details=0;TSet<const SWidget*> Seen;
+            TArray<TSharedRef<SWidget>> Tabs;int Lists=0,Details=0,NewRules=0;TSet<const SWidget*> Seen;
             TFunction<void(TSharedRef<SWidget>)> Inspect=[&](TSharedRef<SWidget> W)
             {
                 if(Seen.Contains(&W.Get()))return;Seen.Add(&W.Get());
                 if(!W->GetVisibility().IsVisible())return;
                 if(W->GetTag()==TEXT("UCMTab"))Tabs.Add(W);
+                if(W->GetTag()==TEXT("UCMLootTool.New rule"))++NewRules;
                 if(W->GetTag()==TEXT("LootRuleList"))
                 {++Lists;TestTrue(TEXT("Rule list is attached with usable geometry"),W->GetCachedGeometry().GetLocalSize().X>100&&W->GetCachedGeometry().GetLocalSize().Y>150);}
                 if(W->GetTag()==TEXT("LootRuleDetail"))
@@ -1260,7 +1275,13 @@ bool FACEUCMLootEditorTest::RunTest(const FString&)
                 TestTrue(TEXT("Editor tabs have uniform sizes"),Tabs[0]->GetCachedGeometry().GetLocalSize().Equals(Tabs[I]->GetCachedGeometry().GetLocalSize(),.1f));
                 TestTrue(TEXT("Editor tabs stay in one row"),FMath::IsNearlyEqual(Tabs[0]->GetCachedGeometry().GetAbsolutePosition().Y,Tabs[I]->GetCachedGeometry().GetAbsolutePosition().Y,.1));
             }
-            if(View!=TEXT("Classic")){TestEqual(TEXT("Loot rules are in the visible widget tree"),Lists,1);TestEqual(TEXT("Loot details are in the visible widget tree"),Details,1);}
+            if(View!=TEXT("Classic"))
+            {
+                const int32 ExpectedPanes=Panel->CurrentLootRules().IsEmpty()&&View!=TEXT("Condition")?0:1;
+                TestEqual(TEXT("Every loot profile offers one New rule action"),NewRules,1);
+                TestEqual(TEXT("The rule list is shown for populated profiles and drafts"),Lists,ExpectedPanes);
+                TestEqual(TEXT("Rule details are shown for populated profiles and drafts"),Details,ExpectedPanes);
+            }
             TArray<FColor> Pixels;FReadSurfaceDataFlags Flags;Flags.SetLinearToGamma(false);Target->GameThread_GetRenderTargetResource()->ReadPixels(Pixels,Flags);
             TestEqual(TEXT("Loot editor renders at desktop and narrow widths"),Pixels.Num(),Width*1100);
             TArray64<uint8> PNG;FImageUtils::PNGCompressImageArray(Width,1100,Pixels,PNG);
@@ -1278,6 +1299,15 @@ bool FACEUCMImportUITest::RunTest(const FString&)
     Host->StorageRoot=Root;Host->Settings=MakeShared<FJsonObject>();
     if(!TestTrue(TEXT("Isolated selection initialized"),Host->InitializeUCMSelection()))return false;
     auto Plugin=Host->Find(TEXT("ucm"));auto Panel=SNew(SUCMPanel).Host(Host).InitialPage(TEXT("Import"));
+    const FString LegacyDir=Host->UserDirectory()/TEXT("LootProfiles");
+    IFileManager::Get().MakeDirectory(*LegacyDir,true);
+    const FString LegacyName=TEXT("Legacy_loot");
+    TestTrue(TEXT("Write legacy loot fixture"),FFileHelper::SaveStringToFile(TEXT("{\"loot_rules\":[]}"),*(LegacyDir/(LegacyName+TEXT(".json")))));
+    TestTrue(TEXT("Loot picker offers legacy files"),Panel->ProfileNames(TEXT("Loot")).Contains(LegacyName));
+    TestFalse(TEXT("Other pickers exclude legacy loot"),Panel->ProfileNames(TEXT("Routes")).Contains(LegacyName));
+    TestTrue(TEXT("Picking a legacy profile migrates it"),Host->LoadLootProfile(LegacyName));
+    TestEqual(TEXT("Migrated and legacy copies share one menu entry"),Panel->ProfileNames(TEXT("Loot")).FilterByPredicate([&](const FString& Name){return Name==LegacyName;}).Num(),1);
+    TestTrue(TEXT("Return to default loot"),Host->SelectUCMSection(TEXT("Loot"),TEXT("Default")));
     const FString Inbox=Host->GetProfileFolder();IFileManager::Get().MakeDirectory(*Inbox,true);
     FFileHelper::SaveStringToFile(TEXT("uTank2 NAV 1.2\n2\n1\n0\n0\n0\n0.05\n0\n"),*(Inbox/TEXT("Walking.NAV")));
     FFileHelper::SaveStringToFile(TEXT("UTL\r\n1\r\n1\r\nCopper\r\n\r\n0;1;12\r\n8\r\n6\r\n131\r\n"),*(Inbox/TEXT("Copper.utl")));
@@ -1289,7 +1319,7 @@ bool FACEUCMImportUITest::RunTest(const FString&)
         TestEqual(TEXT("One invalid file does not stop remaining imports"),Panel->ImportSucceeded,2);
         TestEqual(TEXT("Bulk import preserves current route selection"),Host->UCMSectionName(TEXT("Routes")),FString(TEXT("Default")));
         TestEqual(TEXT("Repeat bulk import creates one route"),Host->UCMSectionProfiles(TEXT("Routes")).Num(),2);
-        TestEqual(TEXT("Repeat bulk import creates one loot profile"),Host->UCMSectionProfiles(TEXT("Loot")).Num(),2);
+        TestEqual(TEXT("Repeat bulk import adds one loot profile alongside Default and migrated loot"),Host->UCMSectionProfiles(TEXT("Loot")).Num(),3);
     }
     for(int I=0;I<200;++I)Panel->LogImport(FString::ChrN(200,'x'));
     TestTrue(TEXT("Import log is bounded"),Panel->ImportLog.Len()<=16000);

@@ -6,6 +6,7 @@
 #include "ACEDatSubsystem.h"
 #include "ACEClientSubsystem.h"
 #include "ACESession.h"
+#include "Mods/ACEPluginEquipment.h"
 #include "Engine/GameInstance.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
@@ -48,6 +49,26 @@ bool FACEAugmentationTest::RunTest(const FString&)
         WriteSkill(W, Id, Class, Init, Ranks); Session.HandleGameMessage(W.GetData());
     };
     for (int32 Id = 1; Id <= 6; ++Id) Attribute(Id, 50);
+    {
+        // Ivory Fire Throwing Dart: 290 base Missile Weapons, with a +45 skill enchantment active.
+        Skill(47, 2, 0, 0);
+        Skill(47, 2, 0, 288 - V.Skills[0].Base);
+        FACEActiveEnchantment Buff; Buff.StatModType = 0x8010; Buff.StatModKey = 47; Buff.StatModValue = 45;
+        Session.ActiveEnchantments = { Buff }; Session.NotifyVitalsChanged();
+        FACEAppraisalInfo Dart; Dart.bSuccess = true; Dart.IntProperties = {{158, 2}, {159, 47}, {160, 290}};
+        TestTrue(TEXT("Without Jack the dart reports base 288 despite the buff"),
+            ACEPluginEquipment::WieldFailure(Dart, V).Contains(TEXT("requires 290 (have 288)")));
+        Int(326, 1);
+        TestEqual(TEXT("Buffed Missile Weapons with Jack"), V.Skills[0].Current, 338);
+        TestEqual(TEXT("The skill window shows only the temporary +45"), V.Skills[0].GetDisplayModifier(), 45);
+        TestTrue(TEXT("Jack qualifies the dart"), ACEPluginEquipment::WieldFailure(Dart, V).IsEmpty());
+        Dart.IntProperties[160] = 293;
+        TestTrue(TEXT("An exact permanent base qualifies"), ACEPluginEquipment::WieldFailure(Dart, V).IsEmpty());
+        Dart.IntProperties[160] = 294;
+        TestTrue(TEXT("One point short reports the same base as the skill window"),
+            ACEPluginEquipment::WieldFailure(Dart, V).Contains(TEXT("requires 294 (have 293)")));
+        Session.ActiveEnchantments.Reset(); Int(326, 0);
+    }
     // Every current skill plus an untrained one: proficiency must not leak to
     // defenses, tinkering, summoning, or the other combat families.
     for (int32 Id = 6; Id <= 54; ++Id) Skill(Id, Id == 21 ? 1 : Id % 2 ? 3 : 2, 10, 100);

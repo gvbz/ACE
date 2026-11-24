@@ -1,1 +1,1 @@
-{"api":1,"id":"looteditor","short_name":"LOOT","name":"Loot Profile Editor","version":"0.1.0","description":"Create ordered loot rules, edit conditions, save shared profiles and review Virindi imports. This editor performs no game actions.","permissions":[]}
+{"api":1,"id":"looteditor","short_name":"LOOT","name":"Loot Profile Editor","version":"0.1.0","description":"Edit shared loot rules and review Virindi profile imports.","permissions":[]}

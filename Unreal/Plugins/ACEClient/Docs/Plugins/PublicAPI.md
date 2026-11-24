@@ -3,6 +3,12 @@
 API 2 exposes native gameplay data, actions and UI to Lua plugins. API 1
 manifests remain supported.
 
+Players can browse, install and update registered Lua plugins from **Accounts →
+Plugin Manager** before logging in. Developers register a public GitHub repository
+once and publish subsequent versions as release assets in that repository.
+The [community catalog and packaging guide](https://github.com/Thwargle/ACUnrealPlugins)
+includes the registration format and publisher tools.
+
 Install the [API Workbench](Examples/api_workbench) folder under
 `Saved/ClientPlugins/Installed`, then refresh Manage Plugins, enable it and
 press **Start**. Its activities default to off. Find action and field signatures
@@ -21,7 +27,7 @@ Set `"api":2` and choose a mode.
 
 - `"mode":"automation"` starts explicitly and stops on logout or character
   change. One automation driver owns actions at a time. Starting another stops
-  the current driver. Bundled Item Tools temporarily pauses bundled UCM.
+  the current driver. The official Item Tools plugin can pause full UCM while it works.
 - `"mode":"companion"` starts when enabled and logged in and runs beside the
   automation driver. Closing either plugin window leaves the plugin running.
 
@@ -54,6 +60,11 @@ Omit it for the full permitted snapshot. `api`, `time`, `unix_time`,
 always included. Character qualities, `character_name`, `level` and action
 results require `data`. Selective snapshots can use the cached inventory path. Some automation
 fields still require building the full snapshot before filtering.
+
+Request `hunt_ledger` for elapsed session seconds, earned XP and luminance, and
+gains over the last five minutes. Request `supply_ledger` for the current
+character's tracked supply names, class IDs, owned counts and icon layers.
+Both fields work with the ledger plugins uninstalled. Companions need `data`.
 
 Character quality maps `char_ints`, `char_quads`, `char_doubles`, `char_bools`
 and `char_strings` use decimal property IDs as string keys. Removed keys become
@@ -611,6 +622,8 @@ Do not infer removal from a capped snapshot; keep a bounded timeout for missing
 or overwritten evidence.
 
 `combat_events` entries have `serial`, `target`, `hit`, `unhittable` and `time`.
+When the server rejects a missile shot as out of range, `missile_rejected_distance`
+gives the distance in metres to the selected target when the reply arrived.
 Correlated single-target spell hits additionally carry `spell` and, when supplied
 by the damage result, positive `damage`. Neither UseDone nor spell words count as
 damage. Target snapshots expose `health` when supplied by an appraisal, or
@@ -653,6 +666,19 @@ list.
   mansion. Use `cast` for spell recalls.
 - Inventory actions include `identify`, `equip` (with `offhand` or
   `unequip`), `use_item`, `apply_item`, `store_item`, `give` and `merge`.
+- An automation plugin with `inventory` permission can return
+  `{action="store_item", item=id, target=pack_id, placement=0}` to move a
+  whole item or stack. Use `s.player` for the main pack, `s.container` for the
+  open chest or storage, or a side pack's GUID. `s.packs` lists carried packs
+  and their free item slots. Both directions are supported.
+  Read carried items from `s.inventory`, direct chest items from `s.contents`
+  and items inside its side packs from `s.external_pack_contents`. Group rows
+  by `container` and order by `placement` (−1 means unknown).
+  An explicit placement inserts into the destination's zero-based item or
+  pack list after removing the source. A position beyond the end appends.
+  Omit placement to allow a whole-stack auto-merge and otherwise insert at zero.
+  Wait for the updated container, placement or stack counts before issuing the
+  next move. Server storage access and item restrictions apply.
 - Loot actions include `open_corpse`, `close_corpse`, `loot`, `salvage`,
   `combine_salvage`, `read`, `sell`, `buy`, `split_note` and `sell_note`.
   `combine_salvage.items` is a comma-separated list of 2–64 distinct salvage
@@ -677,8 +703,24 @@ list.
   `buff_request_done`, `force_buff_done`, `pause_navigation`,
   `pause_loot_approach`, `activity_failed`, `notice` and `stop`.
 
-UCM's internal `craft`, `crafting`, `services_profile` and
-`fellowship_tells` are reserved for the bundled implementation.
+The active API 2 automation driver can use the same supply and ammunition
+planner as UCM. With `inventory` permission, enable `auto_craft` or
+`auto_craft_ammo` in the profile and read `snapshot.crafting.candidates`.
+Return `{action="craft", recipe=candidate.recipe, phase=candidate.phase}`.
+The host checks the recipe and current inventory again before using ingredients.
+Accepting a crafting confirmation also requires `confirm`. The planner uses the
+server's recipe catalog or the client defaults when Auto Craft is absent.
+
+`services_profile` supplies effective settings for an active policy, including
+`auto_fellowship` and crafting settings. Recruitment commands from players
+are delivered in `fellowship_tells` when the driver has `fellowship`, `say`
+and `chat` permission and recruitment is enabled.
+
+For a compact native control panel, set `"policy":"ucm"` and
+`"native_panel":"combat_controls"` on an API 2 automation manifest. The panel
+edits that plugin's profile, starts and stops its policy and displays its status.
+Use a `main.lua` that returns a function calling `builtinpolicy(snapshot,profile)`
+to run the stock decision function. Request the capabilities used by enabled activities.
 
 Policy metadata is also public: `activity`, `meta_state`, `targeting_status`,
 `route_point`, `route_join_pending`, `route_track_movement`, `helper_updates`,
@@ -847,7 +889,8 @@ keys. Plugin chat/messages and this inbox are separate bounded streams.
 - **policy**: command with text such as `/acueucm jump`; compiles into your own driver's
   command queue, using the same meta adapters. Requires commands. This does not
   enable UCM or edit its configuration. Execution retains each action's permissions.
-- **waypoint**: set with coordinate text or clear. Uses the existing NAV destination.
+- **waypoint**: set with coordinate text or clear. Works independently of the Waypoint atlas. With Waypoint enabled, the atlas and arrow share its saved destination. Otherwise the HUD displays a session destination and respects the player’s arrow visibility preference.
+- **resources**: read a packaged UTF-8 JSON, XML or text file from the plugin's own `data/` folder. Use `{service="resources",operation="read",id="atlas",name="towns.xml",offset=0}`. Append each result's `text` and pass its `next_offset` on the next request until `eof` is true. Reads return up to 16 KiB at a UTF-8 boundary. Each file can contain up to 8 MiB, subject to the 16 MiB package limit.
 - **window**: show/hide/toggle your own desktop window. Does not stop your plugin.
 - **chat**: send text, optional recipient for tell or channel=2048 for fellowship;
   otherwise local/server-command text. Requires say; one send per second, at most
@@ -955,7 +998,7 @@ saved video settings and is removed outdoors or when disabled.
 ## Administrative content service (API 2)
 
 The optional `admin_content` permission exposes `service="content"` to companions
-and automation plugins. [Dereth Foundry](Foundry.md) is the bundled Lua example.
+and automation plugins. [Dereth Foundry](Foundry.md) is an official Lua example.
 Requests and asynchronous `result` events use the normal public service protocol.
 
 ```lua

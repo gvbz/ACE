@@ -77,6 +77,7 @@ local function prune_history(s)
   if key:sub(1,2)=='id' then id=tonumber(key:sub(3))
   elseif key:sub(1,5)=='equip' then id=target_id(key:sub(6))
   elseif key:sub(1,6)=='corpse' then id=tonumber(key:sub(7))
+  elseif key:sub(1,6)=='pickup' then id=tonumber(key:sub(7))
   elseif key:sub(1,6)=='debuff' then id=target_id(key:sub(7))
   elseif key:sub(1,6)=='helper' then id=tonumber(key:sub(7,-2)) end
   if value==0 or (id and not present[id]) then item_attempts[key]=nil end
@@ -114,6 +115,15 @@ end
 local function pct(v,m) return m>0 and v*100/m or 0 end
 local function result(a,status) return {action=a,status=status} end
 local function loot_progress(status) return {status=status,continue_work=true} end
+local function request_pickup(s,item,amount,owned,before,after,rule,status)
+ local key='pickup'..item.id
+ item_attempts[key]=(item_attempts[key] or 0)+1
+ loot_scan={}
+ loot_pending={container=s.container,empties=#s.contents==1 and amount==item.count,before=before,
+  amount=amount,id=item.id,count=item.count,wcid=item.wcid,expected=(owned[item.wcid] or 0)+amount,
+  failure_serial=s.inventory_failure_serial or 0,expires=s.time+10,after=after,name=item.name,rule=rule}
+ return {action='loot',item=item.id,amount=amount,continue_work=true,status=status}
+end
 local function pause_navigation(reason)
  navigation_paused='Navigation paused: '..reason..'. UCM remains active; enable Follow route to retry'
  route_pending=nil;route_trail={};route_returning=false;route_walking=false;route_shortcut=nil
@@ -1673,8 +1683,11 @@ local function tick(s,p)
  for _,e in ipairs(s.combat_events or {}) do if e.serial>combat_serial then
   combat_serial=e.serial
   if present[e.target] then
-   if e.unhittable then monster_blacklist[e.target]=s.time+option('monster_blacklist_seconds',120);monster_failures[e.target]=nil
+   if e.missile_rejected_distance then
+    local h=spell_health[e.target];h.rejected_distance=e.missile_rejected_distance;h.recheck_range=(e.time or s.time)+10
+   elseif e.unhittable then monster_blacklist[e.target]=s.time+option('monster_blacklist_seconds',120);monster_failures[e.target]=nil
    elseif e.hit then
+    spell_health[e.target].rejected_distance=nil
     monster_failures[e.target]=nil;ghost_attempts[e.target]=nil;ghost_hp[e.target]={time=s.time}
     if e.spell and (e.damage or 0)>0 then
      local h=spell_health[e.target];h.damage=e.damage
@@ -1713,13 +1726,41 @@ local function tick(s,p)
  -- Imported VT ApproachDistance=0 retains its stationary attack-radius mode.
  local acquisition=option('approach_range',60)
  if acquisition<=0 then acquisition=option('radius',30) end
+ local route=p.route or {}
+ local on_route=option('navigation',false) and #route>0 and (route[point] or p.loop_route or p.reverse_route)
+ local combat_setting=option('combat','off')
+ if combat_setting~='off' and not option('manual_combat',false) then combat_setting='auto' end
+ local function attack_range(rule,mode)
+  if (rule.range or 0)>0 then return rule.range end
+  return mode=='melee' and option('melee_range',2) or option('radius',30)
+ end
+ local approach_candidate
+ local function eligible(t,rule)
+  if not monster_attacks(rule,p) then return false end
+  local mode=rule.weapon==0 and 'magic' or rule.combat or combat_setting
+  local h=spell_health[t.id]
+  if not on_route and (mode=='auto' or mode=='missile') and h and h.rejected_distance and s.time<h.recheck_range
+   and t.distance>=h.rejected_distance-.25 then return false end
+  if not on_route and t.distance>attack_range(rule,'missile') then
+   if mode=='missile' then return false end
+   if mode=='auto' then
+    -- Resolve automatic weapon choice after reachable targets and corpse work.
+    if not approach_candidate or rule.priority>approach_candidate.rule.priority
+     or (rule.priority==approach_candidate.rule.priority and nearer(t,approach_candidate.target)) then
+     approach_candidate={target=t,rule=rule}
+    end
+    return false
+   end
+  end
+  return true
+ end
  local ring_count=0;local target_candidates={};local nearby_monsters=false
  for _,t in ipairs(s.targets or {}) do
   if t.distance<=acquisition and t.line_of_sight~=false and (t.health_fraction or 1)>0 then nearby_monsters=true;break end
  end
  for _,t in ipairs(s.targets or {}) do if not monster_blacklist[t.id] and t.line_of_sight~=false and t.distance>=option('minimum_range',0) and t.distance<=acquisition and not contains(p.ignore_monsters,t.name) then
   local rule=monster_rule(t,p)
-  local attacks=monster_attacks(rule,p)
+  local attacks=eligible(t,rule)
   if attacks and ring_enabled(rule) and t.distance<option('ring_range',5) then ring_count=ring_count+1 end
   local rank=rule.priority or 0
   if attacks then target_candidates[#target_candidates+1]={target=t,rule=rule,rank=rank} end
@@ -1728,7 +1769,7 @@ local function tick(s,p)
  if not target and s.nearest~=0 and s.targets==nil then
   local candidate={id=s.nearest,name='',distance=s.distance or 0,resists={}}
   local rule=monster_rule(candidate,p)
-  if monster_attacks(rule,p) then target=candidate;target_rule=rule end
+  if eligible(candidate,rule) then target=candidate;target_rule=rule end
  end
  targeting_status=string.format('Search: %.0f m. %s',acquisition,target and string.format('%s: %.1f m.',target.name or 'Target',target.distance) or 'No visible eligible monsters.')
  if not option('approach',true) then targeting_status=targeting_status..' Pursuit is off; only attacks within range.' end
@@ -2618,8 +2659,7 @@ local function tick(s,p)
  else other_job=nil end
  local craft=craft_work(s,p,'normal');if craft then return craft end
  local fellow=fellowship_work(s,p);if fellow then return fellow end
- local combat=activity_ready('combat') and option('combat','off') or 'off'
- if combat~='off' and not option('manual_combat',false) then combat='auto' end
+ local combat=activity_ready('combat') and combat_setting or 'off'
  activity='pets'
  if option('summon_pets',false) then
   for _,v in ipairs(inventory) do
@@ -2692,6 +2732,11 @@ local function tick(s,p)
   local receipt=action_receipt(s,'use',corpse_pending.serial,corpse_pending.started,corpse_pending.id)
   if s.container==corpse_pending.id then item_attempts['corpse'..corpse_pending.id]=0;corpse_pending=nil
   elseif s.time<corpse_pending.deadline and not (receipt and (receipt.error or 0)~=0) then return loot_progress('Approaching / waiting for corpse to open')
+  elseif receipt and receipt.error==0x1d then
+   local key='corpse'..corpse_pending.id
+   item_attempts[key]=math.max(0,(item_attempts[key] or 1)-1)
+   corpses[corpse_pending.id]=s.time+.75
+   corpse_pending=nil
   else
    local key='corpse'..corpse_pending.id;local blacklisted=(item_attempts[key] or 0)>=option('corpse_attempts',30)
    corpses[corpse_pending.id]=s.time+(blacklisted and option('corpse_blacklist_seconds',200) or 10)
@@ -2702,39 +2747,60 @@ local function tick(s,p)
  -- A corpse can close/disappear with its final transfer. Confirm ownership
  -- independently of the UI container, before moving on or applying loot jobs.
    if loot_pending then
-    local present=false;for _,v in ipairs(s.contents or {}) do if s.container==loot_pending.container and v.id==loot_pending.id and v.count>=loot_pending.count then present=true end end
+    local source;for _,v in ipairs(s.contents or {}) do if s.container==loot_pending.container and v.id==loot_pending.id then source=v;break end end
+    local present=source and source.count>=loot_pending.count
     local owned,received_exact=0,false
     for _,v in ipairs(inventory) do
      if v.wcid==loot_pending.wcid then owned=owned+(v.count or 1) end
      if v.id==loot_pending.id and (v.count or 1)>=loot_pending.amount then received_exact=true end
     end
+    local key='pickup'..loot_pending.id
     if not received_exact and (present or owned<loot_pending.expected) then
-     if s.time<loot_pending.expires then return loot_progress('Waiting for loot transfer') end
-     -- A timeout does not prove full packs or lost ownership. Release this
-     -- corpse so combat/recovery continue; retry it later without flooding Use.
-     return failed('Loot transfer unconfirmed; leaving items untouched')
+     local rejected=(s.inventory_failure_serial or 0)>loot_pending.failure_serial and s.inventory_failure_item==loot_pending.id
+     -- ACE often sends TooBusy separately, followed by SaveFailed(item, 0).
+     -- Recheck ownership during the retry interval, then re-evaluate the rule and amount.
+     if rejected then loot_pending.rejection=s.inventory_failure_error or 0 end
+     if not loot_pending.retry_at then
+      if not rejected and s.time<loot_pending.expires then return loot_progress('Waiting for loot transfer') end
+      loot_pending.retry_at=s.time+.75
+     end
+     if s.time<loot_pending.retry_at then return loot_progress('Waiting to retry loot pickup') end
+     local same=source and source.count==loot_pending.count and source.wcid==loot_pending.wcid
+     -- A late split can still succeed on the same GUID. Reopen and read fresh
+     -- contents before requesting another partial stack without a rejection.
+     local refresh=not same or (loot_pending.amount<loot_pending.count and not loot_pending.rejection)
+     local defer=(item_attempts[key] or 0)>=3 or (loot_pending.rejection and loot_pending.rejection~=0 and loot_pending.rejection~=0x1d)
+     if defer then until_time[key]=s.time+30;item_attempts[key]=nil end
+     local previous=loot_pending.container
+     loot_pending=nil;loot_scan={}
+     if refresh then
+      corpses[previous]=s.time+(defer and 30 or 1)
+      if s.container==previous then return {action='close_corpse',continue_work=true,status='Loot transfer changed; rechecking corpse later'} end
+     end
+    else
+     item_attempts[key]=nil
+     if loot_pending.rule then
+      confirmed_loot_notice=string.format('Picked up %.0f x %s (rule "%s", %s).',loot_pending.amount,loot_pending.name,loot_pending.rule,loot_pending.after or 'keep')
+      loot_pending.rule=nil
+     end
+     if loot_pending.after and loot_pending.after~='keep' then
+      if #loot_jobs>=128 then return failed('Too many pending loot actions; visit a vendor') end
+      local received
+      for _,i in ipairs(inventory) do if i.wcid==loot_pending.wcid and not loot_pending.before[i.id] and (i.count or 1)==loot_pending.amount then
+       if received then return failed('Loot transfer has multiple matching new items; review inventory before continuing') end
+       received=i
+      end end
+      if not received then return failed('Loot was merged or changed; review inventory before applying a destructive rule') end
+      if loot_pending.after=='mana_source' then
+       mana_sources[received.id]={count=loot_pending.amount,wcid=loot_pending.wcid}
+      else loot_jobs[#loot_jobs+1]={id=received.id,count=loot_pending.amount,action=loot_pending.after,wcid=loot_pending.wcid} end
+     end
+     if s.container~=loot_pending.container then
+      corpses[loot_pending.container]=s.time+30
+      if loot_pending.empties then completed_corpse=loot_pending.container end
+     end
+     loot_pending=nil
     end
-    if loot_pending.rule then
-     confirmed_loot_notice=string.format('Picked up %.0f x %s (rule "%s", %s).',loot_pending.amount,loot_pending.name,loot_pending.rule,loot_pending.after or 'keep')
-     loot_pending.rule=nil
-    end
-    if loot_pending.after and loot_pending.after~='keep' then
-     if #loot_jobs>=128 then return failed('Too many pending loot actions; visit a vendor') end
-     local received
-     for _,i in ipairs(inventory) do if i.wcid==loot_pending.wcid and not loot_pending.before[i.id] and (i.count or 1)==loot_pending.amount then
-      if received then return failed('Loot transfer has multiple matching new items; review inventory before continuing') end
-      received=i
-     end end
-     if not received then return failed('Loot was merged or changed; review inventory before applying a destructive rule') end
-     if loot_pending.after=='mana_source' then
-      mana_sources[received.id]={count=loot_pending.amount,wcid=loot_pending.wcid}
-     else loot_jobs[#loot_jobs+1]={id=received.id,count=loot_pending.amount,action=loot_pending.after,wcid=loot_pending.wcid} end
-    end
-    if s.container~=loot_pending.container then
-     corpses[loot_pending.container]=s.time+30
-     if loot_pending.empties then completed_corpse=loot_pending.container end
-    end
-    loot_pending=nil
    end
  local need_mana_source=mana_source_demand(inventory,p,option)>0
  if not loot_full and option('looting',false) and (#(p.loot_rules or {})>0 or option('read_unknown_scrolls',false) or option('fill_mana_stones',false)) then
@@ -2783,6 +2849,7 @@ local function tick(s,p)
       item_rules={{action='keep',name=item.name,name_mode='exact',keep_up_to=p.mana_stone_loot_count,count_by_name=true,label='Mana stone supplies'}};break
      end end
     end
+    if s.time<(until_time['pickup'..item.id] or 0) then item_rules={};resolved=false end
     while loot_scan.rule<=#item_rules do
      local rule=item_rules[loot_scan.rule]
      if not workavailable() then return progress() end
@@ -2809,8 +2876,7 @@ local function tick(s,p)
       local amount=rule.keep_up_to and rule.keep_up_to>0 and math.min(item.count,math.max(0,rule.keep_up_to-have)) or item.count
       if rule.action~='skip' and amount>0 then
        local before={};for _,v in ipairs(inventory) do before[v.id]=true end
-       loot_scan={};loot_pending={container=s.container,empties=#contents==1 and amount==item.count,before=before,amount=amount,id=item.id,count=item.count,wcid=item.wcid,expected=(owned[item.wcid] or 0)+amount,expires=s.time+10,after=rule.action,name=item.name or 'Item',rule=rule.label or 'Matching rule'}
-       return {action='loot',item=item.id,amount=amount,continue_work=true,status='Looting '..item.name..' ('..(rule.label or 'matching rule')..')'}
+       return request_pickup(s,item,amount,owned,before,rule.action,rule.label or 'Matching rule','Looting '..item.name..' ('..(rule.label or 'matching rule')..')')
       end
       break
      end
@@ -2831,14 +2897,17 @@ local function tick(s,p)
       end
      elseif mana_source_candidate(item,p,option) then
       local before={};for _,v in ipairs(inventory) do before[v.id]=true end
-      loot_scan={};loot_pending={container=s.container,empties=#contents==1 and item.count==1,before=before,amount=1,id=item.id,count=item.count,wcid=item.wcid,expected=(owned[item.wcid] or 0)+1,expires=s.time+10,after='mana_source'}
-      return {action='loot',item=item.id,amount=1,continue_work=true,status='Looting '..item.name..' to fill an empty mana stone'}
+      return request_pickup(s,item,1,owned,before,'mana_source',nil,'Looting '..item.name..' to fill an empty mana stone')
      end
     end
     loot_scan.item=loot_scan.item+1;loot_scan.rule=1
    end
    local waiting=loot_scan.waiting;loot_scan={}
    if waiting then return result(nil,'Waiting for loot appraisal') end
+   for _,item in ipairs(contents) do
+    local retry=until_time['pickup'..item.id]
+    if retry and retry>s.time then corpses[s.container]=retry;return {action='close_corpse',continue_work=true,status='Returning later for rejected loot'} end
+   end
    corpses[s.container]=s.time+300;return {action='close_corpse',completed=true,continue_work=true,status='Loot complete'}
   end
  end
@@ -2971,8 +3040,8 @@ local function tick(s,p)
  -- must wait until all corpses are emptied. Nearby living monsters retain
  -- combat stance even when combat is disabled or loot priority is enabled.
  local idle=idle_stance();if idle then return idle end
- if option('loot_priority',false) then local action=loot();if action then return action end end
- if option('nav_priority',false) then
+ if option('loot_priority',false) or (not target and approach_candidate) then local action=loot();if action then return action end end
+ if option('nav_priority',false) and (on_route or (p.follow_name or '')~='' or (p.follow_id or 0)~=0) then
   -- Keep clear-area looting from being starved by a continuous route, without
   -- implicitly enabling LootPriorityBoost while a combat target is present.
   if not target or combat=='off' then local action=loot();if action then return action end end
@@ -3001,7 +3070,7 @@ local function tick(s,p)
   local candidate={};for k,value in pairs(v) do candidate[k]=value end
   candidate.item=item;candidate.source_kind=kind;best_debuffs[v.category]=candidate
  end
- if target and combat~='off' then
+ if (target or approach_candidate) and combat~='off' then
  for _,v in ipairs(spell_groups.offense) do
   if element(v)~=0 and not v.beneficial and v.category~=636 and v.category~=637 and v.category~=638 then
    local key=tostring(v.category)..':'..tostring(band(v.flags,0x1000))
@@ -3363,11 +3432,20 @@ local function tick(s,p)
   end
   debuff_scan=nil
  else debuff_scan=nil end
+ local plan
+ if not target and approach_candidate and combat~='off' then
+  local candidate=approach_candidate
+  plan=combat_plan(candidate.target,candidate.rule)
+  if plan.mode=='melee' or plan.mode=='magic' then
+   target=candidate.target;target_rule=candidate.rule
+  end
+ end
  if target and combat~='off' then
-  locked_target=target.id
+  -- A distant automatic loadout being considered for pursuit has no live attack to cancel.
+  if not plan then locked_target=target.id end
   if not target.identified and not target.appraisal_recent and s.targets and s.time>=(until_time['id'..target.id] or 0) then
    until_time['id'..target.id]=s.time+30;return {action='identify',item=target.id,status='Assessing '..target.name,continue_work=true} end
-  local plan=combat_plan(target,target_rule)
+  plan=plan or combat_plan(target,target_rule)
   if plan.craft_ammo and monster_damage_attacks(target_rule or {},p) and activity_ready('crafting') then
    return {action='craft',activity='crafting',phase='ammunition',recipe=plan.craft_ammo.recipe,
     status='Preparing '..plan.craft_ammo.name,continue_work=true}
@@ -3378,6 +3456,9 @@ local function tick(s,p)
   for _,category in ipairs(categories) do
    local spell=best_debuffs[category]
    if not spell then if not option('debuff_fallback',false) then return failed(plan.missing_attack and monster_damage_attacks(target_rule or {},p) and missing_attack_status or 'Required debuff unavailable; check learned spells, components, debuff items and activation requirements') end
+   elseif not on_route and mode=='missile' and spell.source_kind=='proc' and band(spell.item.type,1)~=0
+    and target.distance>option('melee_range',2) then
+    -- A melee proc cannot be applied from this firing position. Use the ranged attack.
    elseif (confirmed[category] or 0)<spell.power then
     local key='debuff'..target.id..':'..category
     if (item_attempts[key] or 0)>=3 then if not option('debuff_fallback',false) then return failed('Debuff resisted or unconfirmed after three attempts') end
@@ -3470,10 +3551,9 @@ local function tick(s,p)
    if not plan.ammo then return failed('No usable ammunition for this weapon') end
    if not plan.ammo.equipped then return equip(plan.ammo) end
   end
-  local range=mode=='melee' and option('melee_range',2) or option('radius',30)
-  if target_rule and (target_rule.range or 0)>0 then range=target_rule.range end
+  local range=attack_range(target_rule,mode)
   if target.distance>range then
-   if target.distance<=option('approach_range',60) and option('approach',true) and target.cell then
+   if (on_route or mode~='missile') and target.distance<=option('approach_range',60) and option('approach',true) and target.cell then
     return {action='move',target=target.id,cell=target.cell,x=target.x,y=target.y,z=target.z,status='Approaching '..(target.name or 'target')}
    end
   elseif mode=='magic' and attack then

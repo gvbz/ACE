@@ -68,6 +68,43 @@ bool FACEUCMIdleWorkloadTest::RunTest(const FString&)
     TestTrue(TEXT("An unrelated inventory row is reused"),FindRow(Assessed,3001)==Unchanged);
     TestFalse(TEXT("The updated row is replaced rather than mutating an earlier snapshot"),FindRow(Assessed,3000)==Original);
     TestEqual(TEXT("Earlier snapshots keep their original values"),Original->AsObject()->GetNumberField(TEXT("mana")),0.);
+    FACEPluginVM Probe;
+    if(!TestTrue(TEXT("Snapshot probe loads"),Probe.Load(TEXT(R"(local book, pack, previousItem
+        return function(s,p)
+            local sameBook, samePack = book == s.spells, pack == s.inventory
+            book, pack = s.spells, s.inventory
+            local mana, unchanged
+            for _, item in ipairs(pack) do
+                if item.id == 3000 then mana=item.mana end
+                if item.id == 3001 then unchanged=item end
+            end
+            local sameItem=previousItem==unchanged
+            previousItem=unchanged
+            return {same_book=sameBook, same_pack=samePack, same_item=sameItem, mana=mana, rules=#(p.loot_rules or {})}
+        end)"),Error)))return false;
+    for(const auto& Input:{Initial,Assessed,Assessed})
+        if(!Probe.Step(Input,P->Profile,Output,Error,true)){AddError(Error);return false;}
+    TestTrue(TEXT("An unchanged book and pack are reused in the stock VM"),Output->GetBoolField(TEXT("same_book")) && Output->GetBoolField(TEXT("same_pack")));
+    TestEqual(TEXT("Updated item mana reaches the Lua policy"),Output->GetNumberField(TEXT("mana")),700.);
+    if(!Probe.Step(Initial,P->Profile,Output,Error,true)){AddError(Error);return false;}
+    TestTrue(TEXT("A changed inventory refreshes independently of spells"),Output->GetBoolField(TEXT("same_book")) && !Output->GetBoolField(TEXT("same_pack")));
+    TestTrue(TEXT("One appraisal keeps unrelated Lua inventory rows"),Output->GetBoolField(TEXT("same_item")));
+    TestEqual(TEXT("Inventory replacements reach Lua on that decision"),Output->GetNumberField(TEXT("mana")),0.);
+    if(!Probe.Step(Initial,P->Profile,Output,Error)){AddError(Error);return false;}
+    TestTrue(TEXT("Public plugin decisions still get fresh mutable tables"),!Output->GetBoolField(TEXT("same_book")) && !Output->GetBoolField(TEXT("same_pack")));
+    auto ProbeProfile=MakeShared<FJsonObject>();
+    for(int32 RuleCount:{2,1,0})
+    {
+        TArray<TSharedPtr<FJsonValue>> ChangedRules;
+        for(int32 I=0;I<RuleCount;++I)ChangedRules.Add(MakeShared<FJsonValueNumber>(I));
+        ProbeProfile->SetArrayField(TEXT("loot_rules"),MoveTemp(ChangedRules));
+        if(!Probe.Step(Assessed,ProbeProfile,Output,Error,true)){AddError(Error);return false;}
+        TestEqual(TEXT("Replacing or clearing rules takes effect on the next decision"),int32(Output->GetNumberField(TEXT("rules"))),RuleCount);
+    }
+    const auto Recharge=H->Snapshot(true);
+    TestTrue(TEXT("Stopped equipment recharge sees current inventory, action receipts and cooldowns"),
+        Recharge->HasField(TEXT("cooldowns")) && Recharge->HasField(TEXT("action_events")) && FindRow(Recharge,3000)==FindRow(Assessed,3000));
+    TestFalse(TEXT("Stopped recharge does not build a combat snapshot"),Recharge->HasField(TEXT("targets")) || Recharge->HasField(TEXT("spells")));
     FACEAppraisalInfo Monster;Monster.ObjectGuid=2000;Monster.bSuccess=true;H->ObserveAppraisal(Monster);
     TestTrue(TEXT("Appraising a creature does not rebuild inventory"),FindRow(H->Snapshot(),3001)==Unchanged);
     S->WorldObjects[3001].WielderId=Player.Guid;S->WorldObjects[3001].CurrentWieldedLocation=4;S->WorldObjects[3001].ContainerId=0;++S->InventoryDataRevision;
@@ -91,7 +128,7 @@ bool FACEUCMIdleWorkloadTest::RunTest(const FString&)
             // The background scanner receives a reply about once per second.
             if(Appraise&&I%2==0)H->ObserveAppraisal(H->Appraisals.FindChecked(3000+I));
             const double Start=FPlatformTime::Seconds();const auto Input=H->Snapshot();const double Marshalled=FPlatformTime::Seconds();
-            if(!VM.Step(Input,P->Profile,Output,Error)){AddError(Error);return false;}
+            if(!VM.Step(Input,P->Profile,Output,Error,true)){AddError(Error);return false;}
             const double End=FPlatformTime::Seconds();
             if(I>=2){Samples.Add((End-Start)*1000);SnapshotMs+=(Marshalled-Start)*1000;LuaMs+=(End-Marshalled)*1000;}
             if(!TestTrue(TEXT("Combat-off idle UCM emits no action"),!Output||!Output->HasField(TEXT("action"))))return false;
@@ -116,6 +153,8 @@ bool FACEUCMIdleWorkloadTest::RunTest(const FString&)
     }
     LargeProfile->SetArrayField(TEXT("loot_rules"),Rules);
     const auto LargeInput=H->Snapshot();FACEPluginVM LargeVM;
+    if(!Probe.Step(LargeInput,P->Profile,Output,Error,true)){AddError(Error);return false;}
+    TestFalse(TEXT("Learning spells replaces the VM's book on the next decision"),Output->GetBoolField(TEXT("same_book")));
     TestTrue(TEXT("Combined workload loads"),LargeVM.Load(Source,Error));
     double Work=0;
     for(int32 I=0;I<120;++I)
@@ -123,7 +162,7 @@ bool FACEUCMIdleWorkloadTest::RunTest(const FString&)
         LargeInput->SetNumberField(TEXT("time"),100+I*.5);
         LargeInput->SetBoolField(TEXT("busy"),I%2!=0);
         const double Start=FPlatformTime::Seconds();
-        if(!LargeVM.Step(LargeInput,LargeProfile,Output,Error))
+        if(!LargeVM.Step(LargeInput,LargeProfile,Output,Error,true))
         {AddError(FString::Printf(TEXT("Combined workload tick %d (%d spells, %d items, %d rules): %s"),I,S->KnownSpells.Num(),LargeInput->GetArrayField(TEXT("inventory")).Num(),Rules.Num(),*Error));return false;}
         Work+=FPlatformTime::Seconds()-Start;
     }
@@ -134,7 +173,7 @@ bool FACEUCMIdleWorkloadTest::RunTest(const FString&)
     {
         auto ImportedProfile=MakeShared<FJsonObject>(*P->Profile);ImportedProfile->SetArrayField(TEXT("loot_rules"),Imported->GetArrayField(TEXT("loot_rules")));
         FACEPluginVM ImportedVM;TestTrue(TEXT("Imported combined workload loads"),ImportedVM.Load(Source,Error));
-        for(int32 I=0;I<20;++I)if(!ImportedVM.Step(LargeInput,ImportedProfile,Output,Error))
+        for(int32 I=0;I<20;++I)if(!ImportedVM.Step(LargeInput,ImportedProfile,Output,Error,true))
         {AddError(TEXT("Native snapshot plus imported LootSnob: ")+Error);return false;}
         AddInfo(FString::Printf(TEXT("Native snapshot plus imported LootSnob: %.2f MiB peak"),ImportedVM.GetPeakMemoryUsage()/1048576.));
     }

@@ -264,7 +264,8 @@ void UACEVRComponent::FireCrossbow()
 		Pulse(Settings->bLeftHanded, .6f);
 		UE_LOG(LogTemp, Log, TEXT("ACE VR crossbow sent: weapon=0x%08X ammo=0x%08X"), Weapon.Guid, Ammo.Guid);
 	}
-	else SetCastFeedback(TEXT("Missile could not be sent. Check the VR server connection."));
+	else SetCastFeedback(Client->GetSession() && Client->GetSession()->IsMissileMovementBlocked()
+		? TEXT("Stand still and land before shooting.") : TEXT("Missile could not be sent. Check the VR server connection."));
 }
 
 void UACEVRComponent::GetThrownAim(FVector& Origin, FVector& Direction) const
@@ -293,7 +294,8 @@ void UACEVRComponent::FireThrownMissile()
 		UE_LOG(LogTemp, Log, TEXT("ACE VR missile sent: weapon=0x%08X ammo=0x%08X style=0x%X instant=1"),
 			Weapon.Guid,EquippedAmmo().Guid,MissileStyle());
 	}
-	else SetCastFeedback(TEXT("Missile could not be sent. Check the VR server connection."));
+	else SetCastFeedback(Client->GetSession() && Client->GetSession()->IsMissileMovementBlocked()
+		? TEXT("Stand still and land before shooting.") : TEXT("Missile could not be sent. Check the VR server connection."));
 }
 
 FVector UACEVRComponent::BowDrawDirection() const
@@ -334,7 +336,8 @@ void UACEVRComponent::ReleaseArrow()
 		Pulse(Settings->bLeftHanded, .6f); SetCastFeedback(TEXT("Missile released."));
 		UE_LOG(LogTemp, Log, TEXT("ACE VR missile sent: weapon=0x%08X ammo=0x%08X draw=%.2f hold=%.2f"), Weapon.Guid, EquippedAmmo().Guid, Fraction, BowHoldTime);
 	}
-	else SetCastFeedback(TEXT("Missile could not be sent. Check the VR server connection."));
+	else SetCastFeedback(Client->GetSession() && Client->GetSession()->IsMissileMovementBlocked()
+		? TEXT("Stand still and land before shooting.") : TEXT("Missile could not be sent. Check the VR server connection."));
 }
 
 void UACEVRComponent::UpdateCombat(float Dt)

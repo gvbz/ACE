@@ -29,9 +29,31 @@ public:
         return Object.Position.ToUnrealLocation();
     }
 
-    bool Clear(const FVector& Start, const FVector& End, float Clearance = 0.f) const
+    bool Clear(const FVector& Start, const FVector& End, float Clearance = 0.f, bool TargetThroughWater = false) const
     {
-        if (Clearance > 0.f
+        if (TargetThroughWater)
+        {
+            if (ACEWaterSight::BlockedFromWithinWater(World, Start, End, Clearance)) return false;
+            FHitResult Hit;
+            const auto Blocked = [&](const FCollisionQueryParams& Query)
+            {
+                return Clearance > 0.f
+                    ? World.SweepSingleByChannel(Hit, Start, End, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(Clearance), Query)
+                    : World.LineTraceSingleByChannel(Hit, Start, End, ECC_Pawn, Query);
+            };
+            if (Blocked(Params))
+            {
+                FCollisionQueryParams Query(Params);
+                do
+                {
+                    double BedDistance;
+                    if (!ACEWaterSight::RefineTerrainHit(World, Hit, Start, End, Clearance, BedDistance)
+                        || BedDistance <= FVector::Distance(Start, End)) return false;
+                    Query.AddIgnoredComponent(Hit.GetComponent());
+                } while (Blocked(Query));
+            }
+        }
+        else if (Clearance > 0.f
             ? World.SweepTestByChannel(Start, End, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(Clearance), Params)
             : World.LineTraceTestByChannel(Start, End, ECC_Pawn, Params)) return false;
         // Loaded cells can have geometry before movement PhysicsBSP is active.

@@ -199,7 +199,10 @@ bool FACEItemToolsTest::RunTest(const FString&)
             H->ExecuteItemTools(*P,Merge);
             TestEqual(TEXT("Bulk merge uses the retail StackableMerge action"),CountAction(ACEGameAction::StackableMerge),1);
             TestEqual(TEXT("Bulk merge does not predict the resulting count"),S.WorldObjects[19].StackSize,90);
-            S.CachedC2SPackets.Reset();S.WorldObjects[19].StackSize=99;H->ExecuteItemTools(*P,Merge);
+            FACEBinaryWriter Receipt;Receipt.WriteUInt32(ACEOpcode::SetStackSize);Receipt.WriteUInt8(1);
+            Receipt.WriteInt32(19);Receipt.WriteInt32(99);Receipt.WriteInt32(0);
+            S.HandleGameMessage(Receipt.GetData());
+            S.CachedC2SPackets.Reset();H->ExecuteItemTools(*P,Merge);
             TestEqual(TEXT("Stale capacity prevents a bulk merge"),CountAction(ACEGameAction::StackableMerge),0);
             S.WorldObjects[19].StackSize=90;S.WorldObjects[19].WeenieClassId=101;H->ExecuteItemTools(*P,Merge);
             TestEqual(TEXT("Same name with different WCID cannot merge"),CountAction(ACEGameAction::StackableMerge),0);

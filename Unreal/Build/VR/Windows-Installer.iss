@@ -63,6 +63,20 @@ WelcomeLabel2=This installs the AC:Unreal desktop client and AC:VR for SteamVR.%
 [Code]
 #include "Windows-Prerequisites.iss"
 
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ProjectDir: String;
+begin
+  ProjectDir := ExpandConstant('{app}\ACUnreal');
+  if (CurStep = ssInstall) and FileExists(ExpandConstant('{app}\ACUnreal.exe'))
+     and not FileExists(ProjectDir + '\catalog-client.txt') then begin
+    ForceDirectories(ProjectDir);
+    SaveStringToFile(ProjectDir + '\legacy-client-install.txt', 'upgrade', False);
+  end;
+  if CurStep = ssPostInstall then
+    SaveStringToFile(ProjectDir + '\catalog-client.txt', '1', False);
+end;
+
 function IsPortableUpdate(): Boolean;
 begin
   Result := ExpandConstant('{param:ACPORTABLE|0}') = '1';

@@ -52,7 +52,12 @@ public class ACEClient : ModuleRules
 			PrivateDependencyModuleNames.Add("UnrealEd");
 		}
 		RuntimeDependencies.Add("$(PluginDir)/Docs/UI/Resolved/*.json", StagedFileType.NonUFS);
-        RuntimeDependencies.Add("$(PluginDir)/ClientMods/...", StagedFileType.UFS);
+        // These are the shared policy, recipe and routing APIs. Optional plugin manifests and assets are downloaded.
+        foreach (string file in new[] { "api.json", "legacy-plugins.xml", "LICENSE-Lua.txt", "LICENSE-VTClassic.txt",
+            "loot_rules.lua", "ucm/main.lua", "ucm/default.json", "ucm/monster-elements.json",
+            "itemtools/main.lua", "itemtools/default.json", "autocraft/catalog.json", "autocraft/NOTICE.txt",
+            "autocraft/LICENSE", "waypoint/MapRegions.xml", "waypoint/LICENSE_GOARROW.txt" })
+            RuntimeDependencies.Add("$(PluginDir)/ClientMods/" + file, StagedFileType.UFS);
         RuntimeDependencies.Add("$(PluginDir)/Docs/Plugins/...", StagedFileType.NonUFS);
         RuntimeDependencies.Add("$(PluginDir)/Data/Personal/...", StagedFileType.NonUFS); // personal: far-windows
 	}

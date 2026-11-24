@@ -226,7 +226,6 @@ void UACELoginWidget::EnsureDefaultLayout()
 		auto* Button=ActionButton(Item.Key,Item.Value); Header->AddChildToWrapBox(Button); NavigationButtons.Add(Button);
 	}
 	UpdateNavButton=ActionButton(TEXT("Updates"),TEXT("updates")); Header->AddChildToWrapBox(UpdateNavButton); NavigationButtons.Add(UpdateNavButton);
-	auto* PluginsButton=ActionButton(TEXT("Plugins"),TEXT("plugins")); Header->AddChildToWrapBox(PluginsButton); NavigationButtons.Add(PluginsButton);
 	Pages = WidgetTree->ConstructWidget<UWidgetSwitcher>(); Root->AddChildToVerticalBox(Pages)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 	auto Card = [&](UVerticalBox*& Content) -> UBorder*
 	{
@@ -369,7 +368,9 @@ void UACELoginWidget::EnsureDefaultLayout()
 	auto* PluginPanel=WidgetTree->ConstructWidget<UACEPluginPanel>();
 	Pages->AddChild(PluginPanel);
 	UVerticalBox* Accounts; Pages->AddChild(Card(Accounts));
-	AddLine(Accounts,Label(TEXT("Manage accounts"),30));
+	auto* AccountHeading=WidgetTree->ConstructWidget<UHorizontalBox>(); AddLine(Accounts,AccountHeading);
+	AccountHeading->AddChildToHorizontalBox(Label(TEXT("Manage accounts"),30))->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	AccountHeading->AddChildToHorizontalBox(ActionButton(TEXT("Plugin Manager"),TEXT("plugins")))->SetVerticalAlignment(VAlign_Center);
 	AddLine(Accounts,Label(TEXT("Drag the grip beside an account to reorder. Use New account to add another login, even with the same username."),18,true));
 	ManagedAccountList=WidgetTree->ConstructWidget<UScrollBox>(); ManagedAccountList->SetScrollbarThickness(FVector2D(8,8));
 	auto* ManagedSlot=Accounts->AddChildToVerticalBox(ManagedAccountList); ManagedSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill)); ManagedSlot->SetPadding(FMargin(0,0,0,12));
@@ -510,8 +511,8 @@ void UACELoginWidget::NativeTick(const FGeometry& Geometry, float Dt)
 	if(StyledPage!=Pages->GetActiveWidgetIndex())
 	{
 		StyledPage=Pages->GetActiveWidgetIndex();
-		const int32 PageForTab[]={0,6,2,3,4,5};
-		for(int32 I=0;I<NavigationButtons.Num();++I) ButtonStyle(NavigationButtons[I],PageForTab[I]==StyledPage);
+		const int32 PageForTab[]={0,6,2,3,4};
+		for(int32 I=0;I<NavigationButtons.Num();++I) ButtonStyle(NavigationButtons[I],PageForTab[I]==(StyledPage==5?6:StyledPage));
 	}
 	// Scale the whole layout together, allowing a narrower stacked Play page.
 	// Do not impose a minimum scale that would push controls off small screens.

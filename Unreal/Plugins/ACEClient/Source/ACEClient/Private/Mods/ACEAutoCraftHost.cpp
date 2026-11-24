@@ -1,5 +1,6 @@
 #include "Mods/ACEAutoCraft.h"
 #include "Mods/ACEPluginSubsystem.h"
+#include "Interfaces/IPluginManager.h"
 #include "Mods/ACEItemTools.h"
 #include "ACEPlayerController.h"
 #include "Engine/GameInstance.h"
@@ -182,7 +183,8 @@ void UACEPluginSubsystem::LoadAutoCraftCatalog(FACEAutoCraftState& A)
 {
     A.Loaded=true;A.CatalogServer=GetGameInstance()->GetSubsystem<UACEClientSubsystem>()->GetServerName();
     if(auto Tool=Find(TEXT("autocraft")))A.Catalog.Load(Tool->Directory/TEXT("catalog.json"));
-    else {A.Catalog.Error=TEXT("Bundled crafting catalog is unavailable.");return;}
+    else if(const auto Module=IPluginManager::Get().FindPlugin(TEXT("ACEClient")))
+        A.Catalog.Load(Module->GetBaseDir()/TEXT("ClientMods/autocraft/catalog.json"));
     if(!A.CatalogServer.IsEmpty())
     {
         const FString Path=UserDirectory()/TEXT("Crafting")/(FMD5::HashAnsiString(*A.CatalogServer)+TEXT(".json"));
@@ -388,7 +390,7 @@ void UACEPluginSubsystem::ExtendUCMCraftSnapshot(const TSharedPtr<FJsonObject>& 
 
 void UACEPluginSubsystem::ExecuteUCMCraft(FACEClientPlugin& P,const TSharedPtr<FJsonObject>& I)
 {
-    if(P.Id!=TEXT("ucm")||!P.Permissions.Contains(TEXT("inventory")))return;
+    if(!P.IsPolicy()||!P.Running||PolicyPlugin().Get()!=&P||!P.Permissions.Contains(TEXT("inventory")))return;
     if(auto Tool=Find(TEXT("autocraft"));Tool&&Tool->Running)return;
     if(UCMCraft&&UCMCraft->Selected==INDEX_NONE)UCMCraft->NextRefresh=0;
     auto Snapshot=MakeShared<FJsonObject>();ExtendUCMCraftSnapshot(Snapshot);if(!UCMCraft)return;auto& A=*UCMCraft;
@@ -568,7 +570,7 @@ void UACEPluginSubsystem::TickAutoCraft(FACEClientPlugin* Policy)
         if(Largest.Guid)for(const auto& Pair:S->GetWorldObjects())
         {
             const auto& I=Pair.Value;if(I.Guid==Exclude||!Eligible(C,I,false))continue;
-            const int32 Amount=FMath::Min(Needed-Largest.StackSize,ACEInventoryRules::MergeAmount(I,Largest));
+            const int32 Amount=FMath::Min(Needed-Largest.StackSize,S->AvailableMergeAmount(I,Largest));
             if(Amount>0){Prepare(I,Largest,Amount,0);return;}
         }
         Finish(TEXT("Recipe needs two eligible item stacks with enough units. Check protected items and stack limits."));return;

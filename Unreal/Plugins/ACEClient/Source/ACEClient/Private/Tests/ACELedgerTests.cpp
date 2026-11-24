@@ -195,17 +195,19 @@ bool FACELedgerTest::RunTest(const FString&)
         H->SavePluginWindowPosition(TEXT("huntledger"),FVector2D(80,380));Dock->Windows[TEXT("huntledger")].Position=FVector2D(80,380);Dock->Toggle(TEXT("huntledger"));
         Dock->Refresh();
         const FVector2D Size(1280,800);FWidgetRenderer Renderer(false,true);auto* Target=FWidgetRenderer::CreateTargetFor(Size,TF_Bilinear,true);
-        for(int32 Pass=0;Pass<6;++Pass){++GFrameCounter;Renderer.DrawWidget(Target,Dock,Size,0);FlushRenderingCommands();}
-        TFunction<void(TSharedRef<SWidget>)> InspectText=[&](TSharedRef<SWidget> W)
+        auto Help=SNew(SACEPluginText).AutoWrapText(true).Font(FACEPluginStyle::NativeFont("Regular",15))
+            .Text(FText::FromString(TEXT("Choose activities and profiles. Changes save automatically.")));
+        auto HelpBox=SNew(SBox).HAlign(HAlign_Fill)[Help];
+        auto HelpWidth=SNew(SVerticalBox)+SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)[HelpBox];
+        auto MeasureHelp=[&](float Width)
         {
-            if(W->GetType()==FName(TEXT("SACEPluginText")))
-            {
-                const auto T=StaticCastSharedRef<SACEPluginText>(W);
-                if(T->GetText().ToString().Contains(TEXT("Choose activities")))
-                    TestTrue(TEXT("Wrapped plugin help reserves multiple lines"),T->GetDesiredSize().Y>25);
-            }
-            auto Children=W->GetChildren();for(int32 I=0;I<Children->Num();++I)InspectText(Children->GetChildAt(I));
-        };InspectText(Dock);
+            HelpBox->SetWidthOverride(Width);
+            for(int32 Pass=0;Pass<3;++Pass){++GFrameCounter;Renderer.DrawWidget(Target,HelpWidth,Size,0);FlushRenderingCommands();}
+            return Help->GetDesiredSize().Y;
+        };
+        const double WideHeight=MeasureHelp(750);
+        TestTrue(TEXT("Narrow plugin help wraps and reserves multiple lines"),WideHeight>0&&MeasureHelp(140)>WideHeight);
+        for(int32 Pass=0;Pass<6;++Pass){++GFrameCounter;Renderer.DrawWidget(Target,Dock,Size,0);FlushRenderingCommands();}
         TArray64<uint8> PNG;FImageUtils::PNGCompressImageArray(Target->SizeX,Target->SizeY,[&]{TArray<FColor> Pixels;Target->GameThread_GetRenderTargetResource()->ReadPixels(Pixels);return Pixels;}(),PNG);
         FFileHelper::SaveArrayToFile(PNG,*(H->StorageRoot/TEXT("plugin-windows.png")));
         TFunction<int32(TSharedRef<SWidget>,FName)> CountControls=[&](TSharedRef<SWidget> W,FName Tag)

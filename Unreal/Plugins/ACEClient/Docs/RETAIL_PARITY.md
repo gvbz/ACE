@@ -1595,8 +1595,9 @@ Direct/attribute buffs, debuffs and vitae compare against the complete permanent
 baseline; even a small debuff cannot be hidden by a positive augmentation.
 The fallback HUD uses the same baseline for its skill colors and base tooltip.
 
-`Base` remains the retail raw value for equipment requirements and plugin
-automation. `Current` still adds Jack/spec luminance **after** enchantment and
+`Base` supplies the retail raw value to plugin skill snapshots. UCM checks
+base-skill wield requirements against the skill window's unbuffed baseline.
+`Current` adds Jack/spec luminance **after** enchantment and
 vitae math, so the presentation change does not alter combat, run/jump speed,
 spell eligibility, or the order in which penalties and permanent gains apply.
 

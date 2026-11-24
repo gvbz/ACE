@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ACEWorldEntityActor.h"
+#include "ACEWaterSight.h"
 #include "ACECharacterAppearanceComponent.h"
 #include "ACEEnvCellActor.h"
 #include "ACELandblockActor.h"
@@ -86,7 +87,13 @@ namespace ACEVisibleObjectPick
             const FVector TraceEnd = Start + (End-Start).GetSafeNormal() * Closest;
             if (!World.LineTraceSingleByChannel(Wall, Start, TraceEnd, ECC_Camera, Params)) break;
             bool Refined = false;
-            if (auto* Cell = Cast<AACEEnvCellActor>(Wall.GetActor()); Cell && Wall.GetComponent() == Cell->CellCollisionMesh)
+            double BedDistance;
+            if (!Candidates.IsEmpty() && ACEWaterSight::RefineTerrainHit(World, Wall, Start, TraceEnd, 0, BedDistance))
+            {
+                Closest = FMath::Min(Closest, BedDistance);
+                Refined = true;
+            }
+            else if (auto* Cell = Cast<AACEEnvCellActor>(Wall.GetActor()); Cell && Wall.GetComponent() == Cell->CellCollisionMesh)
             {
                 Refined = Cell->CellMesh != nullptr;
                 if (Refined && !Cell->IsHidden()) TraceMesh(*Cell->CellMesh, Start, TraceEnd, Closest);
@@ -136,6 +143,7 @@ namespace ACEVisibleObjectPick
             // click. Test only intersecting room bounds after finding a target;
             // do not enable distant movement collision or cook extra meshes.
             const FVector TargetPoint=Start+(End-Start).GetSafeNormal()*Closest;
+            if (ACEWaterSight::BlockedFromWithinWater(World,Start,TargetPoint,0)) Selected=nullptr;
             for (TActorIterator<AACEEnvCellActor> It(&World);It;++It)
             {
                 auto* Mesh=It->CellMesh.Get();

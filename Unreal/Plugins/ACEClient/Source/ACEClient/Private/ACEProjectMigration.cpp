@@ -1,5 +1,6 @@
 #include "ACEProjectMigration.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
@@ -30,6 +31,24 @@ int32 ACEProjectMigration::CopyMissingProfileFiles(const FString& OldSaved, cons
             // Config defaults may already be cached when the plugin starts.
             if (GConfig)
                 if (FConfigFile* Config = GConfig->FindConfigFile(Destination)) Config->Combine(Destination);
+        }
+    }
+    const FString AtlasFile = TEXT("ClientPlugins/Waypoint/locations.json");
+    const FString SourceAtlas = OldSaved / AtlasFile;
+    const FString DestinationAtlas = NewSaved / AtlasFile;
+    if (!Files.FileExists(*DestinationAtlas) && Files.FileExists(*SourceAtlas))
+    {
+        // Stage beside the destination. Windows MoveFile publishes only if the
+        // name is still free, including when another client imports meanwhile.
+        const FString Temp = DestinationAtlas + TEXT(".") + FGuid::NewGuid().ToString() + TEXT(".tmp");
+        if (Files.Copy(*Temp, *SourceAtlas) == COPY_OK &&
+            FPlatformFileManager::Get().GetPlatformPhysical().MoveFile(*DestinationAtlas, *Temp))
+        {
+            ++Copied;
+        }
+        else
+        {
+            Files.Delete(*Temp);
         }
     }
     return Copied;

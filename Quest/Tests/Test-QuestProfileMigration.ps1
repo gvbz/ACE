@@ -23,6 +23,9 @@ test ! -e $fixture/old
 test -f $fixture/new/Saved/Login/LastLogin.dat
 test -f $fixture/new/Saved/DAT/client_portal.dat
 echo PASS atomic-profile-rename
+atlas=Saved/ClientPlugins/Waypoint/locations.json
+mkdir -p $fixture/old/Saved/ClientPlugins/Waypoint
+echo old-atlas > $fixture/old/`$atlas
 mkdir -p $fixture/old/Saved/Login $fixture/old/Saved/DAT $fixture/old/Saved/Config/Android
 echo old-login > $fixture/old/Saved/Login/LastLogin.dat
 echo old-dat > $fixture/old/Saved/DAT/client_portal.dat
@@ -33,9 +36,13 @@ grep -q encrypted-fixture $fixture/new/Saved/Login/LastLogin.dat
 grep -q dat-fixture $fixture/new/Saved/DAT/client_portal.dat
 grep -q cell-fixture $fixture/new/Saved/DAT/client_cell_1.dat
 grep -q settings-fixture $fixture/new/Saved/Config/Android/ACEVR.ini
+grep -qx old-atlas $fixture/new/`$atlas
 echo PASS merge-preserves-new-profile-and-fills-missing-files
+echo current-atlas > $fixture/new/`$atlas
+echo legacy-atlas > $fixture/old/`$atlas
 $migration
 grep -q encrypted-fixture $fixture/new/Saved/Login/LastLogin.dat
+grep -qx current-atlas $fixture/new/`$atlas
 echo PASS repeat-migration
 "@
 } finally {

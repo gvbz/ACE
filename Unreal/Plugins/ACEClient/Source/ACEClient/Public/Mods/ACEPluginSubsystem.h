@@ -14,6 +14,7 @@
 #include "ACEPluginSubsystem.generated.h"
 
 class FACEPluginVM;
+namespace ACEPluginCatalog {class FLegacyRestore;}
 namespace ACEWaypoint { struct FRoutePoint; }
 namespace ACEUCMPanelPrivate { class FACEUCMImportUITest; }
 class SWidget;
@@ -58,6 +59,7 @@ struct FACEClientPlugin
 {
     TSharedPtr<FJsonObject> ProfileLinks, ProfileBaseline;
     FString Id, Name, Version, Description, Directory, Status = TEXT("Stopped"), ProfileName = TEXT("Default");
+    bool bBundledUCM = false;
     TArray<FString> Permissions;
     // Omitted fields preserve the original API; an explicit list is opt-in.
     TSet<FString> SnapshotFields;
@@ -87,6 +89,11 @@ struct FACEClientPlugin
     bool Companion = false, CompanionStopped = false, StateDirty = false;
     int32 Api = 1;
     bool IsPolicy() const { return Id==TEXT("ucm") || (Api>=2 && !Companion && !LocalService); }
+    bool UsesCompactControls() const
+    {
+        FString Panel;
+        return Manifest && Manifest->TryGetStringField(TEXT("native_panel"),Panel) && Panel==TEXT("combat_controls");
+    }
     bool HasPresentation() const { return Companion || Api>=2; }
     double NextService = 0;
     TArray<TSharedPtr<FJsonValue>> LogEntries;
@@ -136,6 +143,11 @@ class ACECLIENT_API UACEPluginSubsystem : public UGameInstanceSubsystem
     friend class FACEFoundryTest;
     friend class FACEPluginClientMessagingTest;
     friend class FACEPluginHostTest;
+    friend class FACEPluginCatalogTest;
+    TSharedPtr<ACEPluginCatalog::FLegacyRestore> LegacyRestore;
+#if WITH_DEV_AUTOMATION_TESTS
+    bool bCatalogOnlyTest=false;
+#endif
     friend class FACEPluginWindowTest;
     friend class FACEPluginLimitTest;
     friend class FACEUIWorkloadTest;
@@ -175,6 +187,7 @@ public:
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;
     virtual void Deinitialize() override;
     void Discover();
+    TSharedPtr<FACEClientPlugin> ParsePluginManifest(const TSharedPtr<FJsonObject>& Manifest, FString& Error) const;
     TSharedPtr<class FACEPluginStyle> RetailPluginStyle;
     TMap<FString,TSharedPtr<class FACEPluginStyle>> WindowPluginStyles;
     static bool IsLedger(const FString& Id) { return Id==TEXT("supplyledger")||Id==TEXT("huntledger"); }
@@ -284,7 +297,7 @@ public:
     bool IsPluginBarUnlocked() const;
     void TogglePanel();
     TSharedRef<SWidget> MakeUCMPanel(const FString& InitialPage=FString(), bool bShowTitle=true);
-    TSharedRef<SWidget> MakeUCMMicroPanel();
+    TSharedRef<SWidget> MakeUCMMicroPanel(const FString& Owner=TEXT("ucmmicro"));
     TSharedRef<SWidget> MakeItemToolsPanel(bool bShowTitle=true);
     bool RunItemToolsCommand(const FString& Arguments);
     bool StartItemTools(const FString& Mode);
@@ -316,6 +329,7 @@ public:
     void ClearUCMLog();
     FString UCMLogSaveError;
     TSharedRef<SWidget> MakeWaypointPanel(bool bMap=false, bool bArrowOnly=false, bool bShowTitle=true);
+    TSharedRef<SWidget> MakeWaypointArrowPreview();
     TSharedRef<SWidget> MakeWaypointRoutePanel();
     TSharedRef<SWidget> MakeWaypointMapIcon();
     TSharedRef<SWidget> MakeWaypointDungeonOverlay();
@@ -324,12 +338,14 @@ public:
     bool IsWaypointUnlocked() const;
     FACEPosition WaypointPlayerPosition() const;
     TArray<ACEWaypoint::FRoutePoint> GetWaypointMapRoute(bool Dungeon) const;
-    bool SetWaypoint(const FString& Coordinates);
-    void SetWaypoint(FVector2D Coordinates, uint32 DungeonLandblock=0);
+    bool SetWaypoint(const FString& Coordinates,bool FromPlugin=false);
+    void SetWaypoint(FVector2D Coordinates, uint32 DungeonLandblock=0,bool FromPlugin=false);
     bool GetWaypoint(FVector2D& Coordinates, uint32& DungeonLandblock) const;
     bool WaypointOption(const FString& Key, bool Default=true) const;
     bool SetWaypointOption(const FString& Key,bool Value);
-    bool ShouldShowWaypointArrow() const { return bShowWaypointArrow && IsWaypointEnabled(); }
+    bool ShouldShowWaypointArrow() const { return bShowWaypointArrow && (IsWaypointEnabled() || PluginWaypoint.IsSet()); }
+    float WaypointArrowScale() const;
+    void SetWaypointArrowScale(float Scale, bool Persist=true);
     float WaypointMapOpacity() const;
     void SetWaypointMapOpacity(float Value);
     double WaypointMapZoom(bool Overlay, bool Dungeon) const;
@@ -393,16 +409,18 @@ public:
     FString BuffQueueSummary() const;
     void ReplyBuffRequest(int32 Player, const FString& Name, const FString& Message, bool RateLimit = false);
     void NotifyBuffQueuePositions();
-    bool RequestForceBuff();
-    void CancelForceBuff();
+    bool RequestForceBuff(const FString& Owner=TEXT("ucm"));
+    void CancelForceBuff(const FString& Owner=TEXT("ucm"));
     bool IsForceBuffRequested() const { return ForceBuffRequest!=0; }
-    bool SetUCMFollowSelected(bool Enabled);
-    bool IsUCMFollowEnabled() const;
-    FString UCMCurrentStatus() const;
+    bool SetUCMFollowSelected(bool Enabled,const FString& Owner=TEXT("ucm"));
+    bool IsUCMFollowEnabled(const FString& Owner=TEXT("ucm")) const;
+    FString UCMCurrentStatus(const FString& Owner=TEXT("ucm")) const;
+    TSharedPtr<FACEClientPlugin> CompactPolicy(const FString& Owner) const;
+    TSharedPtr<FACEClientPlugin> ProfileOwner(const FString& Id) const;
 
     void RecordWaypoint(const FString& Id, const TSharedPtr<FJsonObject>& Details = nullptr);
     void AddBuff(const FString& Id, int32 SpellId);
-    TSharedPtr<FJsonObject> Snapshot();
+    TSharedPtr<FJsonObject> Snapshot(bool bEquipmentManaOnly = false);
     /** Called before the normal prediction/network pipeline; never teleports the pawn. */
     void ApplyMovement(AACEPlayerController* Controller, float& Forward, float& Right, float& Turn,
         bool Manual, bool Blocked, bool VR, const FVector& Facing, float MaxFrameTravel = 0.f);
@@ -589,6 +607,9 @@ private:
     FString StorageRoot;
     TArray<FACEWaypointLandmark> WaypointLocations;
     bool bWaypointLocationsLoaded=false;
+    TOptional<FVector2D> PluginWaypoint;
+    uint32 PluginWaypointDungeon=0;
+    TSharedPtr<FACEClientPlugin> EditorProfileWorkspace;
     bool bShowWaypointArrow=false;
     void LoadWaypointArrowPreference();
     TMap<int32, FACEAppraisalInfo> Appraisals;
@@ -612,6 +633,7 @@ private:
     TMap<int32, FLootedCorpse> LootedCorpses;
     TMap<int32, double> AppraisalRequests;
     TArray<TSharedPtr<FJsonValue>> CachedInventory;
+    TSharedPtr<FJsonValue> CachedInventoryArray;
     TMap<int32,int32> CachedInventoryIndices;
     TSet<int32> InventoryWieldInt64Keys;
     TSet<int32> DirtyInventoryAppraisals;
@@ -644,8 +666,8 @@ private:
     void WakeCombatDecision();
     void UnbindCombatEvents();
     void ObserveCombatFeedback(const FString& Name,int32 Damage,bool Incoming,bool Critical);
-    void RecordCombatOutcome(bool Hit);
-    void AddCombatOutcome(int32 Target,bool Hit,bool Unhittable=false,int32 Spell=0,int32 Damage=0);
+    void RecordCombatOutcome(bool Hit,bool MissileOutOfRange=false);
+    void AddCombatOutcome(int32 Target,bool Hit,bool Unhittable=false,int32 Spell=0,int32 Damage=0,double RejectedDistance=-1.);
     void ObserveOffensiveSpellChat(const FString& Text,const FString& Sender,int32 Type);
     void ExpireOffensiveCasts(double Now);
     struct FOffensiveCast
@@ -705,7 +727,7 @@ private:
     double NextRouteCheck=0;
 
     TArray<int32> CachedSpellIds, CachedSchoolSkills;
-    TArray<TSharedPtr<FJsonValue>> CachedSpells;
+    TSharedPtr<FJsonValue> CachedSpellArray;
     TArray<TSharedPtr<FJsonValue>> CachedKnownSpellValues;
     uint64 CachedSpellRevision = MAX_uint64;
     uint32 CachedSpellFocusMask = MAX_uint32;

@@ -4,7 +4,7 @@
   "name": "Action Deck",
   "short_name": "DECK",
   "version": "1.1.0",
-  "description": "A movable 36-slot item, spell, attack and chat macro bar with an optional fourth row for 48 slots. Custom macro icons and delays, optional hotkey override, per-character bindings and automatic replacement of depleted inventory items.",
+  "description": "Bind items, spells, attacks and chat macros to a movable bar with up to 48 slots.",
   "permissions": [],
   "presentation": {"controls": "none", "settings": false, "status": false, "scroll": false}
 }

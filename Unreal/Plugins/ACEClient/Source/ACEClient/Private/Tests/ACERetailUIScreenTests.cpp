@@ -1950,8 +1950,40 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
         Cast<UCanvasPanelSlot>(ItemBorder->Slot)->GetZOrder()>Cast<UCanvasPanelSlot>(Gameplay->ExamScroll->Slot)->GetZOrder());
     TestTrue(TEXT("Visible inventory item starts a drag"),Gameplay->TryBeginInventoryDrag(ItemLocal));
     Gameplay->UpdateInventoryDrag(ItemLocal+FVector2D(24,0));
+    TestTrue(TEXT("Ordinary wand drag uses its inventory foreground"),Gameplay->InvDragIcon
+        && Gameplay->InvDragIcon->Background.GetResourceObject()==ItemBorder->Background.GetResourceObject());
     Gameplay->TryFinishInventoryDrag(ItemLocal);
     TestEqual(TEXT("Drag back to its source slot cannot arm double-click use"),Gameplay->LastInvClickGuid,0);
+    {
+        FACEWorldObject Pearl;
+        Pearl.Guid=30201; Pearl.WeenieClassId=30201; Pearl.Name=TEXT("Pearl of Defending");
+        Pearl.ItemType=ACEItemType::Gem; Pearl.ContainerId=Player.Guid; Pearl.PlacementPosition=1;
+        Pearl.IconId=0x06005B67; Pearl.IconOverlayId=0x06005B36; Pearl.IconUnderlayId=0x06005B0C; Pearl.UiEffects=1;
+        Client->Session->UpsertWorldObject(Pearl);
+        Gameplay->RefreshInventoryOverlays(); CaptureScreen(TEXT("GameplayRareInventory"));
+        const int32 Index=Gameplay->InventorySlotGuids.IndexOfByKey(Pearl.Guid);
+        if (TestTrue(TEXT("Pearl of Defending appears in the backpack"),Gameplay->InventorySlots.IsValidIndex(Index)))
+        {
+            const auto* PearlSlot=Gameplay->InventorySlots[Index].Get();
+            const auto& Geo=PearlSlot->GetCachedGeometry();
+            const FVector2D Start=Canvas->GetCachedGeometry().AbsoluteToLocal(Geo.LocalToAbsolute(Geo.GetLocalSize()*.5));
+            TestTrue(TEXT("Pearl drag starts from its inventory slot"),Gameplay->TryBeginInventoryDrag(Start));
+            const FVector2D PreviewPoint=Start-FVector2D(112,0);
+            const FVector2D PreviousCursor=FSlateApplication::Get().GetCursorPos();
+            ON_SCOPE_EXIT { FSlateApplication::Get().SetCursorPos(PreviousCursor); };
+            FSlateApplication::Get().SetCursorPos(Canvas->GetCachedGeometry().LocalToAbsolute(PreviewPoint));
+            Gameplay->UpdateInventoryDrag(PreviewPoint);
+            auto* Foreground=Resources->ResolveItemForeground(Pearl.IconId,Pearl.IconOverlayId,Pearl.UiEffects);
+            TestTrue(TEXT("Pearl drag includes its overlay and effect mask"),Foreground && Gameplay->InvDragIcon
+                && Gameplay->InvDragIcon->Background.GetResourceObject()==Foreground
+                && PearlSlot->Background.GetResourceObject()==Foreground);
+            CaptureScreen(TEXT("GameplayPearlOfDefendingDrag"));
+            Gameplay->CancelInventoryDrag();
+        }
+        Client->SelectObject(Item.Guid);
+        Client->Session->WorldObjects.Remove(Pearl.Guid);
+        Gameplay->RefreshInventoryOverlays();
+    }
     ExaminationWindow->UserDragX=PreviousExaminationDrag.X; ExaminationWindow->UserDragY=PreviousExaminationDrag.Y;
     Gameplay->ShowExamination(false);
     Gameplay->bInvDragPending=true; Gameplay->bInvDragActive=true; Gameplay->InvDragGuid=Item.Guid;
@@ -2252,7 +2284,7 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
                     // changes; retain the actual canvas hit testing and activation.
                     Manager->OnElementActivated.Remove(Gameplay->ActivatedHandle);
                     UACEUIElementManager::ApplyFloatyResizeLayout(Floaty);
-                    for(const FIntPoint Size:{FIntPoint(1920,1080),FIntPoint(2560,1440),FIntPoint(3840,2160),FIntPoint(800,600),FIntPoint(640,480),FIntPoint(800,450),FIntPoint(480,360)})
+                    for(const FIntPoint Size:{FIntPoint(1920,1080),FIntPoint(2560,1440),FIntPoint(3840,2160),FIntPoint(5120,1440),FIntPoint(800,600),FIntPoint(640,480),FIntPoint(800,450),FIntPoint(480,360)})
                     {
                         ScreenSize=Size;
                         CaptureScreen(FString::Printf(TEXT("OptionsWindowResize_%d"),Size.X));
@@ -2880,6 +2912,11 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
         };
         TFunction<void()> VerifyStackCombining = [&]()
         {
+        auto StackReply=[&](int32 Guid,int32 Count)
+        {
+            FACEBinaryWriter W;W.WriteUInt8(1);W.WriteUInt32(Guid);W.WriteUInt32(Count);W.WriteUInt32(Count);
+            FACEBinaryReader R(W.GetData());Session.HandleSetStackSize(R);
+        };
         auto RemoveStack = [&](int32 Guid)
         {
             FACEBinaryWriter Removed; Removed.WriteUInt32(uint32(Guid));
@@ -2903,14 +2940,14 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
         RemoveStack(Stack.Guid); Client->TickInventorySort(.1f);
         TestEqual(TEXT("Source-only update cannot advance the merge"),Session.CachedC2SPackets.Num(),PendingCount);
         TestEqual(TEXT("Deleting consumed stack preserves survivor selection"),Client->GetSelectedObject().Guid,Match.Guid);
-        Session.WorldObjects[Match.Guid].StackSize=15; Client->TickInventorySort(.1f);
+        StackReply(Match.Guid,15); Client->TickInventorySort(.1f);
         TestEqual(TEXT("Server confirmation does not automatically start another operation"),Session.CachedC2SPackets.Num(),PendingCount);
         TestEqual(TEXT("Completed merge clears pending source"),Client->SortSourceGuid,0);
         Session.CachedC2SPackets.Reset();
         Client->SortInventoryItem(Client->GetSelectedObject().Guid);
         LastWire(ACEGameAction::StackableMerge,{uint32(Match.Guid),uint32(Match2.Guid),15});
         TestEqual(TEXT("Next F selects the matching stack inside the backpack"),Client->GetSelectedObject().Guid,Match2.Guid);
-        Session.WorldObjects[Match2.Guid].StackSize=35;
+        StackReply(Match2.Guid,35);
         const int32 SecondCount=Session.CachedC2SPackets.Num();
         Client->TickInventorySort(.1f);
         TestTrue(TEXT("Destination update alone still waits for source removal"),Client->SortSourceGuid!=0);
@@ -2929,7 +2966,7 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
         LastWire(ACEGameAction::StackableMerge,{uint32(Stack.Guid),uint32(Match2.Guid),1});
         TestEqual(TEXT("Partial merge waits for server source count"),Session.WorldObjects[Stack.Guid].StackSize,5);
         TestEqual(TEXT("Partial merge waits for server target count"),Session.WorldObjects[Match2.Guid].StackSize,99);
-        Session.WorldObjects[Stack.Guid].StackSize=4;Session.WorldObjects[Match2.Guid].StackSize=100;
+        StackReply(Stack.Guid,4);StackReply(Match2.Guid,100);
         Client->TickInventorySort(.1f);
         TestEqual(TEXT("Partial merge completes without removing the remainder"),Client->SortSourceGuid,0);
 
@@ -2943,11 +2980,6 @@ bool FACERetailScreenTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Missing server confirmation times out without more inventory actions"),Session.CachedC2SPackets.Num(),0);
         Session.WorldObjects.Remove(Match.Guid);
 
-        auto StackReply=[&](int32 Guid,int32 Count)
-        {
-            FACEBinaryWriter W;W.WriteUInt8(1);W.WriteUInt32(Guid);W.WriteUInt32(Count);W.WriteUInt32(Count);
-            FACEBinaryReader R(W.GetData());Session.HandleSetStackSize(R);
-        };
         auto SentMerge=[&]()
         {
             for(const auto& Packet:Session.CachedC2SPackets)

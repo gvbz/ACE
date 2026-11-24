@@ -14,10 +14,20 @@ public:
     ~FACEPluginVM();
     bool Load(const FString& Source, FString& Error, const FString& Policy = FString());
     bool Step(const TSharedPtr<FJsonObject>& Snapshot, const TSharedPtr<FJsonObject>& Profile,
-        TSharedPtr<FJsonObject>& Intent, FString& Error);
+        TSharedPtr<FJsonObject>& Intent, FString& Error, bool bBundledUCMInputs = false);
     SIZE_T GetMemoryUsage() const { return Bytes; }
     SIZE_T GetPeakMemoryUsage() const { return PeakBytes; }
 private:
+    // The stock policy reads these host-owned arrays without modifying their Lua tables.
+    struct FInputTable
+    {
+        TWeakPtr<FJsonValue> Source;
+        int Ref = -2; // LUA_NOREF
+    };
+    FInputTable SpellTable, InventoryTable, LootRulesTable;
+    TArray<TWeakPtr<FJsonValue>> InventoryRows;
+    void PushInventory(lua_State* L,const TArray<TSharedPtr<FJsonValue>>& Rows);
+    static int PushUCMArgument(lua_State* L);
     lua_State* State = nullptr;
     SIZE_T Bytes = 0;
     SIZE_T PeakBytes = 0;

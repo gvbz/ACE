@@ -1,11 +1,13 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
 #include "ACETestDatDirectory.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 #include "Interfaces/IPluginManager.h"
 #include "Mods/ACEPluginSubsystem.h"
+#include "Mods/ACEPluginCatalog.h"
 #include "Mods/ACEPluginVM.h"
 #include "Mods/ACEPluginPresentation.h"
 #include "Mods/ACEPluginDesktop.h"
@@ -21,9 +23,11 @@
 #include "Components/ScrollBox.h"
 #include "ACEDatSubsystem.h"
 #include "ACEClientSubsystem.h"
+#include "ACEPlayerController.h"
 #include "ACESession.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Slate/WidgetRenderer.h"
@@ -32,6 +36,7 @@
 #include "ProceduralMeshComponent.h"
 #include "Serialization/JsonSerializer.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
@@ -51,7 +56,7 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
     Context.OwningGameInstance=GI;Context.SetCurrentWorld(W);GI->OnWorldChanged(nullptr,W);GI->Init();
     auto* H=GI->GetSubsystem<UACEPluginSubsystem>();auto* C=GI->GetSubsystem<UACEClientSubsystem>();
     const FString Root=FPaths::ProjectSavedDir()/TEXT("Automation/PublicAPI")/FGuid::NewGuid().ToString(EGuidFormats::Digits);
-    H->StorageRoot=Root;H->Settings=MakeShared<FJsonObject>();
+    H->StorageRoot=Root;H->Settings=MakeShared<FJsonObject>();H->bCatalogOnlyTest=true;
     ON_SCOPE_EXIT {GI->Shutdown();GEngine->DestroyWorldContext(W);W->DestroyWorld(false);IFileManager::Get().DeleteDirectory(*Root,false,true);};
     const FString Installed=Root/TEXT("Installed/thirdparty");IFileManager::Get().MakeDirectory(*Installed,true);
     FFileHelper::SaveStringToFile(TEXT(R"({"api":2,"mode":"automation","policy":"ucm","id":"thirdparty","name":"API Workbench","presentation":{"title":"Quest Tracker","icon":"tracker.png"},"permissions":["cast","combat","navigation","inventory","loot","fellowship","confirm","say","chat","state","ui","markers","waypoint","messaging","commands","profiles"]})"),*(Installed/TEXT("plugin.json")));
@@ -64,7 +69,8 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
     Session.PlayerPosition.CellId=0x7D64000D;Session.PlayerPosition.Location=FVector(34,104,12);Session.PlayerVitals.bValid=true;Session.PlayerVitals.Health=100;Session.PlayerVitals.MaxHealth=100;
     FACEWorldObject Player;Player.Guid=Session.PlayerGuid;Player.Name=TEXT("API character");Player.Position=Session.PlayerPosition;Player.bIsPlayer=true;Session.WorldObjects.Add(Player.Guid,Player);
     FACEWorldObject Rat;Rat.Guid=12;Rat.Name=TEXT("Red Rat");Rat.ItemType=ACEItemType::Creature;Rat.bHasPosition=true;Rat.ObjectDescriptionFlags=ACEObjectDescFlag::Attackable;Rat.Position=Session.PlayerPosition;Rat.Position.Location.X+=5;Session.WorldObjects.Add(Rat.Guid,Rat);
-    H->SetEnabled(TEXT("ucm"),false);H->SetEnabled(P->Id,true);
+    TestEqual(TEXT("Third-party policy runs with zero official installations"),H->Plugins.Num(),1);
+    H->SetEnabled(P->Id,true);
     TestTrue(TEXT("Independent UCM policy library loads with built-in UCM disabled"),H->Start(P->Id));
     TestTrue(TEXT("Custom ID owns native policy data"),H->PolicyPlugin()==P);H->RefreshAutomationData();
     C->OnChatMessage.Broadcast(TEXT("Quest message"),TEXT(""),ACEChatMessageType::System);
@@ -118,9 +124,18 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
         const auto InventoryOnly=H->PublicSnapshot(Observer);
         TestTrue(TEXT("Inventory observer receives cached item data"),InventoryOnly->HasField(TEXT("inventory"))&&InventoryOnly->HasField(TEXT("inventory_revision")));
         TestFalse(TEXT("Inventory observer skips spells, targets and full snapshot construction"),Batch.Data.IsValid()||InventoryOnly->HasField(TEXT("spells"))||InventoryOnly->HasField(TEXT("targets")));
-        Observer.SnapshotFields={TEXT("char_ints"),TEXT("action_serial"),TEXT("action_events")};
+        Observer.SnapshotFields={TEXT("hunt_ledger"),TEXT("supply_ledger")};
+        H->UpdateLedgers();H->HuntLedger.XP=90;
+        FACESupplyEntry Supply;Supply.Name=TEXT("Arrows");Supply.Count=33;H->LedgerSupplies.Add(Supply);
+        const auto Ledgers=H->PublicSnapshot(Observer);
+        const auto* Tracked=Ledgers->TryGetField(TEXT("supply_ledger")).Get();
+        TestTrue(TEXT("Companion reads native hunt and supply counts without ledger installations"),
+            Ledgers->GetObjectField(TEXT("hunt_ledger"))->GetNumberField(TEXT("xp"))==90&&Tracked&&
+            !Tracked->AsArray().IsEmpty()&&Tracked->AsArray().Last()->AsObject()->GetNumberField(TEXT("count"))==33);
+        TestFalse(TEXT("Ledger-only observers skip full gameplay snapshot"),Batch.Data.IsValid());
+        Observer.SnapshotFields={TEXT("char_ints"),TEXT("action_serial"),TEXT("action_events"),TEXT("hunt_ledger"),TEXT("supply_ledger")};
         Observer.Permissions.Reset();const auto Restricted=H->PublicSnapshot(Observer);
-        TestFalse(TEXT("Field requests cannot grant data permission"),Restricted->HasField(TEXT("char_ints"))||Restricted->HasField(TEXT("action_serial"))||Restricted->HasField(TEXT("action_events")));
+        TestFalse(TEXT("Field requests cannot grant data permission"),Restricted->HasField(TEXT("char_ints"))||Restricted->HasField(TEXT("action_serial"))||Restricted->HasField(TEXT("action_events"))||Restricted->HasField(TEXT("supply_ledger"))||Restricted->HasField(TEXT("hunt_ledger")));
     }
     for(const TCHAR* Field:{TEXT("inventory"),TEXT("spells"),TEXT("skills"),TEXT("targets"),TEXT("corpses"),TEXT("vendor_stock"),TEXT("fellowship"),TEXT("it_objects"),TEXT("packs"),TEXT("chat_events"),TEXT("events"),TEXT("capabilities")})TestTrue(FString(TEXT("Public snapshot includes "))+Field,Snapshot->HasField(Field));
     TestEqual(TEXT("Chat independent of UCM"),Snapshot->GetArrayField(TEXT("chat_events")).Num(),1);
@@ -319,6 +334,101 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
             FACEBinaryReader Reader(Packet.Value.Payload);Reader.Skip(24);const auto Action=Reader.ReadUInt32();
             TestTrue(TEXT("Selection sends only meter queries, never use/move/attack"),Action==ACEGameAction::QueryHealth||Action==ACEGameAction::QueryItemMana);
         }
+        auto* PC=W->SpawnActor<AACEPlayerController>();auto* Local=NewObject<ULocalPlayer>(GEngine);
+        GI->AddLocalPlayer(Local,FPlatformUserId::CreateFromInternalId(0));PC->SetPlayer(Local);
+        ON_SCOPE_EXIT {GI->RemoveLocalPlayer(Local);PC->Destroy();P->ActivityFailure.Reset();P->NextAction=0;};
+        Pack.ItemsCapacity=2;Pack.ObjectDescriptionFlags=ACEObjectDescFlag::Openable;
+        Chest.ItemsCapacity=-1;Chest.ContainersCapacity=2;Chest.ObjectDescriptionFlags=ACEObjectDescFlag::Openable;
+        FACEWorldObject StorageBag=Pack;StorageBag.Guid=int32(0xF0000504);StorageBag.ContainerId=Chest.Guid;
+        FACEWorldObject Stack=Item;Stack.Guid=505;Stack.ContainerId=StorageBag.Guid;Stack.PlacementPosition=0;
+        Stack.WeenieClassId=Item.WeenieClassId=42;Stack.MaxStackSize=Item.MaxStackSize=100;Stack.StackSize=10;Item.StackSize=2;
+        for(const auto& O:{Pack,Chest,StorageBag,Stack,Item})Session.WorldObjects.Add(O.Guid,O);
+        Session.OpenExternalContainerGuid=Chest.Guid;
+        auto List=[&](int32 Container,int32 Child,int32 Type)
+        {
+            FACEContainerItemRef Ref;Ref.ItemGuid=Child;Ref.ContainerType=Type;Session.ContainerContents.Add(Container,{Ref});
+        };
+        List(Chest.Guid,StorageBag.Guid,1);List(StorageBag.Guid,Stack.Guid,0);
+        const auto Storage=H->PublicSnapshot(*P);
+        TestEqual(TEXT("Direct storage list contains just the side pack"),Storage->GetArrayField(TEXT("contents")).Num(),1);
+        const auto& Rows=Storage->GetArrayField(TEXT("external_pack_contents"));
+        if(TestEqual(TEXT("A two-pane plugin can enumerate the storage pack"),Rows.Num(),1))
+        {
+            TestEqual(TEXT("Storage item parent preserves unsigned GUID"),Rows[0]->AsObject()->GetNumberField(TEXT("container")),double(uint32(StorageBag.Guid)));
+            TestEqual(TEXT("Storage item has its list placement"),Rows[0]->AsObject()->GetNumberField(TEXT("placement")),0.);
+        }
+        auto Store=[&](int32 Source,int32 Target,TOptional<double> Placement)
+        {
+            auto Intent=ParseAPI(TEXT(R"({"action":"store_item"})"));
+            Intent->SetNumberField(TEXT("item"),uint32(Source));Intent->SetNumberField(TEXT("target"),uint32(Target));
+            if(Placement.IsSet())Intent->SetNumberField(TEXT("placement"),Placement.GetValue());
+            P->NextAction=0;P->ActivityFailure.Reset();Session.CachedC2SPackets.Reset();H->Execute(*P,Intent);
+        };
+        auto CheckMove=[&](int32 Source,int32 Target,TOptional<double> Placement,int32 ExpectedIndex,int32 Type=0)
+        {
+            Store(Source,Target,Placement);
+            if(!TestEqual(TEXT("Pack move emits one request"),Session.CachedC2SPackets.Num(),1))return;
+            for(const auto& Packet:Session.CachedC2SPackets)
+            {
+                FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);
+                TestEqual(TEXT("Retail put opcode"),R.ReadUInt32(),ACEGameAction::PutItemInContainer);
+                TestEqual(TEXT("Wire source"),R.ReadUInt32(),uint32(Source));
+                TestEqual(TEXT("Wire destination"),R.ReadUInt32(),uint32(Target));
+                TestEqual(TEXT("Wire insertion index"),R.ReadInt32(),ExpectedIndex);
+            }
+            FACEBinaryWriter Ack;Ack.WriteUInt32(Source);Ack.WriteUInt32(Target);Ack.WriteInt32(ExpectedIndex);Ack.WriteInt32(Type);
+            FACEBinaryReader R(Ack.GetData());Session.HandleInventoryPutObjInContainer(R);
+            TestEqual(TEXT("Server receipt puts item in requested container"),Session.WorldObjects[Source].ContainerId,Target);
+            TestEqual(TEXT("Server receipt puts item at requested index"),Session.WorldObjects[Source].PlacementPosition,ExpectedIndex);
+        };
+        CheckMove(Item.Guid,StorageBag.Guid,9.,1); // explicit append bypasses a compatible stack
+        CheckMove(Item.Guid,StorageBag.Guid,0.,0); // full pack, same-pack reorder
+        CheckMove(Item.Guid,Session.PlayerGuid,0.,0);
+        // The login inventory list can precede a new main-pack ObjectCreate.
+        List(Session.PlayerGuid,Pack.Guid,1);
+        CheckMove(Item.Guid,Chest.Guid,0.,0);
+        CheckMove(Item.Guid,Pack.Guid,{},0); // existing AutoCram call shape
+        CheckMove(StorageBag.Guid,Session.PlayerGuid,1.,1,1);
+        CheckMove(StorageBag.Guid,Chest.Guid,0.,0,1);
+        {
+            TGuardValue<int32> Full(Session.WorldObjects[StorageBag.Guid].ItemsCapacity,1);
+            Store(Item.Guid,StorageBag.Guid,0.);
+            TestTrue(TEXT("Explicit insert into a full pack is rejected"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());
+            Store(Item.Guid,StorageBag.Guid,{});
+            if(TestEqual(TEXT("Whole-stack auto-merge still fits in a full pack"),Session.CachedC2SPackets.Num(),1))
+                for(const auto& Packet:Session.CachedC2SPackets)
+                {
+                    FACEBinaryReader R(Packet.Value.Payload);R.Skip(24);
+                    TestEqual(TEXT("Retail merge opcode"),R.ReadUInt32(),ACEGameAction::StackableMerge);
+                    R.ReadUInt32();TestEqual(TEXT("Merge stays in open storage"),R.ReadUInt32(),uint32(Stack.Guid));
+                }
+            Session.RejectStackMerge(Item.Guid);
+        }
+        auto Reject=[&](int32 Source,int32 Target,double Placement)
+        {
+            Store(Source,Target,Placement);
+            TestTrue(TEXT("Rejected pack move reports failure without sending"),Session.CachedC2SPackets.IsEmpty()&&P->ActivityFailure.IsValid());
+        };
+        Reject(Item.Guid,Pack.Guid,-1);Reject(Item.Guid,Pack.Guid,.5);Reject(Chest.Guid,Pack.Guid,0);
+        Reject(StorageBag.Guid,StorageBag.Guid,0);Reject(StorageBag.Guid,Pack.Guid,0);
+        {
+            TGuardValue<int32> Locked(Session.WorldObjects[StorageBag.Guid].ObjectDescriptionFlags,0);
+            Reject(Item.Guid,StorageBag.Guid,0);
+        }
+        {
+            TGuardValue<int32> OtherViewer(Session.OpenExternalContainerGuid,999);
+            Reject(Item.Guid,StorageBag.Guid,0);Reject(Stack.Guid,Session.PlayerGuid,0);
+        }
+        Session.TradeSelfItems.Add(Pack.Guid);Reject(Item.Guid,StorageBag.Guid,0);Session.TradeSelfItems.Remove(Pack.Guid);
+        Session.ContainerContents[Chest.Guid].Reset();Reject(Item.Guid,StorageBag.Guid,0);Reject(Stack.Guid,Pack.Guid,0);
+        const auto Refreshed=H->PublicSnapshot(*P);
+        TestTrue(TEXT("Refreshed chest hides stale bag and its contents"),Refreshed->GetArrayField(TEXT("contents")).IsEmpty()&&Refreshed->GetArrayField(TEXT("external_pack_contents")).IsEmpty());
+        List(Chest.Guid,StorageBag.Guid,1);
+        Session.ClearContainerContents(Chest.Guid);Reject(Stack.Guid,Session.PlayerGuid,0);Reject(Item.Guid,StorageBag.Guid,0);
+        TestTrue(TEXT("Closing storage removes nested rows"),H->PublicSnapshot(*P)->GetArrayField(TEXT("external_pack_contents")).IsEmpty());
+        P->Permissions.Remove(TEXT("inventory"));Reject(Item.Guid,Session.PlayerGuid,0);P->Permissions.Add(TEXT("inventory"));
+        Session.ContainerContents.Remove(Session.PlayerGuid);
+        Session.WorldObjects.Remove(StorageBag.Guid);Session.WorldObjects.Remove(Stack.Guid);
         Session.WorldObjects.Remove(Item.Guid);Session.WorldObjects.Remove(Pack.Guid);Session.WorldObjects.Remove(Chest.Guid);
     }
     {
@@ -359,6 +469,22 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
     H->Stop(P->Id);H->Start(P->Id);TestEqual(TEXT("Automation state restored"),P->SavedState->GetNumberField(TEXT("kills")),12.);
     H->ApplyPublicOutput(*P,UI,Error);
     auto Request=[&](const TCHAR* Text){P->NextService=0;return H->ApplyPublicOutput(*P,ParseAPI(Text),Error);};
+    IFileManager::Get().MakeDirectory(*(Installed/TEXT("data")),true);
+    const FString DataFile=FString::ChrN(16383,'a')+TEXT("\u20ac!");
+    FFileHelper::SaveStringToFile(DataFile,*(Installed/TEXT("data/table.txt")),FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+    Request(TEXT(R"({"requests":[{"id":"table","service":"resources","operation":"read","name":"table.txt"}]})"));
+    const auto Page=P->PluginEvents.Last()->AsObject();
+    TestTrue(TEXT("Resource pages end at UTF-8 boundaries"),Page->GetBoolField(TEXT("ok"))&&Page->GetNumberField(TEXT("next_offset"))==16383&&!Page->GetBoolField(TEXT("eof")));
+    Request(TEXT(R"({"requests":[{"id":"table2","service":"resources","operation":"read","name":"table.txt","offset":16383}]})"));
+    TestTrue(TEXT("Second page retains whole codepoint"),P->PluginEvents.Last()->AsObject()->GetStringField(TEXT("text"))==TEXT("\u20ac!")&&P->PluginEvents.Last()->AsObject()->GetBoolField(TEXT("eof")));
+    Request(TEXT(R"({"requests":[{"id":"denied","service":"resources","operation":"read","name":"../plugin.json"}]})"));
+    TestFalse(TEXT("Packaged resource reads stay in the caller's data folder"),P->PluginEvents.Last()->AsObject()->GetBoolField(TEXT("ok")));
+    P->Profile->SetBoolField(TEXT("auto_craft_ammo"),true);
+    TestTrue(TEXT("Public crafting planner works with no Auto Craft installation"),H->PublicSnapshot(*P)->HasField(TEXT("crafting")));
+    P->Profile->RemoveField(TEXT("auto_craft_ammo"));
+    Request(TEXT(R"({"requests":[{"id":"nav","service":"waypoint","operation":"set","coordinates":"42N, 33E"}]})"));
+    TestTrue(TEXT("Public navigation sets a standalone HUD target"),P->PluginEvents.Last()->AsObject()->GetBoolField(TEXT("ok"))&&H->ShouldShowWaypointArrow());
+    H->ClearWaypoint();
     {
         auto* Chat=NewObject<UACEUIGameplayBinder>(GI);Chat->Client=C;
         Chat->Canvas=NewObject<UACEUICanvasWidget>(GI);Chat->Canvas->WidgetTree=NewObject<UWidgetTree>(Chat->Canvas);
@@ -620,6 +746,54 @@ bool FACEPluginPublicAPITest::RunTest(const FString&)
     H->Stop(P->Id);TestFalse(TEXT("Public automation stops normally"),P->Running);
     P->Profile=Off;P->Profile->SetBoolField(TEXT("mana_charges_when_off"),true);H->NextIdleManaDecision=0;H->Tick(0);
     TestTrue(TEXT("Custom plugin can opt into stopped gear recharge"),H->IdleManaOwner==P->Id&&H->IdleManaVM.IsValid()&&!H->IdleManaFailed&&!P->Running);
+    const auto ModSources=IPluginManager::Get().FindPlugin(TEXT("ACEClient"))->GetBaseDir()/TEXT("ClientMods");
+    FString Packages;
+    TArray<ACEPluginCatalog::FEntry> Releases;
+    if(FParse::Value(FCommandLine::Get(),TEXT("OfficialPluginFixtureDir="),Packages))
+    {
+        FString Xml;
+        if(!TestTrue(TEXT("Read official package descriptors"),FFileHelper::LoadFileToString(Xml,*(ModSources/TEXT("legacy-plugins.xml")))&&ACEPluginCatalog::Parse(Xml,Releases,Error)))return false;
+    }
+    else if(!IFileManager::Get().FileExists(*(ModSources/TEXT("ucm/plugin.json"))))
+    {
+        AddInfo(TEXT("Supply -OfficialPluginFixtureDir to run the standalone official plugin cases in a packaged client."));
+        return true;
+    }
+    for(const FString Id:{TEXT("ucm"),TEXT("itemtools"),TEXT("foundry"),TEXT("derethlens"),TEXT("thirdeye"),TEXT("ucmmicro")})
+    {
+        H->StorageRoot=Root/TEXT("Standalone")/Id;
+        H->Settings=MakeShared<FJsonObject>();H->Discover();
+        if(!Packages.IsEmpty())
+        {
+            TGuardValue<EACESessionState> AtAccountScreen(Session.State,EACESessionState::Disconnected);
+            const auto* Release=Releases.FindByPredicate([&Id](const auto& Entry){return Entry.Id==Id;});
+            TArray<uint8> Bytes;
+            if(!TestTrue(Id+TEXT(" official package found"),Release&&FFileHelper::LoadFileToArray(Bytes,*(Packages/(Id+TEXT(".acplugin"))))))return false;
+            if(!ACEPluginCatalog::Install(*H,*Release,Bytes,Error)){AddError(Id+TEXT(": ")+Error);return false;}
+        }
+        else
+        {
+            const FString Destination=H->StorageRoot/TEXT("Installed")/Id;
+            auto& Files=FPlatformFileManager::Get().GetPlatformFile();
+            Files.CreateDirectoryTree(*Destination);
+            if(!TestTrue(Id+TEXT(" standalone files copied"),Files.CopyDirectoryTree(*Destination,*(ModSources/Id),true)))return false;
+            H->Discover();
+        }
+        const auto Only=H->Find(Id);
+        if(!TestTrue(Id+TEXT(" is the sole installed plugin"),Only&&H->Plugins.Num()==1))return false;
+        H->SetEnabled(Id,true);
+        if(!TestTrue(Id+TEXT(" starts in-world"),H->Start(Id))){AddError(H->Notice+TEXT(" ")+Only->Status);return false;}
+        Only->NextDecision=0;Only->NextAction=0;H->Tick(0);
+        TestTrue(Id+TEXT(" completed its first gameplay decision: ")+Only->Status,
+            Only->CompanionError.IsEmpty()&&!Only->Status.Contains(TEXT("error"),ESearchCase::IgnoreCase)&&
+            (Only->Running||(Id==TEXT("itemtools")&&!Only->Status.IsEmpty())));
+        if(Id==TEXT("ucmmicro"))
+        {
+            TestTrue(TEXT("Micro's force buff targets its own active driver"),H->RequestForceBuff(Id)&&H->IsForceBuffRequested());
+            H->CancelForceBuff(Id);TestTrue(TEXT("Micro can cancel its own buff without stopping its driver"),Only->Running&&!H->IsForceBuffRequested());
+        }
+        H->Stop(Id);
+    }
     return true;
 }
 #endif

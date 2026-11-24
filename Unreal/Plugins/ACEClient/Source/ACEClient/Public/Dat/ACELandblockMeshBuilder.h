@@ -137,6 +137,8 @@ public:
 	 * Local XY in landblock space (AC units, 0..192).
 	 */
 	static float GetWaterDepthAc(const FACEBuiltLandblockMesh& Mesh, float LocalX, float LocalY);
+	/** Water depths for the SW, SE, NE and NW quarters of a TexMerge cell. */
+	static FLinearColor GetWaterDepthsAc(uint32 PCode);
 
 private:
 	bool FillSectionBake(FACEBuiltLandblockSection& Section);
@@ -145,7 +147,7 @@ private:
 	static void RotateUV(float U, float V, int32 Rot, float& OutU, float& OutV);
 	bool FindTerrainAlpha(uint32 PCode, uint32 TCode, FACEDatDecodedSurface& OutAlpha, int32& OutRot, uint32* OutTexGID = nullptr);
 	bool FindRoadAlpha(uint32 PCode, uint32 RCode, FACEDatDecodedSurface& OutAlpha, int32& OutRot, uint32* OutTexGID = nullptr);
-	void GetTerrainCodes(uint32 PCode, uint32 OutTypes[4]) const;
+	static void GetTerrainCodes(uint32 PCode, uint32 OutTypes[4]);
 	bool GetTerrainLayers(uint32 PCode, uint32 OutTerrainTypes[4], uint32 OutTCodes[3], int32& OutLayerCount);
 	void GetRoadCodes(uint32 PCode, uint32 OutRCodes[2], bool& bAllRoad) const;
 	bool ResolveGpuBlend(uint32 PCode, struct FACELandGpuBlend& Out);

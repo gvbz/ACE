@@ -79,6 +79,14 @@ bool FACEEquipmentAssessmentCacheTest::RunTest(const FString&)
     TestFalse(TEXT("Receiving zero invalidates cached row eligibility"),InventoryRow()->GetBoolField(TEXT("can_wield")));
     Session.PlayerVitals.QualityInt64s[9007]=5500;
     TestTrue(TEXT("Meeting requirement updates cached row without another appraisal"),InventoryRow()->GetBoolField(TEXT("can_wield")));
+    FACESkillInfo Missile;Missile.SkillId=47;Missile.Base=288;Missile.Current=338;Missile.AdvancementClass=2;
+    Session.PlayerVitals.Skills.Add(Missile);
+    A.IntProperties={{158,2},{159,47},{160,290}};
+    H->ObserveAppraisal(A);H->Appraisals.Empty();
+    TestFalse(TEXT("A temporary bonus cannot qualify cached equipment"),InventoryRow()->GetBoolField(TEXT("can_wield")));
+    // Keep Current constant to isolate the cache dependency on the permanent baseline.
+    Session.PlayerVitals.Skills.Last().UnscaledAugmentationBonus=5;
+    TestTrue(TEXT("A changed permanent base unlocks cached equipment without reappraisal"),InventoryRow()->GetBoolField(TEXT("can_wield")));
     Session.WorldObjects.Remove(W.Guid);H->ObserveTargetDeleted(W.Guid);
     TestEqual(TEXT("Actual deletion removes combat record"),H->EquipmentAssessments.Num(),0);
     return true;

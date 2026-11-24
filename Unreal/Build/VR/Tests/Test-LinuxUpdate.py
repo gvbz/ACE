@@ -63,7 +63,9 @@ class LinuxUpdateTests(unittest.TestCase):
             return update.run(args)
 
     def test_install_preserves_saved_dats_and_plugins(self):
-        for name in ['ACUnreal/Saved/Config/settings.ini', 'DATs/client_portal.dat', 'ACUnreal/Plugins/User/main.lua']:
+        user_files = ('ACUnreal/Saved/Config/settings.ini', 'ACUnreal/Saved/ClientPlugins/Waypoint/locations.json',
+                      'DATs/client_portal.dat', 'ACUnreal/Plugins/User/main.lua')
+        for name in user_files:
             put(self.root, name, b'user data')
         put(self.root, 'ACUnreal/Content/Paks/old.pak')
         names = self.stage_package([('ACUnreal/Content/Paks/new.pak', b'new pak')])
@@ -71,7 +73,7 @@ class LinuxUpdateTests(unittest.TestCase):
         self.assertEqual(self.exe.read_bytes(), bytes(self.elf))
         self.assertTrue(self.exe.stat().st_mode & 0o111)
         self.assertFalse((self.root / 'ACUnreal/Content/Paks/old.pak').exists())
-        for name in ['ACUnreal/Saved/Config/settings.ini', 'DATs/client_portal.dat', 'ACUnreal/Plugins/User/main.lua']:
+        for name in user_files:
             self.assertEqual((self.root / name).read_bytes(), b'user data')
 
     def test_rollback_on_partial_install_failure(self):

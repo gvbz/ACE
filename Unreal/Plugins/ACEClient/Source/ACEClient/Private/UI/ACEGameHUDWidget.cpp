@@ -5,6 +5,7 @@
 #include "ACEHoverTooltipWidget.h"
 #include "UI/ACERetailTextBlock.h"
 #include "UI/ACERetailObjectNames.h"
+#include "UI/ACEItemDragIcon.h"
 #include "UI/ACEAppraisalFormatting.h"
 #include "ACEClientSubsystem.h"
 #include "ACEInventoryRules.h"
@@ -3847,7 +3848,11 @@ void UACEGameHUDWidget::UpdateDragVisual(const FVector2D& ScreenPos)
 		return;
 	}
 	FSlateBrush Brush;
-	if (UTexture2D* Tex = UiTex(static_cast<uint32>(DragIconDid)))
+	UTexture2D* Tex = DragKind == EACEDragKind::Item && Client
+		? ACEItemDragIcon::Resolve(Client->GetUIResourceResolver(), Client->GetSession().Get(), DragPayloadId, DragIconDid)
+		: nullptr;
+	if (!Tex) Tex = UiTex(static_cast<uint32>(DragIconDid));
+	if (Tex)
 	{
 		Brush.SetResourceObject(Tex);
 	}
@@ -3938,7 +3943,7 @@ void UACEGameHUDWidget::FinishDrag(const FVector2D& ScreenPos)
 				FACEWorldObject Source,Destination;
 				if(!Client->GetWorldObject(Payload,Source) || ACEInventoryRules::IsContainer(Source))return;
 				if(Client->GetWorldObject(Target,Destination))
-					if(const int32 Amount=ACEInventoryRules::MergeAmount(Source,Destination);
+					if(const int32 Amount=Client->GetSession()->AvailableMergeAmount(Source,Destination);
 						Amount>0 && !Client->GetTradeSelfItems().Contains(Payload) && !Client->GetTradeSelfItems().Contains(Target))
 					{
 						Client->SendStackableMerge(Payload,Target,Amount);

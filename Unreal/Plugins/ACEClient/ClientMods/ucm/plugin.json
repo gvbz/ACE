@@ -4,7 +4,7 @@
   "name": "Unattended Combat Manager",
   "short_name": "UCM",
   "version": "0.7.0",
-  "description": "UCM: automatic buffs, inventory-aware combat, vital recovery, automatic crafting, fellowship management, recorded routes and loot profiles.",
+  "description": "Automate combat, recovery, buffs, crafting, fellowship, routes and looting.",
   "permissions": [
     "cast",
     "combat",

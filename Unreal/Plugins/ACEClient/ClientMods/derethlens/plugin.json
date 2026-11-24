@@ -5,7 +5,7 @@
   "name": "Dereth Lens",
   "short_name": "LENS",
   "version": "1.0.0",
-  "description": "Read the terrain: unwalkable slopes and impassable water, a radar boundary, and optional dungeon illumination. Local visual aids, independent of UCM.",
+  "description": "Highlight impassable terrain, show radar range and brighten dungeons.",
   "permissions": ["state", "ui", "terrain"],
   "snapshot_fields": [],
   "update_interval": 1,

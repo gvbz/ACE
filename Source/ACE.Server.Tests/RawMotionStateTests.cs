@@ -1,6 +1,7 @@
 using System.IO;
 using ACE.Entity.Enum;
 using ACE.Server.Network.Structure;
+using ACE.Server.Network.Enum;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace ACE.Server.Tests
@@ -8,6 +9,35 @@ namespace ACE.Server.Tests
     [TestClass]
     public class RawMotionStateTests
     {
+        [TestMethod]
+        public void MissileTravelUsesTranslationChannelsAndTheirWireSpeedDefaults()
+        {
+            foreach (var forward in new[] { MotionCommand.WalkForward, MotionCommand.WalkBackwards, MotionCommand.RunForward })
+            {
+                var motion = new RawMotionState { Flags = RawMotionFlags.ForwardCommand, ForwardCommand = forward };
+                Assert.IsTrue(motion.HasTranslation());
+                motion.Flags |= RawMotionFlags.ForwardSpeed;
+                Assert.IsFalse(motion.HasTranslation());
+                motion.ForwardSpeed = .25f;
+                Assert.IsTrue(motion.HasTranslation());
+            }
+            foreach (var side in new[] { MotionCommand.SideStepLeft, MotionCommand.SideStepRight })
+            {
+                var motion = new RawMotionState { Flags = RawMotionFlags.SideStepCommand, SidestepCommand = side };
+                Assert.IsTrue(motion.HasTranslation());
+                motion.Flags |= RawMotionFlags.SideStepSpeed;
+                Assert.IsFalse(motion.HasTranslation());
+                motion.SidestepSpeed = 1;
+                Assert.IsTrue(motion.HasTranslation());
+            }
+            foreach (var forward in new[] { MotionCommand.Invalid, MotionCommand.Ready, MotionCommand.Reload })
+            {
+                var turning = new RawMotionState { ForwardCommand = forward, TurnCommand = MotionCommand.TurnLeft,
+                    Flags = RawMotionFlags.TurnCommand | RawMotionFlags.ForwardCommand };
+                Assert.IsFalse(turning.HasTranslation());
+            }
+        }
+
         [TestMethod]
         public void RejectedActionsDoNotLeaveAnInvalidCommandCount()
         {

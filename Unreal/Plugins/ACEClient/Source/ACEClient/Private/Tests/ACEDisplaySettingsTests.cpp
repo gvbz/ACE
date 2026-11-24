@@ -58,6 +58,35 @@ bool FACEDisplaySettingsTest::RunTest(const FString&)
 
     auto* Options=CreateWidget<UACEVideoSettingsWidget>(GI); Options->TakeWidget();
     {
+        auto* Missile=Cast<UCheckBox>(Options->WidgetTree->FindWidget(TEXT("StationaryMissileAttacks")));
+        if(!TestNotNull(TEXT("Input Options offers stationary missile attacks"),Missile))return false;
+        TestFalse(TEXT("Existing profiles keep their missile behavior"),Missile->IsChecked());
+        Missile->SetIsChecked(true);
+        TestTrue(TEXT("Missile preference waits for Apply"),Options->HasPendingChanges() && !ACERuntimeOptions::StationaryMissileAttacks());
+        Options->ResetVideo();TestFalse(TEXT("Reset discards missile edit"),Missile->IsChecked());
+        Missile->SetIsChecked(true);Options->ApplyRuntimeOptions();
+        TestTrue(TEXT("Stationary missiles can be enabled independently"),ACERuntimeOptions::StationaryMissileAttacks() && !ACERuntimeOptions::ClassicMovement());
+        auto* Movement=Cast<UCheckBox>(Options->WidgetTree->FindWidget(TEXT("ClassicMovement")));
+        if(!TestNotNull(TEXT("Classic movement appears in Input Options"),Movement))return false;
+        TestFalse(TEXT("Existing profiles default to free casting movement"),Movement->IsChecked());
+        Movement->SetIsChecked(true);
+        TestTrue(TEXT("Classic movement enables Apply"),Options->HasPendingChanges());
+        TestFalse(TEXT("Editing the checkbox leaves active movement alone"),ACERuntimeOptions::ClassicMovement());
+        Options->ResetVideo();TestFalse(TEXT("Reset discards the edit"),Movement->IsChecked());
+        Movement->SetIsChecked(true);Options->ApplyRuntimeOptions();
+        FConfigFile Saved;Saved.Read(GGameUserSettingsIni);float Setting=0;
+        TestTrue(TEXT("Apply persists classic movement"),Saved.GetFloat(TEXT("ACE.Presentation"),TEXT("ClassicMovement"),Setting)&&Setting==1.f);
+        auto* Reopened=CreateWidget<UACEVideoSettingsWidget>(GI);Reopened->TakeWidget();
+        TestTrue(TEXT("Reopening restores classic movement"),CastChecked<UCheckBox>(Reopened->WidgetTree->FindWidget(TEXT("ClassicMovement")))->IsChecked());
+        TestTrue(TEXT("Reopening restores stationary missiles"),CastChecked<UCheckBox>(Reopened->WidgetTree->FindWidget(TEXT("StationaryMissileAttacks")))->IsChecked());
+        Options->DefaultsVideo();
+        TestTrue(TEXT("Defaults stages free movement until applied"),!Movement->IsChecked()&&ACERuntimeOptions::ClassicMovement());
+        Options->ApplyRuntimeOptions();
+        TestFalse(TEXT("Applying Defaults restores free movement"),ACERuntimeOptions::ClassicMovement());
+        TestFalse(TEXT("Applying Defaults restores missile behavior"),ACERuntimeOptions::StationaryMissileAttacks());
+        Options->ResetVideo();
+    }
+    {
         auto* Audio=Cast<UCheckBox>(Options->WidgetTree->FindWidget(TEXT("BackgroundAudio")));
         if(!TestNotNull(TEXT("Background audio toggle exists in Sound Options"),Audio))return false;
         TestFalse(TEXT("New installs retain the previous background-mute default"),Audio->IsChecked());

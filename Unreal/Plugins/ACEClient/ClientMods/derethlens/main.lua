@@ -41,12 +41,11 @@ return function(s)
         {id="terrain",type="column",text="Terrain",children={
             check("slopes","Highlight unwalkable slopes"),check("water","Highlight impassable water"),
             slider("opacity","Overlay opacity"),slider("range","Terrain range (m)"),
-            {id="legend",text="Only blocked terrain is colored. Yellow through red shows slopes beyond the walking limit; blue marks impassable open ocean. Wadeable water stays clear."},
-            {id="scope",text="Outdoor terrain only. Buildings, bridges, doors, jumps and server restrictions can change where you can travel."}}},
+            {id="legend",text="Highlights outdoor terrain. Wadeable water stays clear."}}},
         {id="extras",type="column",text="Extras",children={
-            check("radar","Show radar boundary"),{id="radar_help",text="A translucent wall at the retail radar edge: 75 m outdoors, 25 m indoors."},
+            check("radar","Show radar boundary"),{id="radar_help",text="Radar radius is 75 m outdoors and 25 m indoors."},
             check("dungeon","Dungeon light"),slider("brightness","Dungeon brightness"),
-            {id="light_help",text="Lifts dark areas while indoors. Returns to your normal video settings when disabled or outdoors."}}},
+            {id="light_help",text="Your usual lighting returns outdoors."}}},
         colors("slope_color","Slopes"),colors("water_color","Water"),colors("radar_color","Radar"),colors("light_color","Light")}
     return {state=changed and config or nil,status=config.enabled and "Lens active" or "Lens paused",
         ui={check("enabled","Enable Dereth Lens"),{id="tabs",type="tabs",children=tabs}},

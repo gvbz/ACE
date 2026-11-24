@@ -4,7 +4,7 @@ param(
  [string]$OutputRoot = (Join-Path $PSScriptRoot '../../Saved/PCPerformance/Review'),
  [string[]]$Scenes = @('outdoor','indoor','effects'),
  [ValidateSet('baseline','optimized')][string[]]$Variants = @('baseline','optimized'),
- [ValidateSet('scene','particles','cached-world','particle-distance','particle-idle','cached-actors','doorway-geometry','setup-metadata','cpu-render','animation-buffers','mobile-light-permutation')][string]$Comparison = 'scene',
+ [ValidateSet('scene','particles','cached-world','particle-distance','particle-idle','cached-actors','doorway-geometry','setup-metadata','cpu-render','animation-buffers','mobile-light-permutation','caul-ucm')][string]$Comparison = 'scene',
  [switch]$Editor,
  [switch]$MobilePreview,
  [switch]$CameraMotion,
@@ -14,13 +14,15 @@ param(
 $ErrorActionPreference='Stop'
 if($Comparison -eq 'mobile-light-permutation' -and !$MobilePreview){throw 'The local-light permutation comparison requires MobilePreview.'}
 foreach ($scene in $Scenes) {
- if ($scene -notin @('outdoor','indoor','effects','caul')) { throw "Unknown scene $scene" }
+ if ($scene -notin @('outdoor','indoor','effects','caul','caul-tower')) { throw "Unknown scene $scene" }
+ if($Comparison -eq 'caul-ucm' -and $scene -ne 'caul-tower'){throw 'Use the caul-tower scene for the stationary UCM comparison.'}
  foreach ($variant in $Variants) {
   $runDirectory=Join-Path $OutputRoot "$scene-$variant"
   if (Test-Path (Join-Path $runDirectory "Saved/Performance/$scene/summary.json")) { throw "Run already exists: $runDirectory" }
   New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
   $enabled=if($variant -eq 'optimized'){1}else{0}
   $settings=switch($Comparison) {
+   'caul-ucm' { 'ace.UI.IndexedLookups 1,ace.Render.ReusePrimitiveBuffers 1' }
    # Keep actor caching enabled in both phases; isolate the mobile light shader
    # policy that can rebuild cached draws whenever animated parts move near lights.
    'mobile-light-permutation' { "ace.Render.CachedActorDraws 1,r.Mobile.Forward.LocalLightsSinglePermutation $enabled" }
@@ -38,6 +40,7 @@ foreach ($scene in $Scenes) {
   $commands="r.VSync 0,t.MaxFPS 0,r.SetRes ${Width}x${Height}w,$settings,ace.PerfScene $scene"
   $arguments=@('-nohmd','-unattended','-nosound','-ACEPerfQuit',"-UserDir=`"$runDirectory/`"","-abslog=`"$runDirectory/run.log`"","-ExecCmds=`"$commands`"")
   if($CameraMotion){$arguments+='-ACEPerfCameraMotion'}
+  if($Comparison -eq 'caul-ucm'){$arguments+=@("-ACEPerfCaulUCM=$variant","-ACEPerfResolution=${Width}x${Height}")}
   if($Editor){
    $arguments=@([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../ACUnreal.uproject')),'-game')+$arguments
   }

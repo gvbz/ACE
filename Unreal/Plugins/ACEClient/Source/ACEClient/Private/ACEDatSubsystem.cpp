@@ -2204,7 +2204,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceUnlitTexturedMaterialBase()
 UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 {
 	// PDO / material graph bumps without a full landmesh wipe.
-	static constexpr int32 LandMatGraphVersion = 42;
+	static constexpr int32 LandMatGraphVersion = 43;
 	static int32 AppliedLandMatGraphVersion = 0;
 	if (AppliedLandMatGraphVersion != LandMatGraphVersion)
 	{
@@ -2220,7 +2220,7 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 #if WITH_EDITORONLY_DATA
 	// The aperture mask must run in the depth pass too. Clipping only BaseColor
 	// on an opaque material leaves invisible terrain depth occluding interiors.
-	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(), TEXT("M_ACELandLit_v42"), RF_Public | RF_Transient);
+	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(), TEXT("M_ACELandLit_v43"), RF_Public | RF_Transient);
 	if (!Mat)
 	{
 		return nullptr;
@@ -2528,9 +2528,30 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 	EditorOnly->Roughness.Expression = Rough;
 	EditorOnly->Specular.Expression = Spec;
 	EditorOnly->Metallic.Expression = Metal;
-	// Slight PixelDepthOffset so StabList EnvCell floors win z vs coplanar LScape
-	// (outdoor look-in). Do not raise EnvCell geometry.
-	EditorOnly->PixelDepthOffset.Expression = DepthBias;
+	// Outdoor water is a textured land polygon with no separate bottom mesh.
+	// Draw the texture at the authored surface but depth-test objects down to
+	// the wading bed. Keep the normal doorway bias on both dry and wet terrain.
+	auto* Depths = NewObject<UMaterialExpressionVectorParameter>(Mat);
+	Depths->ParameterName = TEXT("WaterBedDepthCm");
+	Depths->DefaultValue = FLinearColor::Transparent;
+	auto* TexCoords = NewObject<UMaterialExpressionTextureCoordinate>(Mat);
+	auto* View = NewObject<UMaterialExpressionCameraVectorWS>(Mat);
+	auto* WaterBias = NewObject<UMaterialExpressionCustom>(Mat);
+	WaterBias->OutputType = CMOT_Float1;
+	WaterBias->Code = TEXT("float d = UV.y >= .5 ? (UV.x >= .5 ? D.r : D.g) : (UV.x >= .5 ? NW : D.b); ")
+		TEXT("return Bias + d / max(.05f, ViewDir.z);");
+	auto BedInput = [WaterBias](const TCHAR* Name, UMaterialExpression* Expression, int32 Output = 0)
+	{
+		FCustomInput In; In.InputName = Name; In.Input.Expression = Expression; In.Input.OutputIndex = Output;
+		WaterBias->Inputs.Add(In);
+	};
+	BedInput(TEXT("D"), Depths); BedInput(TEXT("NW"), Depths, 4); // vector parameter outputs RGB and separate A
+	BedInput(TEXT("UV"), TexCoords); BedInput(TEXT("ViewDir"), View); BedInput(TEXT("Bias"), DepthBias);
+	EditorOnly->ExpressionCollection.AddExpression(Depths);
+	EditorOnly->ExpressionCollection.AddExpression(TexCoords);
+	EditorOnly->ExpressionCollection.AddExpression(View);
+	EditorOnly->ExpressionCollection.AddExpression(WaterBias);
+	EditorOnly->PixelDepthOffset.Expression = WaterBias;
 	WireRetailDistanceFog(Mat, EditorOnly, LandEmisClipped, 0, LandBaseClipped, 0);
 
 	Mat->PreEditChange(nullptr);
@@ -2541,10 +2562,10 @@ UMaterialInterface* UACEDatSubsystem::EnsureAceLandMaterialBase()
 	Mat->ForceRecompileForRendering();
 #endif
 	LandMaterialBase = Mat;
-	UE_LOG(LogTemp, Log, TEXT("ACEDat: created Lit land material v42 (cloud opacity + PortalList + indoor footprint clip)"));
+	UE_LOG(LogTemp, Log, TEXT("ACEDat: created Lit land material v43"));
 	return LandMaterialBase;
 #else
-	LandMaterialBase = LoadCookedAceMaterial(TEXT("M_ACELandLit_v42"));
+	LandMaterialBase = LoadCookedAceMaterial(TEXT("M_ACELandLit_v43"));
 	return LandMaterialBase;
 #endif
 }
@@ -4494,6 +4515,7 @@ UMaterialInterface* UACEDatSubsystem::GetOrCreateLandMaterial(uint32 PCode, cons
 	MID->SetTextureParameterValue(TEXT("Texture"), Tex);
 	MID->SetTextureParameterValue(TEXT("ACETexture"), Tex);
 	MID->SetScalarParameterValue(TEXT("LandDepthBias"), 0.f);
+	MID->SetVectorParameterValue(TEXT("WaterBedDepthCm"), FACELandblockMeshBuilder::GetWaterDepthsAc(PCode) * 100.f);
 	ApplyDistanceFogToMid(MID);
 	ApplyOutdoorPortalLandClipToMid(MID);
 	ApplyLandInteriorClipToMid(MID);

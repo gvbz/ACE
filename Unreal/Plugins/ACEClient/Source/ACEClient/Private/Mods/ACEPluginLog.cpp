@@ -21,7 +21,7 @@ void UACEPluginSubsystem::LogUCMEvent(const FACEClientPlugin& P,const FString& M
         auto E=MakeShared<FJsonObject>();E->SetNumberField(TEXT("time"),FDateTime::UtcNow().ToUnixTimestamp());E->SetStringField(TEXT("text"),Message.Left(1024));E->SetNumberField(TEXT("level"),int32(Level));
         if(Current->LogEntries.Num()>=200)Current->LogEntries.RemoveAt(0);Current->LogEntries.Add(MakeShared<FJsonValueObject>(E));
     }
-    if(P.Id!=TEXT("ucm"))return;
+    if(P.Id!=TEXT("ucm")&&!P.UsesCompactControls())return;
     FString Context=TEXT("Character: ")+Field(P.ProfileLinks,TEXT("Character")).Left(128);
     FString Route=Field(P.ProfileLinks,TEXT("Routes"));if(Route.IsEmpty())Route=Field(P.Profile,TEXT("nav_source"));
     if(!Route.IsEmpty())Context+=TEXT(" | Route: ")+FPaths::GetCleanFilename(Route).Left(128);

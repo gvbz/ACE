@@ -5,7 +5,7 @@
   "name": "Dereth Foundry",
   "short_name": "FORGE",
   "version": "1.0.0",
-  "description": "An optional workshop for ACE administrators: content imports and exports, placement, landblocks, quests, recipes and generators. Server access rules apply.",
+  "description": "Import, edit and place ACE world content with server administrator tools.",
   "permissions": ["state", "ui", "data", "admin_content"],
   "snapshot_fields": ["selection", "position"],
   "update_interval": 1,

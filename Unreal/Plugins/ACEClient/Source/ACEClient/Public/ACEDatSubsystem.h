@@ -753,6 +753,7 @@ private:
 	TUniquePtr<FACELandSurfaceAtlas> LandAtlas;
 	mutable TUniquePtr<FACEDatMotionPlayer> MotionPlayer;
 	friend class FACERetailMeshApplicationTest;
+	friend class FACEWaterTargetTest;
 	friend class FACEMissingDatLoginTest;
 	friend class FACETerrainArrivalTest;
 	friend class FACEDoorwayGeometryCacheTest;

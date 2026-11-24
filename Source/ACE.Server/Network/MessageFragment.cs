@@ -1,15 +1,16 @@
 using System;
 
-using ACE.Server.Network.GameMessages;
+using Microsoft.Extensions.Logging;
 
-using log4net;
+using ACE.Common.Logging;
+using ACE.Server.Network.GameMessages;
 
 namespace ACE.Server.Network
 {
     internal class MessageFragment
     {
-        private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
-        private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
+        private static readonly ILogger log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        private static readonly ILogger packetLog = LogManager.GetLogger("Packets");
 
         public GameMessage Message { get; private set; }
 
@@ -84,9 +85,9 @@ namespace ACE.Server.Network
             if (DataRemaining < dataToSend)
                 throw new InvalidOperationException("More data to send then data remaining!");
 
-            // Broadcasts share a fully serialized GameMessage across sessions, whose
-            // outbound ticks run in parallel. Copy by offset: Seek/Read would race
-            // on the shared stream cursor and corrupt fragments or throw.
+            // Copy dataToSend bytes starting at position directly from the message's buffer.
+            // The same GameMessage is often queued to several sessions (see EnqueueBroadcast), and sessions send in parallel,
+            // so the shared MemoryStream's Position must not be used here: one session's Seek would move another session's Read.
             byte[] data = new byte[dataToSend];
             Buffer.BlockCopy(Message.Data.GetBuffer(), position, data, 0, dataToSend);
 

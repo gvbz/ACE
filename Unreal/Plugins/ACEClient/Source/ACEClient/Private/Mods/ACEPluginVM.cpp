@@ -379,8 +379,89 @@ bool FACEPluginVM::Load(const FString& Source, FString& Error, const FString& Po
     Function=int(lua_tointeger(State,-1));lua_pop(State,1);
     return true;
 }
+void FACEPluginVM::PushInventory(lua_State* L,const TArray<TSharedPtr<FJsonValue>>& Rows)
+{
+    lua_createtable(L,Rows.Num(),0);
+    const int NewTable=lua_gettop(L);
+    if(InventoryTable.Ref!=LUA_NOREF)
+    {
+        // Keep the old outer table intact for in-flight decisions. Carry forward
+        // only immutable rows that still occupy the same slot in the new snapshot.
+        lua_rawgeti(L,LUA_REGISTRYINDEX,InventoryTable.Ref);
+        for(int32 I=0;I<FMath::Min(Rows.Num(),InventoryRows.Num());++I)
+            if(Rows[I] && InventoryRows[I].Pin()==Rows[I])
+            {
+                lua_rawgeti(L,-1,I+1);
+                lua_rawseti(L,NewTable,I+1);
+            }
+        lua_pop(L,1);
+        luaL_unref(L,LUA_REGISTRYINDEX,InventoryTable.Ref);
+        InventoryTable.Ref=LUA_NOREF;
+    }
+    else InventoryRows.Reset();
+    InventoryRows.SetNum(Rows.Num());
+    for(int32 I=0;I<Rows.Num();++I)
+        if(InventoryRows[I].Pin()!=Rows[I])
+        {
+            PushJson(L,Rows[I].Get(),2);
+            lua_rawseti(L,NewTable,I+1);
+            InventoryRows[I]=Rows[I];
+        }
+}
+
+int FACEPluginVM::PushUCMArgument(lua_State* L)
+{
+    const auto* Object=static_cast<const FJsonObject*>(lua_touserdata(L,1));
+    auto* VM=static_cast<FACEPluginVM*>(lua_touserdata(L,2));
+    const bool Profile=lua_toboolean(L,3)!=0;
+    // Release obsolete references before marshalling replacements against the VM heap limit.
+    auto Invalidate=[&](FInputTable& Table,const TCHAR* Field)
+    {
+        const auto* Current=Object->Values.Find(Field);
+        if(Table.Ref!=LUA_NOREF && (!Current || !Current->IsValid() || Table.Source.Pin()!=*Current))
+        {
+            luaL_unref(L,LUA_REGISTRYINDEX,Table.Ref);
+            Table.Ref=LUA_NOREF;
+            Table.Source.Reset();
+        }
+    };
+    if(Profile)Invalidate(VM->LootRulesTable,TEXT("loot_rules"));
+    else
+    {
+        Invalidate(VM->SpellTable,TEXT("spells"));
+        if(!Object->HasTypedField<EJson::Array>(TEXT("inventory")))
+        {
+            Invalidate(VM->InventoryTable,TEXT("inventory"));
+            VM->InventoryRows.Reset();
+        }
+    }
+    lua_createtable(L,0,Object->Values.Num());
+    for(const auto& Field:Object->Values)
+    {
+        FInputTable* Table=nullptr;
+        if(Profile && Field.Key==TEXT("loot_rules"))Table=&VM->LootRulesTable;
+        else if(!Profile && Field.Key==TEXT("spells"))Table=&VM->SpellTable;
+        else if(!Profile && Field.Key==TEXT("inventory"))Table=&VM->InventoryTable;
+        if(Table && Table->Ref!=LUA_NOREF && Table->Source.Pin()==Field.Value)lua_rawgeti(L,LUA_REGISTRYINDEX,Table->Ref);
+        else
+        {
+            if(Table==&VM->InventoryTable && Field.Value && Field.Value->Type==EJson::Array)
+                VM->PushInventory(L,Field.Value->AsArray());
+            else PushJson(L,Field.Value.Get(),1);
+            if(Table && Field.Value && Field.Value->Type==EJson::Array)
+            {
+                lua_pushvalue(L,-1);
+                Table->Ref=luaL_ref(L,LUA_REGISTRYINDEX);
+                Table->Source=Field.Value;
+            }
+        }
+        lua_setfield(L,-2,TCHAR_TO_UTF8(*Field.Key));
+    }
+    return 1;
+}
+
 bool FACEPluginVM::Step(const TSharedPtr<FJsonObject>& Snapshot, const TSharedPtr<FJsonObject>& Profile,
-    TSharedPtr<FJsonObject>& Intent, FString& Error)
+    TSharedPtr<FJsonObject>& Intent, FString& Error, bool bBundledUCMInputs)
 {
     ACE_PROFILE_SCOPE(PluginLua);
     TRACE_CPUPROFILER_EVENT_SCOPE(ACEPluginLuaStep);
@@ -391,11 +472,15 @@ bool FACEPluginVM::Step(const TSharedPtr<FJsonObject>& Snapshot, const TSharedPt
     lua_rawgeti(State, LUA_REGISTRYINDEX, Function);
     {
         TRACE_CPUPROFILER_EVENT_SCOPE(ACEPluginLuaInputs);
-        for (const auto* Object : {Snapshot.Get(), Profile.Get()})
+        for(bool IsProfile:{false,true})
         {
-            lua_pushcfunction(State, PushArgument); lua_pushlightuserdata(State, const_cast<FJsonObject*>(Object));
-            const int Result=lua_pcall(State,1,1,0);
-            if(Result!=LUA_OK){Error=RuntimeError(Object==Snapshot.Get()?TEXT("snapshot input"):TEXT("profile input"),Result,Snapshot.Get(),Profile.Get());return false;}
+            auto* Object=IsProfile?Profile.Get():Snapshot.Get();
+            const bool Reuse=bBundledUCMInputs && Object;
+            lua_pushcfunction(State,Reuse?PushUCMArgument:PushArgument);
+            lua_pushlightuserdata(State,Object);
+            if(Reuse){lua_pushlightuserdata(State,this);lua_pushboolean(State,IsProfile);}
+            const int Result=lua_pcall(State,Reuse?3:1,1,0);
+            if(Result!=LUA_OK){Error=RuntimeError(IsProfile?TEXT("profile input"):TEXT("snapshot input"),Result,Snapshot.Get(),Profile.Get());return false;}
         }
     }
     {

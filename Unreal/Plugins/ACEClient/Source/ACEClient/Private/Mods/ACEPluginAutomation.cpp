@@ -28,6 +28,26 @@ namespace
     double N(const TSharedPtr<FJsonObject>& O,const TCHAR* K,double Default=0){double V;return O&&O->TryGetNumberField(K,V)&&FMath::IsFinite(V)?V:Default;}
     FString S(const TSharedPtr<FJsonObject>& O,const TCHAR* K){FString V;if(O)O->TryGetStringField(K,V);return V;}
     bool B(const TSharedPtr<FJsonObject>& O,const TCHAR* K,bool Default=false){bool V;return O&&O->TryGetBoolField(K,V)?V:Default;}
+    // Revalidate the whole chain when the intent runs. Closed chest objects can
+    // remain in awareness, and a ViewContents refresh can revoke one member.
+    bool AccessibleForPackMove(const FACESession& Session, int32 Guid, int32 Exclude = 0)
+    {
+        TSet<int32> Seen;
+        while (Guid && Guid != Exclude && !Seen.Contains(Guid))
+        {
+            if (Session.GetTradeSelfItems().Contains(Guid) || Session.GetTradePartnerItems().Contains(Guid)) return false;
+            if (Guid == Session.GetPlayerGuid() || Guid == Session.GetOpenExternalContainerGuid()) return true;
+            const auto* Item = Session.GetWorldObjects().Find(Guid);
+            if (!Item || !Item->ContainerId || Item->WielderId || Item->ParentGuid || Item->CurrentWieldedLocation) return false;
+            // The main pack also accepts ObjectCreate inventory received after
+            // PlayerDescription. Side packs and external ViewContents keep a live list.
+            if (const auto* List = Session.GetContainerContents(Item->ContainerId); List && Item->ContainerId != Session.GetPlayerGuid())
+                if (!List->ContainsByPredicate([Guid](const FACEContainerItemRef& Ref){ return Ref.ItemGuid == Guid; })) return false;
+            Seen.Add(Guid);
+            Guid = Item->ContainerId;
+        }
+        return false;
+    }
     int32 ItemUseCombatMode(const FACEWorldObject& Item)
     {
         // Healer and ManaStone accept armed use. Food temporarily animates in
@@ -55,11 +75,10 @@ namespace
     {
         return Sight.Location(Obj)+FVector(0,0,FMath::Max(15.f,BodyHeight(Dat,Obj)*.6f));
     }
-    bool CombatSight(UACEClientSubsystem* Client,UACEDatSubsystem* Dat,const FACEPosition& Player,
+    bool CombatSight(float SourceHeight,UACEDatSubsystem* Dat,const FACEPosition& Player,
         const FACEWorldObject& Target,const FACEPluginSightQuery& Sight)
     {
-        FACEWorldObject Caster;Client->GetWorldObject(Client->GetPlayerGuid(),Caster);
-        const float SourceHeight=BodyHeight(Dat,Caster),TargetHeight=BodyHeight(Dat,Target);
+        const float TargetHeight=BodyHeight(Dat,Target);
         // ACE's targeted bolts aim at 2/3 of the scaled physics height. Do not
         // aim from the camera, a fixed eye height, or a rat's stale packet pose.
         const FVector Start=Player.ToUnrealLocation()+FVector(0,0,SourceHeight*2.f/3.f);
@@ -67,7 +86,7 @@ namespace
         // UCM safety margin, not a claim to know server-only projectile templates.
         // Avoid grazing corners; keep the corridor above the floor for tiny bodies.
         const float Clearance=FMath::Min3(15.f,SourceHeight/3.f,TargetHeight/3.f);
-        return Sight.Clear(Start,End,Clearance);
+        return Sight.Clear(Start,End,Clearance,/*TargetThroughWater*/true);
     }
     TSharedPtr<FJsonObject> Pos(const FACEPosition& P)
     {
@@ -501,21 +520,24 @@ void UACEPluginSubsystem::CompletePendingAction(uint32 Error)
     PendingSpellItemConfirmations.Empty();
     PendingSpellRecoveryConfirmations.Empty();
 }
-void UACEPluginSubsystem::RecordCombatOutcome(bool Hit)
+void UACEPluginSubsystem::RecordCombatOutcome(bool Hit,bool MissileOutOfRange)
 {
     auto P=Find(PhysicalAttackOwner);auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();
     const double Now=FPlatformTime::Seconds();FACEWorldObject Target;
     if(!P||!P->Running||!PhysicalAttackTarget||Now>PhysicalAttackUntil
         ||C->GetSelectedObject().Guid!=PhysicalAttackTarget||!C->GetWorldObject(PhysicalAttackTarget,Target))return;
-    AddCombatOutcome(PhysicalAttackTarget,Hit);
+    if(MissileOutOfRange && (PhysicalAttackMode!=4 || PendingSpell || !Target.bHasPosition))return;
+    const double Distance=MissileOutOfRange?FVector::Distance(C->GetPlayerPosition().ToUnrealLocation(),Target.Position.ToUnrealLocation())/100.:-1.;
+    AddCombatOutcome(PhysicalAttackTarget,Hit,false,0,0,Distance);
 }
-void UACEPluginSubsystem::AddCombatOutcome(int32 Target,bool Hit,bool Unhittable,int32 Spell,int32 Damage)
+void UACEPluginSubsystem::AddCombatOutcome(int32 Target,bool Hit,bool Unhittable,int32 Spell,int32 Damage,double RejectedDistance)
 {
     auto E=MakeShared<FJsonObject>();E->SetNumberField(TEXT("serial"),++CombatOutcomeSerial);
     E->SetNumberField(TEXT("target"),uint32(Target));E->SetBoolField(TEXT("hit"),Hit);E->SetBoolField(TEXT("unhittable"),Unhittable);
     E->SetNumberField(TEXT("time"),FPlatformTime::Seconds());
     if(Spell)E->SetNumberField(TEXT("spell"),Spell);
     if(Damage>0)E->SetNumberField(TEXT("damage"),Damage);
+    if(RejectedDistance>=0)E->SetNumberField(TEXT("missile_rejected_distance"),RejectedDistance);
     CombatOutcomes.Add(MakeShared<FJsonValueObject>(E));if(CombatOutcomes.Num()>128)CombatOutcomes.RemoveAt(0);
 }
 void UACEPluginSubsystem::ExpireOffensiveCasts(double Now)
@@ -606,14 +628,16 @@ void UACEPluginSubsystem::RefreshAutomationData()
     auto* C=GetGameInstance()->GetSubsystem<UACEClientSubsystem>();auto Session=C->GetSession();
     if(!Session || C->GetSessionState()!=EACESessionState::InWorld)
     {
+        PluginWaypoint.Reset();
         SaveItemBuffTimers();SaveEquipmentAppraisals();EquipmentAssessments.Empty();ActionOutcomes.Empty();FellowshipTells.Reset();UCMCraft.Reset();UCMServicesProfile.Reset();FellowshipManagerStatus.Empty();
         CombatTarget=0;DefeatedTargets.Empty();LastCombatDeath.Reset();LastCombatVitals=FIntVector(-1,-1,-1);
         ConfirmedBuffAckAt=BuffRetryAt=0;ConfirmedBuffOwner.Empty();DeferredBuffIntent.Reset();DeferredBuffOwner.Empty();PendingBuffResultDriven=false;
-        DataPlayer=0;Appraisals.Empty();TargetAppraisalTimes.Empty();TargetHealthSamples.Empty();CorpseFirstSeen.Empty();LootedCorpses.Empty();AppraisalRequests.Empty();ItemBuffs.Empty();CachedInventory.Empty();CachedInventoryIndices.Empty();DirtyInventoryAppraisals.Empty();ClearBuffRequests();
+        DataPlayer=0;Appraisals.Empty();TargetAppraisalTimes.Empty();TargetHealthSamples.Empty();CorpseFirstSeen.Empty();LootedCorpses.Empty();AppraisalRequests.Empty();ItemBuffs.Empty();CachedInventory.Empty();CachedInventoryArray.Reset();CachedInventoryIndices.Empty();DirtyInventoryAppraisals.Empty();ClearBuffRequests();
         PendingSpell=0;PendingSpellOwner.Empty();FastCastOwner.Empty();OptionalCastOwner.Empty();PendingManaRefresh=false;PendingResourceRefresh.Empty();Debuffs.Empty();PendingDebuffCasts.Empty();OffensiveCasts.Empty();InventoryRevision=MAX_uint64;C->BackgroundAppraisals.Empty();return;
     }
     if(DataPlayer!=C->GetPlayerGuid()||DataServer!=C->GetServerName()||ObservedSession.Pin()!=Session)
     {
+        PluginWaypoint.Reset();
         FellowshipTells.Reset();UCMCraft.Reset();UCMServicesProfile.Reset();FellowshipManagerStatus.Empty();
         SaveItemBuffTimers();SaveEquipmentAppraisals();
         UnbindCombatEvents();CombatTarget=0;DefeatedTargets.Empty();LastCombatDeath.Reset();LastCombatVitals=FIntVector(-1,-1,-1);
@@ -636,7 +660,7 @@ void UACEPluginSubsystem::RefreshAutomationData()
         TellHandle=Session->OnPlayerTell.AddUObject(this,&UACEPluginSubsystem::ObservePlayerTell);ClearBuffRequests();
         DataPlayer=C->GetPlayerGuid();DataServer=C->GetServerName();NextAppraisalScan=0;Appraisals.Empty();TargetAppraisalTimes.Empty();TargetHealthSamples.Empty();CachedSpeciesNames.Reset();CorpseFirstSeen.Empty();LootedCorpses.Empty();AppraisalRequests.Empty();ItemBuffs.Empty();
         LoadItemBuffTimers();LoadEquipmentAppraisals();
-        CachedInventory.Empty();CachedInventoryIndices.Empty();DirtyInventoryAppraisals.Empty();
+        CachedInventory.Empty();CachedInventoryArray.Reset();CachedInventoryIndices.Empty();DirtyInventoryAppraisals.Empty();
         PendingSpell=0;PendingSpellOwner.Empty();FastCastOwner.Empty();OptionalCastOwner.Empty();PendingResourceRefresh.Empty();PendingManaRefresh=false;Debuffs.Empty();PendingDebuffCasts.Empty();InventoryRevision=MAX_uint64;++DataRevision;C->BackgroundAppraisals.Empty();
     }
     ExpireOffensiveCasts(FPlatformTime::Seconds());
@@ -848,6 +872,7 @@ TSharedPtr<FJsonValue> UACEPluginSubsystem::PluginItemSnapshot(const FACEWorldOb
     J->SetNumberField(TEXT("object_class"),ACEVTObjectClass::Classify(Item));
     J->SetNumberField(TEXT("material"),Item.MaterialType);J->SetNumberField(TEXT("value"),Item.Value);J->SetNumberField(TEXT("count"),FMath::Max(1,Item.StackSize));
     J->SetNumberField(TEXT("max_stack"),Item.MaxStackSize);J->SetNumberField(TEXT("container"),uint32(Item.ContainerId));
+    J->SetNumberField(TEXT("placement"),Item.PlacementPosition);
     J->SetNumberField(TEXT("spell"),Item.SpellDID);
     if(ACEVTObjectClass::Classify(Item)==42&&Item.SpellDID)
     {
@@ -1090,7 +1115,8 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
     if(LastCombatDeath)Out->SetObjectField(TEXT("combat_death"),LastCombatDeath);
     else Out->RemoveField(TEXT("combat_death"));
     Out->SetNumberField(TEXT("portal_serial"),MetaPortalSerial);Out->SetArrayField(TEXT("portal_events"),MetaPortalEvents);Out->SetBoolField(TEXT("portal_space"),MetaPortalSpace);
-    Out->SetNumberField(TEXT("selected"),uint32(C->GetSelectedObject().Guid));Out->SetNumberField(TEXT("vendor"),uint32(C->GetOpenVendorGuid()));
+    const auto& Selection=Session->GetSelectedObject();
+    Out->SetNumberField(TEXT("selected"),uint32(Selection.Guid));Out->SetNumberField(TEXT("vendor"),uint32(C->GetOpenVendorGuid()));
     FACEWorldObject Vendor;
     TArray<TSharedPtr<FJsonValue>> Stock;
     TArray<TSharedPtr<FJsonValue>> Notes;
@@ -1222,6 +1248,12 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
     Out->SetObjectField(TEXT("species_names"),CachedSpeciesNames);
     Out->SetBoolField(TEXT("container_is_corpse"),C->GetWorldObject(C->GetOpenExternalContainerGuid(),Container)&&Container.IsCorpse());
     TArray<TSharedPtr<FJsonValue>> Targets,Corpses,Contents,RouteObjects;bool OwnedPet=false;TSet<int32> ArmoredParents;
+    const int32 OpenContainer = Session->GetOpenExternalContainerGuid();
+    const auto* ExpectedContents = Session->GetContainerContents(OpenContainer);
+    TSet<int32> ListedItems;
+    if (ExpectedContents)
+        for (const auto& Ref : *ExpectedContents) ListedItems.Add(Ref.ItemGuid);
+    TArray<int32> StoragePacks;
     for(const auto& Pair:Session->GetWorldObjects())
     {
         const auto& Obj=Pair.Value;
@@ -1236,7 +1268,13 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
             && !DefeatedTargets.Contains(Obj.Guid)
             && FVector::DistSquared(Obj.Position.ToUnrealLocation(),P.ToUnrealLocation())<=FMath::Square(24000.))OwnedPet=true;
         if(Obj.IsCorpse()&&!CorpseFirstSeen.Contains(Obj.Guid))CorpseFirstSeen.Add(Obj.Guid,Now);
-        if(C->GetOpenExternalContainerGuid() && Obj.ContainerId==C->GetOpenExternalContainerGuid()){Contents.Add(ItemJson(Obj));continue;}
+        if(OpenContainer && Obj.ContainerId==OpenContainer)
+        {
+            if (ExpectedContents && !ListedItems.Contains(Obj.Guid)) continue;
+            Contents.Add(ItemJson(Obj));
+            if (Obj.ItemsCapacity != 0) StoragePacks.Add(Obj.Guid);
+            continue;
+        }
         if(!Obj.IsSelectableWorldObject() || FVector::DistSquared(Obj.Position.ToUnrealLocation(),P.ToUnrealLocation())>FMath::Square(24000.))continue;
         const bool Monster=Obj.IsAttackable()&&!Obj.bIsPlayer&&!Obj.PetOwnerId&&(Obj.ItemType&ACEItemType::Creature);
         if(!Monster&&!Obj.IsCorpse())
@@ -1266,8 +1304,11 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
             J->SetNumberField(TEXT("attack_height"),ACEPluginCombat::AttackHeight(*Dat,Obj,P));
             J->SetArrayField(TEXT("preferred_elements"),ACEPluginCombat::PreferredElements(Obj.Name));
             J->SetNumberField(TEXT("angle"),FMath::Abs(FMath::FindDeltaAngleDegrees(N(Out,TEXT("heading")),double(Delta.Rotation().Yaw))));
-            if(C->GetSelectedObject().Guid==Obj.Guid&&C->GetSelectedObject().bShowHealth&&C->GetSelectedObject().HealthFraction<=0)continue;
-            if(C->GetSelectedObject().Guid==Obj.Guid&&C->GetSelectedObject().bShowHealth)J->SetNumberField(TEXT("health_fraction"),C->GetSelectedObject().HealthFraction);
+            if(Selection.Guid==Obj.Guid && Selection.bShowHealth)
+            {
+                if(Selection.HealthFraction<=0)continue;
+                J->SetNumberField(TEXT("health_fraction"),Selection.HealthFraction);
+            }
             auto Resist=MakeShared<FJsonObject>();const auto* A=Appraisals.Find(Obj.Guid);
             J->SetBoolField(TEXT("identified"),A&&A->bSuccess);
             // A failed background assessment has already answered. Use the
@@ -1320,17 +1361,28 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
     Targets.Sort(Sort);Corpses.Sort(Sort);RouteObjects.Sort(Sort);
     Contents.Sort([](const auto& A,const auto& B){return N(A->AsObject(),TEXT("id"))<N(B->AsObject(),TEXT("id"));});
     bool Ready=true;
-    if(C->GetOpenExternalContainerGuid())
+    if(OpenContainer)
     {
-        const auto* Expected=Session->GetContainerContents(C->GetOpenExternalContainerGuid());
-        Ready=Expected!=nullptr;
-        if(Expected)for(const auto& Ref:*Expected)
+        Ready=ExpectedContents!=nullptr;
+        if(ExpectedContents)for(const auto& Ref:*ExpectedContents)
         {
             FACEWorldObject Item;
             if(!C->GetWorldObject(Ref.ItemGuid,Item)||Item.Name.IsEmpty()||!Item.WeenieClassId){Ready=false;break;}
         }
     }
     Out->SetBoolField(TEXT("contents_ready"),Ready);
+    // Keep contents direct: corpse policies use its size to decide when to close.
+    TArray<TSharedPtr<FJsonValue>> PackContents;
+    for (int32 Pack : StoragePacks)
+    {
+        if (!AccessibleForPackMove(*Session, Pack)) continue;
+        TArray<int32> Items;
+        Session->GetPackItemGuids(Pack, Items);
+        for (int32 Guid : Items)
+            if (const auto* Item = Session->GetWorldObjects().Find(Guid); Item && Item->ContainerId == Pack)
+                PackContents.Add(ItemJson(*Item));
+    }
+    Out->SetArrayField(TEXT("external_pack_contents"),MoveTemp(PackContents));
     if(Targets.Num()>128)Targets.SetNum(128);if(Corpses.Num()>64)Corpses.SetNum(64);if(RouteObjects.Num()>256)RouteObjects.SetNum(256);
     for(const auto& Value:Targets)Value->AsObject()->SetBoolField(TEXT("has_shield"),ArmoredParents.Contains(int32(uint32(N(Value->AsObject(),TEXT("id"))))));
     if(UWorld* World=GetWorld())
@@ -1394,11 +1446,12 @@ void UACEPluginSubsystem::ExtendSnapshot(const TSharedPtr<FJsonObject>& Out)
                 J->SetBoolField(TEXT("line_of_sight"),Sight.Clear(Eye,SightPoint(Dat,Obj,Sight)));
             }
         }
+        const float SourceHeight=BodyHeight(Dat,PlayerObject);
         for(auto* List:{&Targets,&Corpses})for(const auto& Value:*List)
         {
-            auto J=Value->AsObject();FACEWorldObject Obj;
-            const bool Clear=C->GetWorldObject(int32(uint32(N(J,TEXT("id")))),Obj)
-                &&(Obj.IsCorpse()?Sight.Clear(Eye,SightPoint(Dat,Obj,Sight)):CombatSight(C,Dat,P,Obj,Sight));
+            auto J=Value->AsObject();
+            const auto* Obj=Session->GetWorldObjects().Find(int32(uint32(N(J,TEXT("id")))));
+            const bool Clear=Obj && (Obj->IsCorpse()?Sight.Clear(Eye,SightPoint(Dat,*Obj,Sight),0.f,true):CombatSight(SourceHeight,Dat,P,*Obj,Sight));
             J->SetBoolField(TEXT("line_of_sight"),Clear);
         }
     }
@@ -1415,7 +1468,9 @@ bool UACEPluginSubsystem::HasClearCombatSight(const FACEWorldObject& Target) con
     auto* PC=Cast<AACEPlayerController>(GetGameInstance()->GetFirstLocalPlayerController());
     FACEPosition P=C->GetPlayerPosition();if(PC)PC->TryGetLocallyPredictedPosition(P);
     FACEPluginSightQuery Sight(*World,PC?PC->GetPawn():nullptr);
-    return CombatSight(C,GetGameInstance()->GetSubsystem<UACEDatSubsystem>(),P,Target,Sight);
+    auto* Dat=GetGameInstance()->GetSubsystem<UACEDatSubsystem>();
+    FACEWorldObject Caster;C->GetWorldObject(C->GetPlayerGuid(),Caster);
+    return CombatSight(BodyHeight(Dat,Caster),Dat,P,Target,Sight);
 }
 bool UACEPluginSubsystem::PrepareCombatAction(FACEClientPlugin& P,const TSharedPtr<FJsonObject>& I,int32 Mode)
 {
@@ -1685,9 +1740,42 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
     }
     if(Action==TEXT("store_item"))
     {
-        const double TargetId=N(I,TEXT("target"));FACEWorldObject Bag;
-        if(Owned&&TargetId>0&&TargetId<=MAX_uint32&&FMath::FloorToDouble(TargetId)==TargetId&&C->GetWorldObject(int32(uint32(TargetId)),Bag)&&C->IsOwnedInventoryItem(Bag)&&Bag.ItemsCapacity>C->GetPackItems(Bag.Guid).Num()&&!(Item.ItemType&ACEItemType::Container)&&!(Item.ObjectDescriptionFlags&ACEObjectDescFlag::RequiresPackSlot))
-        {C->SendPutItemInContainer(Id,Bag.Guid,0);P.NextAction=Now+1;}else ReportActivityFailure(P,I,TEXT("AutoCram destination is unavailable or full"));return true;
+        const auto Session = C->GetSession();
+        const double Target = N(I,TEXT("target"));
+        const bool ExplicitPlacement = I->HasField(TEXT("placement"));
+        const double Placement = N(I,TEXT("placement"),-1);
+        if (!I->HasTypedField<EJson::Number>(TEXT("item")) || !I->HasTypedField<EJson::Number>(TEXT("target"))
+            || Target <= 0 || Target > MAX_uint32 || FMath::FloorToDouble(Target) != Target
+            || (ExplicitPlacement && (!I->HasTypedField<EJson::Number>(TEXT("placement")) || Placement < 0
+                || Placement > MAX_int32 || FMath::FloorToDouble(Placement) != Placement)))
+        {
+            ReportActivityFailure(P,I,TEXT("Pack moves require item and target IDs and an optional nonnegative integer placement"));
+            return true;
+        }
+        const int32 Destination = int32(uint32(Target));
+        FACEWorldObject Bag;
+        if (!Session || !Found || !Item.ContainerId || Id == C->GetPlayerGuid() || Id == C->GetOpenExternalContainerGuid()
+            || Item.bIsPlayer || (Item.ItemType & ACEItemType::Creature) || Item.ContainersCapacity != 0
+            || !AccessibleForPackMove(*Session, Id) || !AccessibleForPackMove(*Session, Destination, Id)
+            || !C->GetWorldObject(Destination,Bag) || (Destination != C->GetPlayerGuid() && !Bag.IsOpenable())
+            || !ACEInventoryRules::CheckHookStatus(Item,Bag))
+        {
+            ReportActivityFailure(P,I,TEXT("Item or destination is unavailable for a pack move"));
+            return true;
+        }
+        const int32 Amount = FMath::Max(1,Item.StackSize);
+        const int32 Merge = ExplicitPlacement ? 0 : Session->FindContainerMergeTarget(Id,Destination,Amount);
+        if (Merge && AccessibleForPackMove(*Session,Merge))
+            C->SendStackableMerge(Id,Merge,Amount);
+        else if (Session->HasRoomForInventoryMove(Item,Bag,Amount))
+            C->SendPutItemInContainer(Id,Destination,ExplicitPlacement ? int32(Placement) : 0,false);
+        else
+        {
+            ReportActivityFailure(P,I,TEXT("Destination has no available slot for this item"));
+            return true;
+        }
+        P.NextAction=Now+1;
+        return true;
     }
     if(Action==TEXT("give"))
     {
@@ -1837,7 +1925,7 @@ bool UACEPluginSubsystem::ExecuteInventory(FACEClientPlugin& P,const TSharedPtr<
         if(RawTarget<=0||RawTarget>MAX_uint32||FMath::FloorToDouble(RawTarget)!=RawTarget)return true;
         const int32 To=int32(uint32(RawTarget));
         if(Owned&&C->GetWorldObject(To,Target)&&LootItemAvailable(C,Item)&&LootItemAvailable(C,Target))
-            if(int32 Amount=ACEInventoryRules::MergeAmount(Item,Target))C->SendStackableMerge(Id,To,Amount);
+            if(int32 Amount=C->GetSession()->AvailableMergeAmount(Item,Target))C->SendStackableMerge(Id,To,Amount);
         return true;
     }
     if(Action==TEXT("jump"))
@@ -2059,6 +2147,7 @@ void UACEPluginSubsystem::ObserveMetaChat(const FString& Text,const FString& Sen
         }
     ObserveOffensiveSpellChat(Text,Sender,Type);
     if(Sender.IsEmpty()&&Type==0&&Text.TrimStartAndEnd()==TEXT("Your missile attack hit the environment."))RecordCombatOutcome(false);
+    if(Sender.IsEmpty()&&Type==ACEChatMessageType::ChatError&&Text==TEXT("Out of Range!"))RecordCombatOutcome(false,true);
     // VT starts its backward input when the local spell words arrive, not when
     // requesting the spell (which can still be turning or entering magic mode).
     if(PendingSpell&&Type==ACEChatMessageType::Spellcasting)
@@ -2163,7 +2252,12 @@ void UACEPluginSubsystem::ExtendInventorySnapshot(const TSharedPtr<FJsonObject>&
     // to reconstruct every item's property/spell tables on the game thread.
     uint32 Eligibility=GetTypeHash(V.Level);
     for(int32 Id=1;Id<=6;++Id){Eligibility=HashCombine(Eligibility,GetTypeHash(V.GetAttributeBase(Id)));Eligibility=HashCombine(Eligibility,GetTypeHash(V.GetAttributeCurrent(Id)));}
-    for(const auto& Skill:V.Skills){Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.Base));Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.Current));Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.AdvancementClass));}
+    for(const auto& Skill:V.Skills)
+    {
+        Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.GetDisplayBase()));
+        Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.Current));
+        Eligibility=HashCombine(Eligibility,GetTypeHash(Skill.AdvancementClass));
+    }
     Eligibility=HashCombine(Eligibility,GetTypeHash(V.MaxHealth));Eligibility=HashCombine(Eligibility,GetTypeHash(V.MaxStamina));Eligibility=HashCombine(Eligibility,GetTypeHash(V.MaxMana));
     Eligibility=HashCombine(Eligibility,GetTypeHash(V.HeritageGroup));
     Eligibility=HashCombine(Eligibility,GetTypeHash(V.EffectiveAllegianceRank));
@@ -2180,7 +2274,7 @@ void UACEPluginSubsystem::ExtendInventorySnapshot(const TSharedPtr<FJsonObject>&
     if(InventoryRevision!=Session->GetInventoryDataRevision() || InventoryEligibility!=Eligibility
         || (InventoryAppraisalRevision!=DataRevision && DirtyInventoryAppraisals.IsEmpty()))
     {
-        CachedInventory.Empty();CachedInventoryIndices.Empty();
+        CachedInventory.Empty();CachedInventoryArray.Reset();CachedInventoryIndices.Empty();
         for(const auto& Pair:Session->GetWorldObjects())
             if(IsOwnedPluginItem(Pair.Value) && CachedInventory.Num()<1024)
             {CachedInventoryIndices.Add(Pair.Key,CachedInventory.Num());CachedInventory.Add(ItemJson(Pair.Value));}
@@ -2189,9 +2283,14 @@ void UACEPluginSubsystem::ExtendInventorySnapshot(const TSharedPtr<FJsonObject>&
     else if(InventoryAppraisalRevision!=DataRevision)
         for(int32 Id:DirtyInventoryAppraisals)
             if(const auto* Index=CachedInventoryIndices.Find(Id))
-                if(const auto* Item=Session->GetWorldObjects().Find(Id))CachedInventory[*Index]=ItemJson(*Item);
+                if(const auto* Item=Session->GetWorldObjects().Find(Id))
+                {
+                    CachedInventory[*Index]=ItemJson(*Item);
+                    CachedInventoryArray.Reset();
+                }
     InventoryAppraisalRevision=DataRevision;DirtyInventoryAppraisals.Reset();
-    Out->SetArrayField(TEXT("inventory"),CachedInventory);
+    if(!CachedInventoryArray)CachedInventoryArray=MakeShared<FJsonValueArray>(CachedInventory);
+    Out->SetField(TEXT("inventory"),CachedInventoryArray);
     Out->SetNumberField(TEXT("inventory_revision"),double(InventoryRevision));
     Out->SetNumberField(TEXT("appraisal_revision"),double(InventoryAppraisalRevision));
 }

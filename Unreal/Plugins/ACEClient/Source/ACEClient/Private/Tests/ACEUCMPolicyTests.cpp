@@ -584,11 +584,16 @@ bool FACEUCMPolicyTest::RunTest(const FString&)
         auto Item=S->GetArrayField(TEXT("contents"))[0]->AsObject();Item->SetBoolField(TEXT("identified"),true);Item->SetNumberField(TEXT("damage_rating"),20);
         I=Check(VM,S,P);TestEqual(TEXT("Keep-up-to takes only needed quantity"),I->GetNumberField(TEXT("amount")),2.);
         S->SetNumberField(TEXT("time"),102);I=Check(VM,S,P);TestFalse(TEXT("Corpse stays open while transfer is pending"),I->HasField(TEXT("action")));
-        S->SetNumberField(TEXT("time"),111);I=Check(VM,S,P);TestEqual(TEXT("Missing loot acknowledgement pauses loot without stopping UCM"),I->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
-        S->SetNumberField(TEXT("container"),0);S->SetNumberField(TEXT("time"),112);
+        S->SetNumberField(TEXT("time"),111);I=Check(VM,S,P);TestFalse(TEXT("Missing acknowledgement leaves time for late delivery before retry"),I->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("time"),112);I=Check(VM,S,P);
+        TestEqual(TEXT("Unconfirmed partial split refreshes corpse contents before retry"),I->GetStringField(TEXT("action")),FString(TEXT("close_corpse")));
+        TestFalse(TEXT("Refreshing a partial split never marks the corpse finished"),I->HasField(TEXT("completed")));
+        S->SetNumberField(TEXT("container"),0);
         Array(S,TEXT("contents"),TEXT(R"({"values":[]})"));
         Array(S,TEXT("corpses"),TEXT(R"({"values":[{"id":700,"name":"Timed out corpse","distance":1,"identified":true,"can_loot":true}]})"));
         I=Check(VM,S,P);TestFalse(TEXT("Unconfirmed corpse is not immediately retried"),I->HasField(TEXT("action")));
+        S->SetNumberField(TEXT("time"),114);I=Check(VM,S,P);
+        TestEqual(TEXT("Reopens original corpse after an unconfirmed closed transfer"),I->GetStringField(TEXT("action")),FString(TEXT("open_corpse")));
     }
     {
         FACEPluginVM VM;Start(VM);auto S=Snapshot(),P=Profile();P->SetBoolField(TEXT("navigation"),true);
@@ -1163,7 +1168,9 @@ bool FACEUCMLootTest::RunTest(const FString&)
         if(!Confirm)
         {
             S->SetNumberField(TEXT("time"),111);
-            TestEqual(TEXT("Closure never turns a failed transfer into success"),Check(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("activity_failed")));
+            const auto Unconfirmed=Check(VM,S,P);
+            TestFalse(TEXT("Closure never authorizes the follow-up action"),Unconfirmed->HasField(TEXT("action")));
+            TestFalse(TEXT("Unconfirmed closure cannot record a completed corpse"),Unconfirmed->HasField(TEXT("completed_corpse")));
         }
         else
         {

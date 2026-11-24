@@ -15,6 +15,8 @@ using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
 using ACE.Server.Factories;
+using ACE.Server.Entity.Actions;
+using ACE.Server.Managers;
 using ACE.Server.Network;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.Managers;
@@ -209,11 +211,11 @@ namespace ACE.Server.Tests
             public readonly Creature Target;
             public readonly List<WorldObject> Objects = new();
 
-            public Fixture(uint targetTemplate = 7)
+            public Fixture(uint targetTemplate = 7, Position start = null, float range = 2)
             {
                 Player = new Player(DatabaseManager.World.GetCachedWeenie(1), new ObjectGuid(0x5fffffff), 0);
                 Player.Name = "VR regression fixture";
-                Player.Location = new Position(0x7D64000C, 44, 94, 12, 0, 0, 0, 1);
+                Player.Location = start ?? new Position(0x7D64000C, 44, 94, 12, 0, 0, 0, 1);
                 Player.InitPhysicsObj(); Objects.Add(Player);
                 var session = new Session(null, new IPEndPoint(IPAddress.Loopback, 0), 0, 1);
                 typeof(Session).GetProperty("Account").SetValue(session, "vr-regression");
@@ -229,7 +231,7 @@ namespace ACE.Server.Tests
                 template.PropertiesCreateList?.Clear(); template.PropertiesDID.Remove(PropertyDataId.WieldedTreasureType);
                 Target = new Creature(template, new ObjectGuid(nextGuid++)); Objects.Add(Target);
                 Target.Attackable = true; Target.Location = new Position(Player.Location);
-                Target.Location.Pos += new Vector3(0, 2, 0); Target.InitPhysicsObj();
+                Target.Location.Pos += new Vector3(0, range, 0); Target.InitPhysicsObj();
                 Target.Health.StartingValue = 10000; Target.Health.Current = Target.Health.MaxValue;
                 Target.Stamina.Current = 0; // Exhaustion removes random evasion, not damage calculation.
                 Player.IgnoreCollisions = Target.IgnoreCollisions = false;
@@ -566,6 +568,139 @@ namespace ACE.Server.Tests
             typeof(Player).GetField("vrNextAttack", PrivateInstance).SetValue(f.Player, DateTime.MinValue);
             f.Player.HandleVRCombat(Swing(f, sword, 2, new Vector3(-.4f, 2, 2.5f), new Vector3(.4f, 2, 2.5f)));
             Assert.AreEqual(health, f.Target.Health.Current, "A swing well above a rat must still miss.");
+        }
+
+        [TestMethod]
+        [DataRow(1, false)]
+        [DataRow(5, false)]
+        [DataRow(5, true)]
+        public void StationaryMissilesCheckRequestAndActualRelease(int arrows, bool positionOnly)
+        {
+            using var f = new Fixture();
+            var player = f.Player;
+            player.Health.StartingValue = player.Stamina.StartingValue = 200;
+            player.Health.Current = player.Health.MaxValue;
+            player.Stamina.Current = player.Stamina.MaxValue;
+            f.Equip(33116, EquipMask.MissileWeapon, ParentLocation.LeftHand);
+            var ammo = f.Equip(43952, EquipMask.MissileAmmo);
+            ammo.StackSize = arrows;
+            ammo.UnlimitedUse = false;
+            f.Mode(CombatMode.Missile);
+            player.CurrentMotionState = new Motion(MotionStance.BowCombat, MotionCommand.Ready);
+            var raw = new Network.Structure.RawMotionState { ForwardCommand = MotionCommand.WalkForward };
+            player.CurrentMoveToState.RawMotionState = raw;
+            const string property = "missile_block_while_moving";
+            var previous = PropertyManager.GetBool(property).Item;
+            var time = typeof(Timers).GetProperty(nameof(Timers.PortalYearTicks));
+            var start = Timers.PortalYearTicks;
+            var queue = (ActionQueue)typeof(Player).GetField("actionQueue", PrivateInstance).GetValue(player);
+            void Step()
+            {
+                time.SetValue(null, Timers.PortalYearTicks + 2);
+                WorldManager.DelayManager.RunActions();
+                queue.RunActions();
+            }
+            try
+            {
+                Assert.IsTrue(PropertyManager.ModifyBool(property, true));
+                player.HandleActionTargetedMissileAttack(f.Target.Guid.Full, 2, .5f);
+                Assert.IsNull(player.MissileTarget, "A moving client cannot queue the first shot.");
+
+                raw.ForwardCommand = MotionCommand.Ready;
+                raw.TurnCommand = MotionCommand.TurnLeft;
+                player.HandleActionTargetedMissileAttack(f.Target.Guid.Full, 2, .5f);
+                Assert.AreSame(f.Target, player.MissileTarget, "Turning in place must allow aim to start.");
+                for (int i = 0; i < 16 && !player.Attacking; ++i) Step();
+                Assert.IsTrue(player.Attacking, "The shot reached its launch animation.");
+                var stamina = player.Stamina.Current;
+                if (positionOnly) player.Location.Pos += Vector3.UnitY;
+                else raw.SidestepCommand = MotionCommand.SideStepRight;
+                for (int i = 0; i < 24; ++i) Step();
+                Assert.AreEqual(arrows, ammo.StackSize);
+                Assert.AreEqual(stamina, player.Stamina.Current);
+                Assert.AreEqual(CombatMode.Missile, player.CombatMode, "A blocked last arrow must not unequip the bow.");
+                Assert.IsFalse(player.Attacking);
+                Assert.IsNull(player.MissileTarget, "A rejected release ends the repeat chain.");
+
+                raw.SidestepCommand = MotionCommand.SideStepRight;
+                player.MissileTarget = f.Target;
+                player.LaunchMissile(f.Target, player.AttackSequence, MotionStance.BowCombat, subsequent: true);
+                Assert.IsNull(player.MissileTarget, "Server repeats check movement before charging again.");
+
+                Assert.IsTrue(PropertyManager.ModifyBool(property, false));
+                player.HandleActionTargetedMissileAttack(f.Target.Guid.Full, 2, .5f);
+                Assert.AreSame(f.Target, player.MissileTarget, "The disabled rule preserves the server's moving-shot behavior.");
+                player.OnAttackDone();
+                for (int i = 0; i < 4; ++i) Step();
+            }
+            finally
+            {
+                time.SetValue(null, start);
+                PropertyManager.ModifyBool(property, previous);
+            }
+        }
+
+        [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void TargetedProjectileCanKillMoarUnderWater(bool castSpell)
+        {
+            const uint blockId = 0xDC560000;
+            var land = ACE.Server.Physics.Common.LScape.get_landblock(blockId | 1);
+            Position start = null;
+            float surface = 0;
+            for (int i = 0; i < 64 && start == null; ++i)
+            {
+                var point = new Vector3(i / 8 * 24 + 12, i % 8 * 24 + 12, 0);
+                var cell = land.GetCell(point);
+                float depth = cell.get_water_depth(point);
+                if (depth < .85f) continue;
+                surface = land.GetZ(point);
+                start = new Position(blockId | (uint)(i + 1), point.X, point.Y, surface - depth + .005f, 0, 0, 0, 1);
+            }
+            Assert.IsNotNull(start, "The coastal block contains a full-depth wading cell.");
+            using var f = new Fixture(34869, start, 8); // stock Pallid Moar
+            f.Target.Health.Current = 1;
+            Assert.IsTrue(f.Target.Location.PositionZ + f.Target.Height < surface, "Entire target must be submerged.");
+            if (castSpell)
+            {
+                f.Mode(CombatMode.Magic);
+                var spell = new Spell((uint)SpellId.FlameBolt1);
+                var skill = f.Player.GetCreatureSkill(spell.School);
+                skill.AdvancementClass = SkillAdvancementClass.Specialized; skill.InitLevel = 500;
+                var local = f.Player.CalculateProjectileOrigins(spell, ProjectileSpellType.Bolt, f.Target).Single();
+                var bolt = (SpellProjectile)WorldObjectFactory.CreateWorldObject(DatabaseManager.World.GetCachedWeenie(spell.Wcid), new ObjectGuid(nextGuid++));
+                f.Objects.Add(bolt); bolt.Setup(spell, ProjectileSpellType.Bolt);
+                bolt.Location = new Position(start); bolt.Location.Pos += local; // target due north, identity aim rotation
+                bolt.ProjectileSource = f.Player; bolt.ProjectileTarget = f.Target;
+                bolt.PhysicsObj.Velocity = f.Player.CalculateProjectileVelocity(spell, f.Target, ProjectileSpellType.Bolt, local);
+                bolt.SetProjectilePhysicsState(f.Target, false);
+                Assert.IsTrue(bolt.Location.PositionZ > surface && bolt.AddPhysicsObj());
+                Assert.IsTrue(f.Player.IsProjectileVisible(bolt));
+                for (int i = 0; i < 100 && bolt.PhysicsObj.is_active(); ++i) bolt.PhysicsObj.UpdateObjectInternal(.01);
+                Assert.IsFalse(f.Target.IsAlive, "Flame Bolt must cross the waterline and deal lethal damage.");
+                return;
+            }
+            f.Mode(CombatMode.Missile);
+            var bow = f.Equip(33116, EquipMask.MissileWeapon, ParentLocation.LeftHand);
+            var ammo = f.Equip(43952, EquipMask.MissileAmmo);
+            f.Player.AccuracyLevel = 1;
+            f.Player.AttackHeight = AttackHeight.Medium;
+            float speed = f.Player.GetProjectileSpeed();
+            var level = Creature.GetAimLevel(f.Player.GetAimVelocity(f.Target, speed));
+            var offset = f.Player.GetProjectileSpawnOrigin(ammo.WeenieClassId, level);
+            var velocity = f.Player.CalculateProjectileVelocity(offset, f.Target, speed, out var origin, out var rotation);
+            Assert.IsTrue(origin.Z > surface, $"Arrow starts above the waterline (feet {f.Player.Location.Pos}, height {f.Player.Height}, origin {origin}, water {surface}).");
+            var arrow = WorldObjectFactory.CreateWorldObject(DatabaseManager.World.GetCachedWeenie(ammo.WeenieClassId), new ObjectGuid(nextGuid++));
+            f.Objects.Add(arrow);
+            arrow.ProjectileSource = f.Player; arrow.ProjectileTarget = f.Target;
+            arrow.ProjectileLauncher = bow; arrow.ProjectileAmmo = ammo;
+            arrow.Location = new Position(start) { Pos = origin, Rotation = rotation };
+            f.Player.SetProjectilePhysicsState(arrow, f.Target, velocity);
+            Assert.IsTrue(arrow.AddPhysicsObj());
+            Assert.IsTrue(f.Player.IsProjectileVisible(arrow));
+            for (int i = 0; i < 100 && arrow.PhysicsObj.is_active(); ++i) arrow.PhysicsObj.UpdateObjectInternal(.01);
+            Assert.IsFalse(f.Target.IsAlive, "Server collision and normal targeted missile damage must kill the submerged Moar.");
         }
 
         [TestMethod]

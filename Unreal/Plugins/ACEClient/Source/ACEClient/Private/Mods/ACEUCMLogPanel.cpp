@@ -60,7 +60,7 @@ namespace
                     .Text_Lambda([this]
                     {
                         if(!Host.IsValid())return FText::GetEmpty();
-                        return FText::FromString(FString::Printf(TEXT("%d / %d events. Oldest events are replaced. Saved across restarts; closing this window keeps logging.%s"),
+                        return FText::FromString(FString::Printf(TEXT("%d / %d events · Oldest entries expire first.%s"),
                             Host->GetUCMLog().GetEntries().Num(),FACEUCMLog::Capacity,
                             Host->UCMLogSaveError.IsEmpty()?TEXT(""):*(TEXT("\n")+Host->UCMLogSaveError)));
                     })]]];

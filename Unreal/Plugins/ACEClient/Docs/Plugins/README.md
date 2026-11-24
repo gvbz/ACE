@@ -6,8 +6,16 @@ the [public Lua API](PublicAPI.md), [companion guide](Companions.md) or
 
 ## Manage plugins
 
-Open **Plugins** at login, **Game Play → Manage Plugins** on desktop, or
-**More → Manage Plugins** in VR. In chat, `/acueplugins` opens the same manager.
+At login, open **Accounts → Plugin Manager** to install official and community plugins.
+New players start with an empty plugin list. On an upgrade from the bundled client,
+the account screen restores the former official packages from GitHub. Keep the client
+online during the first visit. It retries interrupted downloads on later visits.
+Search by plugin or developer. Choose **Update** on one listing or **Update all**
+for installed catalog plugins with available updates. For an older manual install,
+**Update → Use catalog copy** keeps the original files and activates the catalog version.
+**Uninstall** removes all installed copies of the selected plugin and keeps its saved
+profiles. Select **Installed** to manage permissions. In game, use **Game Play → Manage Plugins**
+on desktop, **More → Manage Plugins** in VR, or `/acueplugins` in chat.
 **Enable** grants the listed permissions. Enable the plugin again if an update
 changes them. Automation needs **Start** after entering the world. Companions
 start when enabled and logged in and can run alongside one automation driver.
@@ -30,10 +38,10 @@ Type `/acuehelp` for client commands, including `/acueucm`, `/acueitems`,
 also accepts `@`. Older plugin command spellings remain aliases. Use
 `/acehelp` for the server's commands.
 
-## Bundled plugins
+## Official plugins
 
-- [Waypoint](Waypoint.md) provides a navigation arrow, pinned map, GoArrow atlas
-  import and route planning.
+- [Waypoint](Waypoint.md) searches the bundled or imported atlas and guides you
+  along a route with an arrow and pinned map.
 - [Item Tools](ItemTools.md) handles stack merging, bulk giving, vendor exchanges,
   chest distribution and supply restocking.
 - [Auto Craft](AutoCraft.md) finds recipes, prepares ingredients and crafts a
@@ -44,7 +52,10 @@ also accepts `@`. Older plugin command spellings remain aliases. Use
   by separately distributed appearance plugins.
 - **Supply Ledger** tracks an item type across your packs and equipment. Select
   the item and click **+**. Counts and icons remain visible at zero, and each
-  row has a remove button. Click a row to toggle item names.
+  row has a remove button. Click an icon or name to show or hide all item names.
+- **UCM Micro** can run its own combat, recovery and loot settings. With full UCM
+  enabled, its controls operate the full UCM profile. Enable Micro's listed
+  permissions when installing or updating the standalone version.
 - **Hunt Ledger** tracks XP and luminance over five minutes and since login or
   **Reset run**. Its level estimate uses XP earned during the current run.
 
@@ -173,8 +184,11 @@ Turning off follow also turns off navigation.
 
 ### Loot Profile Editor
 
-Open **Loot** in UCM or the standalone **LOOT** window. The first matching
-rule decides Keep, Skip, Salvage, Sell or Read. Requirements can match item
+Open **Loot** in UCM or the standalone **LOOT** window. The profile menu lists
+shared and older saved loot profiles. **New** starts with defaults and **Save as**
+copies the current rules.
+
+The first matching rule decides Keep, Skip, Salvage, Sell or Read. Requirements can match item
 properties, materials, spells or text. **Apply requirement** accepts the
 requirement draft, then **Apply rule** saves it and stops UCM. Use **Keep #**
 for count limits, choosing name or item-template matching. See

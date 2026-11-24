@@ -32,13 +32,40 @@ bool FACEUCMRouteRejoinTest::RunTest(const FString&)
         auto Rat=Json(TEXT(R"({"id":50,"name":"Rat","identified":true,"distance":10,"cell":30998795,"x":30,"y":10,"z":0,"line_of_sight":true})"));
         S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(Rat)});
         auto I=Step(VM,S,P);
-        TestEqual(TEXT("Monster override wins, otherwise uses profile attack range"),I->GetStringField(TEXT("action")),FString(Override?TEXT("move"):TEXT("attack")));
+        FString Action;I->TryGetStringField(TEXT("action"),Action);
+        TestEqual(TEXT("Stationary missile attack respects the monster's effective range"),Action,FString(Override?TEXT(""):TEXT("attack")));
         TestEqual(TEXT("Inheritance never writes defaults into saved rule"),Rule->HasField(TEXT("priority")),Override);
         FACEPluginVM Ranking;Ranking.Load(Script,Error);
         auto Other=Json(TEXT(R"({"id":51,"name":"Tusker","identified":true,"distance":11,"cell":30998795,"x":30,"y":11,"z":0,"line_of_sight":true})"));
         S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(Rat),MakeShared<FJsonValueObject>(Other)});
         I=Step(Ranking,S,P);
         TestEqual(TEXT("Explicit zero priority overrides positive global default"),I->GetNumberField(TEXT("target")),Override?51.:50.);
+    }
+    for(bool Manual:{false,true})for(bool EmptyRoute:{false,true})
+    {
+        FACEPluginVM VM;VM.Load(Script,Error);auto S=Snapshot(),P=Profile();
+        P->SetBoolField(TEXT("manual_combat"),Manual);
+        P->SetBoolField(TEXT("navigation"),EmptyRoute);
+        if(EmptyRoute)P->SetArrayField(TEXT("route"),{});
+        P->SetBoolField(TEXT("looting"),true);
+        P->SetArrayField(TEXT("loot_rules"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"action":"keep"})")))});
+        P->SetArrayField(TEXT("monsters"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"name":"Boss","priority":10})")))});
+        auto Boss=Json(TEXT(R"({"id":50,"name":"Boss","identified":false,"distance":40,"cell":30998795})"));
+        auto Near=Json(TEXT(R"({"id":51,"name":"Guard","identified":true,"distance":6,"cell":30998795})"));
+        S->SetArrayField(TEXT("targets"),{MakeShared<FJsonValueObject>(Boss),MakeShared<FJsonValueObject>(Near)});
+        auto I=Step(VM,S,P);
+        TestEqual(TEXT("An enemy at firing range wins over a distant higher-priority enemy"),I->GetStringField(TEXT("action")),FString(TEXT("attack")));
+        TestEqual(TEXT("Fires at the reachable guard"),I->GetNumberField(TEXT("target")),51.);
+        if(EmptyRoute)
+            S->SetArrayField(TEXT("combat_events"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"serial":1,"time":100,"target":51,"missile_rejected_distance":6})")))});
+        else Near->SetNumberField(TEXT("distance"),7);
+        TestEqual(TEXT("Stops shooting when the locked enemy leaves range"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("cancel_attack")));
+        S->SetArrayField(TEXT("corpses"),{MakeShared<FJsonValueObject>(Json(TEXT(R"({"id":100,"name":"Corpse","identified":true,"distance":2})")))});
+        TestEqual(TEXT("Opens the corpse with both enemies still visible"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("open_corpse")));
+        S->SetBoolField(TEXT("loot_approaching"),true);S->SetBoolField(TEXT("busy"),true);
+        TestFalse(TEXT("Distant enemies do not interrupt walking to the corpse"),Step(VM,S,P)->HasField(TEXT("action")));
+        Near->SetNumberField(TEXT("distance"),4);
+        TestEqual(TEXT("Enemy entering range becomes actionable again"),Step(VM,S,P)->GetStringField(TEXT("action")),FString(TEXT("pause_loot_approach")));
     }
     for(const FString Mode:{TEXT("melee"),TEXT("missile"),TEXT("magic")})
     {

@@ -31,7 +31,7 @@ bool FACEWalkingStepTest::RunTest(const FString&)
  GGameUserSettingsIni=FPaths::ProjectSavedDir()/TEXT("Automation/WalkingStepFixture.ini");
  FConfigFile Config;Config.NoSave=true;GConfig->SetFile(GGameUserSettingsIni,&Config);
  ACEInputBindings::Reload();ACEInputBindings::BeginEdit();ACEInputBindings::Defaults();ACEInputBindings::Commit();
- ON_SCOPE_EXIT{GGameUserSettingsIni=OriginalSettings;ACEInputBindings::Reload();};
+ ON_SCOPE_EXIT{GGameUserSettingsIni=OriginalSettings;ACEInputBindings::Reload();ACERuntimeOptions::Apply();};
  const auto Values=UWorld::InitializationValues().AllowAudioPlayback(false).RequiresHitProxies(false)
   .CreatePhysicsScene(true).CreateNavigation(false).CreateAISystem(false);
  auto* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Values);
@@ -182,7 +182,8 @@ bool FACEWalkingStepTest::RunTest(const FString&)
  TestTrue(TEXT("Movement resumes when the swing finishes"),PC->ForwardAxis>0);
  Reset();App->PreferredStyle=ACEMotion::StanceSwordCombat;App->SetPreferredStyle(ACEMotion::StanceNonCombat);
  TestTrue(TEXT("Returning to peace plays the stance linkage and pauses movement"),App->IsMovementLockedByAction());
- // Casting intentionally permits ordinary movement throughout its authored
+ ACERuntimeOptions::Set(TEXT("ClassicMovement"),0); ACERuntimeOptions::Apply();
+ // Default casting permits ordinary movement throughout its authored
  // animation. Cover both PowerUp families and forward/backward walk/run.
  for(uint32 Command : {0x40000034u,0x400000D3u,0x400000E0u,0x400000E1u,
    0x1000006Fu,0x10000078u,0x1000012Bu,0x10000134u})
@@ -202,6 +203,68 @@ bool FACEWalkingStepTest::RunTest(const FString&)
    TestEqual(TEXT("Movement preserves the active casting animation"),App->ActionCommand,Command);
   }
  }
+ ACERuntimeOptions::Set(TEXT("ClassicMovement"),1); ACERuntimeOptions::Apply();
+ auto CastMotion=[&](uint32 Command,float Speed=1.f)
+ {
+  FACEObjectMotionState Motion;
+  Motion.CurrentStyle=ACEMotion::StanceMagic;
+  if(Command==ACEMotion::Ready) Motion.ForwardCommand=Command;
+  else {Motion.ActionCommand=Command;Motion.ActionSpeed=Speed;}
+  PC->HandleMotionUpdate(Session->PlayerGuid,Motion);
+ };
+ for(float Dt:{1.f/30,1.f/144}) for(bool Back:{false,true})
+ {
+  Reset();App->PreferredStyle=ACEMotion::StanceMagic;
+  const float CastSpeed=Back?2.f:1.f;
+  CastMotion(0x1000006F);CastMotion(0x1000012B);CastMotion(0x40000034,CastSpeed);
+  Key(EKeys::LeftShift,Back);Key(Back?EKeys::X:EKeys::W,true);
+  bool SawSecondWindup=false;int32 Frames=0,GestureFrames=0,ExitFrames=0;
+  while(App->HasPendingCastForwardMotion() && Frames++<12/Dt)
+  {
+   SawSecondWindup|=App->ActionCommand==0x1000012B;
+   if(App->ActionCommand==0x40000034)++GestureFrames;
+   if(App->ActionCommand==ACEMotion::Ready && App->ActionFromCommand==0x40000034)++ExitFrames;
+   Tick(Dt);
+   TestTrue(TEXT("Classic cast holds forward travel across the queued links"),FMath::Abs(Pawn->GetActorLocation().X-StartFeet.X)<.01);
+  }
+  TestTrue(TEXT("Forward input is sent during the lock"),Back?PC->ForwardSent<0:PC->ForwardSent>0);
+  TestTrue(TEXT("Both queued windups finish"),SawSecondWindup&&Frames<12/Dt);
+  // Retail human clip 0x030005A4 uses frames 0..24 at 24 fps on entry and 24..44 at 30 fps on exit.
+  TestTrue(TEXT("Cast entry follows the motion packet speed"),FMath::Abs(GestureFrames*Dt-25.f/(24.f*CastSpeed))<=Dt+.0001f);
+  TestTrue(TEXT("Cast exit retains its own authored speed"),FMath::Abs(ExitFrames*Dt-21.f/30.f)<=Dt+.0001f);
+  for(int I=0;I<1/Dt;++I)Tick(Dt);
+  TestTrue(TEXT("Held forward or backward resumes in its original direction"),(Pawn->GetActorLocation().X-StartFeet.X)*(Back?-1:1)>10);
+ }
+ Reset();App->PreferredStyle=ACEMotion::StanceMagic;CastMotion(0x40000034);
+ Key(EKeys::C,true);Tick(1.f/30);
+ TestTrue(TEXT("Strafe moves laterally during the cast entry"),FMath::Abs(Pawn->GetActorLocation().Y-StartFeet.Y)>1);
+ TestEqual(TEXT("A sidestep preserves the gesture"),App->ActionCommand,0x40000034u);
+ Key(EKeys::C,false);Key(EKeys::D,true);Tick(1.f/30);
+ TestTrue(TEXT("Turn is independent of the cast entry"),!FMath::IsNearlyZero(PC->TurnAxis));
+ Key(EKeys::D,false);for(int I=0;I<90;++I)Tick(1.f/30);
+ TestTrue(TEXT("Gesture rests at its retail endpoint until replaced"),App->bHoldActionFinal&&App->ActionCommand==0x40000034);
+ PC->BeginJumpCharge();TestTrue(TEXT("Component gesture permits jump charge"),PC->bJumpCharging);
+ PC->ReleaseJump(0,0);TestFalse(TEXT("Component gesture rejects premature jump release"),PC->bJumpAirborne);
+ CastMotion(ACEMotion::Ready);
+ TestTrue(TEXT("Server Ready starts the authored exit at the held pose"),App->HasPendingCastForwardMotion()&&App->ActionFromCommand==0x40000034);
+ for(int I=0;I<120;++I)Tick(1.f/30);
+ PC->BeginJumpCharge();PC->ReleaseJump(0,0);
+ TestTrue(TEXT("Jump releases after the protected gesture ends"),PC->bJumpAirborne);
+ Reset();App->PreferredStyle=ACEMotion::StanceMagic;CastMotion(0x400000D3);
+ PC->BeginJumpCharge();PC->ReleaseJump(0,0);
+ TestTrue(TEXT("A permitted jump breaks CastSpell into Falling"),PC->bJumpAirborne&&App->ActionCommand==0x40000015u);
+ Reset();App->PreferredStyle=ACEMotion::StanceMagic;
+ Key(EKeys::W,true);for(int I=0;I<90;++I)Tick(1.f/90);
+ const FVector AtCast=Pawn->GetActorLocation();CastMotion(0x400000E0);
+ Key(EKeys::C,true);Tick(1.f/90);
+ TestTrue(TEXT("Casting mid-run locks the held forward key and preserves diagonal strafe"),
+  FMath::Abs(Pawn->GetActorLocation().X-AtCast.X)<.01&&FMath::Abs(Pawn->GetActorLocation().Y-AtCast.Y)>1);
+ CastMotion(ACEMotion::Ready);CastMotion(ACEMotion::Ready);
+ TestEqual(TEXT("Repeated Ready echoes queue one cast exit"),App->PendingActionCommands.Num(),1);
+ Reset();App->PreferredStyle=ACEMotion::StanceMagic;CastMotion(0x400000E1);
+ Key(EKeys::W,true);Tick(1.f/90);
+ ACERuntimeOptions::Set(TEXT("ClassicMovement"),0); ACERuntimeOptions::Apply();Tick(1.f/90);
+ TestTrue(TEXT("Applying free movement takes effect mid-cast"),Pawn->GetActorLocation().X-StartFeet.X>1);
  // Missile links still own forward travel until the draw/reload finishes.
  struct FCombatCase {uint32 Command,Style;};
  for(const auto& C : {FCombatCase{0x40000016,ACEMotion::StanceBowCombat},{0x40000022,ACEMotion::StanceBowCombat},

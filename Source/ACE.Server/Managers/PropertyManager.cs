@@ -5,15 +5,16 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using System.Timers;
 
-using log4net;
+using Microsoft.Extensions.Logging;
 
+using ACE.Common.Logging;
 using ACE.Database;
 
 namespace ACE.Server.Managers
 {
     public static class PropertyManager
     {
-        private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        private static readonly ILogger log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
         // caching internally to the server
         private static readonly ConcurrentDictionary<string, ConfigurationEntry<bool>> CachedBooleanSettings = new ConcurrentDictionary<string, ConfigurationEntry<bool>>();
@@ -574,6 +575,7 @@ namespace ACE.Server.Managers
                 ("override_encounter_spawn_rates", new Property<bool>(false, "if enabled, landblock encounter spawns are overidden by double properties below.")),
                 ("permit_corpse_all", new Property<bool>(false, "If TRUE, /permit grants permittees access to all corpses of the permitter. Defaults to FALSE as per retail, where /permit only grants access to 1 locked corpse")),
                 ("persist_movement", new Property<bool>(false, "If TRUE, persists autonomous movements such as turns and sidesteps through non-autonomous server actions. Retail didn't appear to do this, but some players may prefer this.")),
+                ("missile_block_while_moving", new Property<bool>(false, "Require players to stand still on the ground to shoot missile weapons. Turning in place is allowed.")),
                 ("pet_stow_replace", new Property<bool>(false, "pet stowing for different pet devices becomes a stow and replace. defaults to retail value of false")),
                 ("player_config_command", new Property<bool>(false, "If enabled, players can use /config to change their settings via text commands")),
                 ("player_receive_immediate_save", new Property<bool>(false, "if enabled, when the player receives items from an NPC, they will be saved immediately")),

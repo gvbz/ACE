@@ -30,6 +30,11 @@ else
             cp -R -n "$source/." "$target/";
         fi;
     done;
+    atlas=Saved/ClientPlugins/Waypoint/locations.json;
+    if [ -f "$old/$atlas" ] && [ ! -e "$new/$atlas" ]; then
+        mkdir -p "$new/Saved/ClientPlugins/Waypoint";
+        mv -n "$old/$atlas" "$new/$atlas";
+    fi;
 fi;
 '@
     $migration = $migration.Replace("`r", '').Replace("`n", ' ')

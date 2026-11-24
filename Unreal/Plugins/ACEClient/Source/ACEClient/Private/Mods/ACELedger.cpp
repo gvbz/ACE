@@ -198,12 +198,12 @@ namespace
                     .Text(FText::FromString(TEXT("Select item\nthen +"))).Font(FCoreStyle::GetDefaultFontStyle("Regular",10))];
                 for(int32 I=0;I<LedgerSupplies.Num();++I)
                 {
-                    auto Row=SNew(SHorizontalBox).ToolTip(FACEPluginStyle::Tooltip(FText::FromString(LedgerSupplies[I].Name+(Locked?TEXT("\nUse the game UI lock or hold Quick-show pinned windows to move and edit this HUD."):TEXT("")))));
+                    auto Row=SNew(SHorizontalBox);
                     const auto& Supply=LedgerSupplies[I];
                     auto Toggle=[H=Host,I]{if(H.IsValid())H->ToggleSupplyName(I);return FReply::Handled();};
                     Row->AddSlot().AutoWidth().VAlign(VAlign_Center)[SNew(SACEPluginButton).ContentPadding(FMargin(0)).Tag(FName(*FString::Printf(TEXT("SupplyIcon.%d"),I)))
                         .ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder")).IsFocusable(false)
-                        .ToolTip(FACEPluginStyle::Tooltip(FText::FromString(Supply.Name+TEXT("\nClick icon or name to toggle all item names. Resize the window to move the counts."))))
+                        .ToolTip(FACEPluginStyle::Tooltip(FText::FromString(Supply.Name+TEXT("\nClick to show or hide all item names."))))
                         .OnClicked_Lambda(Toggle)[SNew(SBox).WidthOverride(22).HeightOverride(22)
                         [SNew(SScaleBox).Stretch(EStretch::ScaleToFit)[SNew(SOverlay)
                         +SOverlay::Slot()[SNew(SImage).Image(Style->ItemImage(Supply,false))]
@@ -220,7 +220,7 @@ namespace
                     Rows->AddSlot().AutoHeight().Padding(2,2)[Row];
                 }
                 Body->AddSlot().FillHeight(1)[SNew(SScrollBox).ScrollBarThickness(FVector2D(4,4)).ScrollBarPadding(0)+SScrollBox::Slot()[Rows]];
-                Body->SetToolTip(FACEPluginStyle::Tooltip(FText::FromString(Locked?TEXT("Use the game UI lock or hold Quick-show pinned windows to move and edit this HUD."):TEXT("Track selected items across your inventory."))));
+                Body->SetToolTip(FACEPluginStyle::Tooltip(FText::FromString(Locked?TEXT("Unlock the game UI or hold Quick-show pinned windows to edit this HUD."):TEXT("Track selected items across your inventory."))));
                 if(!Locked||LedgerSupplies.IsEmpty())
                 {
                     Body->AddSlot().AutoHeight().HAlign(HAlign_Left)[Button(TEXT("+"),TEXT("Track the selected inventory item"),[H=Host]{if(H.IsValid())H->EditSupplySelection(true);})];
@@ -254,11 +254,9 @@ namespace
                 Elapsed->AddSlot().AutoWidth().HAlign(HAlign_Right)[SNew(SACEPluginText).Tag(TEXT("HuntElapsed"))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular",12)).Text_Lambda([this]{return HuntElapsed;})];
                 Body->AddSlot().AutoHeight().Padding(3,3)[Elapsed];
-                Body->SetToolTip(FACEPluginStyle::Tooltip(FText::FromString(FString(TEXT("Last 5 min: gains in the rolling five-minute window. Per hour: average since login or Reset. Spending XP/luminance does not subtract earned totals. Closing this window keeps tracking."))
-                    +TEXT(" Available shows your current spendable balance, not earnings. Luminance counts increases credited by the server, after bonuses and sharing. Rewards blocked by the cap or deposited in an unreported custom bank cannot be measured from this balance. -- means no baseline has arrived yet.")
-                    +TEXT(" Next level estimates the remaining time using your average XP rate since login or Reset.")
-                    +TEXT(" Time since last reset shows hours:minutes:seconds since login or Reset.")
-                    +(Locked?TEXT("\nUse the game UI lock or hold Quick-show pinned windows to move and edit this HUD."):TEXT("")))));
+                Body->SetToolTip(FACEPluginStyle::Tooltip(FText::FromString(FString(TEXT("Rates and level estimates use gains since login or Reset. Spending keeps earned totals intact."))
+                    +TEXT(" Luminance counts gains credited to your balance. -- means the balance is pending.")
+                    +(Locked?TEXT("\nUnlock the game UI or hold Quick-show pinned windows to edit this HUD."):TEXT("")))));
                 if(!Locked)Body->AddSlot().AutoHeight()[Button(TEXT("Reset run"),TEXT("Clear totals and begin a new estimate now"),[H=Host]{if(H.IsValid())H->ResetHuntLedger();})];
             }
         }

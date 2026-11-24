@@ -1,1 +1,1 @@
-{"api":1,"id":"itemtools","name":"Item Tools","short_name":"ITEM","version":"1.1.0","description":"Bulk giving, stack merging, vendor exchanges, loot-profile transfers, keyed chests and character-specific restocking.","permissions":["inventory","loot"]}
+{"api":1,"id":"itemtools","name":"Item Tools","short_name":"ITEM","version":"1.1.0","description":"Give items in bulk, merge stacks, open keyed chests and restock at vendors.","permissions":["inventory","loot"]}

@@ -1,1 +1,1 @@
-{"api":1,"id":"waypoint","short_name":"NAV","name":"Waypoint","version":"0.2.0","description":"Search imported GoArrow locations, plan portal routes, and navigate with a floating arrow and interactive maps.","permissions":[]}
+{"api":1,"id":"waypoint","short_name":"NAV","name":"Waypoint","version":"0.2.0","description":"Search the included or imported atlas, plan portal routes and follow them on the minimap.","permissions":[]}

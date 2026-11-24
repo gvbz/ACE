@@ -1,14 +1,8 @@
 # Item Tools
 
-Item Tools is AC:Unreal's native, portable replacement for the documented
-[Virindi Item Tool](http://virindi.net/wiki/index.php/Virindi_Item_Tool) activities.
-It uses the client plugin bar, modern resizable controls and the normal server
-protocol. It does not load Decal or VVS assemblies.
-
-Open **Plugins**, enable **Item Tools**, then click **ITEM** on the plugin bar.
-`/acueitems` also opens its window. Closing the window leaves an active job running;
-use **Stop** or `/acueitems stop` to end it. Movement and window placement use the
-normal plugin desktop controls.
+Open **ITEM** on the plugin bar or type `/acueitems` to use the
+[Virindi Item Tool](http://virindi.net/wiki/index.php/Virindi_Item_Tool) workflows.
+Jobs continue when the window closes. Choose **Stop** or type `/acueitems stop` to end one.
 
 ## Give
 
@@ -52,8 +46,8 @@ rules. Set a recipient, then start. The first matching rule wins, using the same
 appraisal and rule evaluator as UCM. As in GiveVT, only unlimited **Keep** items
 are given. **Keep #**, Ignore, Sell, Salvage and Read items remain in your packs.
 
-The selected file and rule count remain visible. Files are read without changing
-the originals; **Refresh profiles** refreshes the file listing. Re-select a file
+The selected file and rule count remain visible. Opening the profile picker
+lists the files currently in the folder. Re-select a file
 to apply edits made on disk. Use the separate Loot Profile Editor to edit rules,
 then copy the updated UCM rules or select the saved `.utl` again. Unsupported
 rules prevent applying a file and report their conversion errors.

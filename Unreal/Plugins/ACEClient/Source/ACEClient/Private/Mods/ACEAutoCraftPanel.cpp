@@ -125,18 +125,18 @@ public:
                 .OnValueChanged_Lambda([this](int32 Value){Plugin->Profile->SetNumberField(TEXT("quantity"),Value);})
                 .OnValueCommitted_Lambda([this](int32 Value,ETextCommit::Type){Plugin->Profile->SetNumberField(TEXT("quantity"),Value);Save();})
                 .OnEndSliderMovement_Lambda([this](int32){Save();})]];
-        Add(TEXT("Quantity to make (additional finished items)"),Quantity);
-        Add(TEXT("Server recipe catalog (.json file path)"),SNew(SACEPluginEditableTextBox).Style(&Style->Edit)
-            .HintText(FText::FromString(TEXT("Path to a verified recipe catalog for this server")))
+        Add(TEXT("Quantity to make"),Quantity);
+        Add(TEXT("Server recipe catalog"),SNew(SACEPluginEditableTextBox).Style(&Style->Edit)
+            .HintText(FText::FromString(TEXT("Path to a recipe catalog (.json)")))
             .OnTextChanged_Lambda([this](const FText& T){CatalogPath=T.ToString().TrimStartAndEnd();}));
         Form->AddSlot().AutoHeight().Padding(0,0,0,8)[SNew(SHorizontalBox)
             +SHorizontalBox::Slot().FillWidth(1)[Button(TEXT("Import for this server"),[this](){Host->ImportAutoCraftCatalog(CatalogPath);},[this](){return !CatalogPath.IsEmpty();},TEXT("AutoCraft.ImportCatalog"))]
             +SHorizontalBox::Slot().FillWidth(1).Padding(6,0,0,0)[Button(TEXT("Use bundled recipes"),[this](){Host->RemoveAutoCraftCatalog();},[](){return true;},TEXT("AutoCraft.RemoveCatalog"))]];
-        Form->AddSlot().AutoHeight().Padding(0,0,0,8)[CraftLabel(TEXT("Server recipes also apply to UCM automatic crafting. Import replaces this server's previous custom catalog; bundled recipes remain unless a recipe ID is overridden."),12,CraftMuted)];
+        Form->AddSlot().AutoHeight().Padding(0,0,0,8)[CraftLabel(TEXT("Imports replace this server’s custom recipes for Auto Craft and UCM. Matching IDs override bundled recipes."),12,CraftMuted)];
         Form->AddSlot().AutoHeight().Padding(0,0,0,8)[Toggle(TEXT("ingredients"),TEXT("Make missing ingredients from items in my packs"),true)];
         Form->AddSlot().AutoHeight().Padding(0,0,0,8)[Toggle(TEXT("confirm"),TEXT("Confirm this job's crafting prompts automatically"),true)];
         Form->AddSlot().AutoHeight().Padding(0,0,0,12)[Toggle(TEXT("stop_on_failure"),TEXT("Stop after a failed attempt"),false)];
-        Form->AddSlot().AutoHeight().Padding(0,0,0,10)[CraftLabel(TEXT("Whole batches may exceed the requested quantity. Max assumes successful crafts. Equipped, traded and retained ingredients are protected; reusable retained tools are allowed."),12,CraftMuted)];
+        Form->AddSlot().AutoHeight().Padding(0,0,0,10)[CraftLabel(TEXT("Whole batches can exceed the quantity. Max assumes successful crafts. Equipped, traded and retained items are protected except reusable retained tools."),12,CraftMuted)];
         Form->AddSlot().AutoHeight()[SNew(SACEPluginText).ColorAndOpacity(CraftMuted).AutoWrapText(true).Font(FACEPluginStyle::NativeFont("Regular",12))
             .Text_Lambda([this](){const auto* R=Recipe();return FText::FromString(R?FString::Printf(TEXT("Yield: %d per craft | Difficulty: %d%s"),R->Yield,R->Difficulty,R->Conditional||R->Modified?TEXT(" | Server requirements / item changes apply"):TEXT("")):TEXT(""));})];
         auto Controls=SNew(SHorizontalBox);
@@ -147,7 +147,6 @@ public:
         Controls->AddSlot().FillWidth(1)[Button(TEXT("Stop"),[this](){Host->Stop(Plugin->Id,TEXT("Stopped by player; an in-flight craft may finish."));},[this](){return Plugin->Running;},TEXT("AutoCraft.Stop"))];
         ChildSlot[SNew(SBorder).BorderImage(&Style->Background).Padding(14)[SNew(SVerticalBox)
             +SVerticalBox::Slot().AutoHeight()[SNew(SBox).Visibility(Args._ShowTitle?EVisibility::Visible:EVisibility::Collapsed)[CraftLabel(TEXT("Auto Craft"),24)]]
-            +SVerticalBox::Slot().AutoHeight().Padding(0,0,0,12)[CraftLabel(TEXT("Choose a recipe. Review the materials. Craft across all your packs."),14,CraftMuted)]
             +SVerticalBox::Slot().AutoHeight().Padding(0,0,0,12)[Controls]
             +SVerticalBox::Slot().AutoHeight().Padding(0,0,0,10)[SNew(SHorizontalBox)
                 +SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(0,0,8,0)

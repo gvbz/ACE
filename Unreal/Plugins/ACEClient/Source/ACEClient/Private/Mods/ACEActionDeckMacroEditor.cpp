@@ -85,7 +85,7 @@ public:
                 .Text(FText::FromString(Editing?Slot.MacroText:TEXT("")))
                 .OnTextChanged_Lambda([this](const FText&){Error.Empty();})
                 .HintText(FText::FromString(TEXT("/hom\n/wait 30000\n/f I'm home.")))]];
-        Body->AddSlot().AutoHeight().Padding(0,4)[Label(TEXT("/wait uses milliseconds: 1000 = 1 second, 30000 = 30 seconds."),12)];
+        Body->AddSlot().AutoHeight().Padding(0,4)[Label(TEXT("/wait 1000 pauses for one second."),12)];
         auto Delay=SNew(SHorizontalBox);
         Delay->AddSlot().FillWidth(1).VAlign(VAlign_Center)[Label(TEXT("Extra delay between commands (ms)"),12)];
         Delay->AddSlot().AutoWidth()[SNew(SBox).WidthOverride(120)[SNew(SACEPluginSpinBox<int32>).Tag(TEXT("ActionDeck.Macro.Delay"))
@@ -95,7 +95,7 @@ public:
         Body->AddSlot().AutoHeight().Padding(0,6)[SNew(SBox).HeightOverride(38)
             [SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",12)).AutoWrapText(true)
                 .ColorAndOpacity(FLinearColor(1,.8f,.45f)).Text_Lambda([this]{return FText::FromString(Error.IsEmpty()
-                    ?TEXT("Save assigns this slot. Click it or use its hotkey with Override on to run. Only one macro runs at a time."):Error);})]];
+                    ?TEXT("Run the saved macro from its slot or override hotkey. One macro can run at a time."):Error);})]];
         auto Footer=SNew(SHorizontalBox);
         Footer->AddSlot().FillWidth(1);
         Footer->AddSlot().AutoWidth().Padding(0,0,8,0)[Button(TEXT("Cancel"),TEXT("ActionDeck.Macro.Cancel"),[this]{Deck->CloseMacroEditor();})];

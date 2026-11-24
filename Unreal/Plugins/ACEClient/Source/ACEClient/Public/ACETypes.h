@@ -940,7 +940,7 @@ struct ACECLIENT_API FACESkillInfo
 	/** 0 Inactive, 1 Untrained, 2 Trained, 3 Specialized (ACE SkillAdvancementClass). */
 	UPROPERTY(BlueprintReadOnly, Category = "ACE") int32 AdvancementClass = 0;
 	UPROPERTY(BlueprintReadOnly, Category = "ACE") int32 Current = 0;
-	/** Retail raw value, also used for base-skill equipment requirements. */
+	/** Retail raw skill value before post-enchantment augmentation bonuses. */
 	UPROPERTY(BlueprintReadOnly, Category = "ACE") int32 Base = 0;
 	/** Permanent gains applied after enchantment/vitae math, not included in Base. */
 	UPROPERTY(BlueprintReadOnly, Category = "ACE") int32 UnscaledAugmentationBonus = 0;

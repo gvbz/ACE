@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
+using Microsoft.Extensions.Logging;
+
+using ACE.Common.Logging;
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
 using ACE.Server.Network.Enum;
-using log4net;
 
 namespace ACE.Server.Network.Structure
 {
@@ -15,7 +17,7 @@ namespace ACE.Server.Network.Structure
     /// </summary>
     public class RawMotionState
     {
-        private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        private static readonly ILogger log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
         public static RawMotionState None = new RawMotionState();
 
@@ -144,6 +146,16 @@ namespace ACE.Server.Network.Structure
         public override string ToString()
         {
             return ToString(true);
+        }
+
+        public bool HasTranslation()
+        {
+            // An omitted speed defaults to 1 on the wire. A VR stick can send
+            // a direction with an explicit zero speed on either axis.
+            return ((ForwardCommand is MotionCommand.WalkForward or MotionCommand.WalkBackwards or MotionCommand.RunForward)
+                    && ((Flags & RawMotionFlags.ForwardSpeed) == 0 || ForwardSpeed != 0))
+                || ((SidestepCommand is MotionCommand.SideStepLeft or MotionCommand.SideStepRight)
+                    && ((Flags & RawMotionFlags.SideStepSpeed) == 0 || SidestepSpeed != 0));
         }
 
         public bool HasMovement()

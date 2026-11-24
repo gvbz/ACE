@@ -261,6 +261,18 @@
       "data",
       "client_messaging"
     ],
+    "native_panel": {"combat_controls":"API 2 automation with policy ucm; edits the owning plugin profile and controls its driver"},
+    "policy_services": {
+      "crafting": {"permission":"inventory","snapshot":"crafting.candidates","action":"craft","fields":["recipe","phase"],"confirmation_permission":"confirm"},
+      "services_profile": "Effective crafting and fellowship settings for the active driver",
+      "fellowship_tells": {"permissions":["fellowship","say","chat"],"requires":"auto_fellowship"},
+      "waypoint": "HUD arrow available with or without the Waypoint atlas"
+    },
+    "ledger_snapshots": {
+      "hunt_ledger": ["elapsed_seconds", "xp", "luminance", "xp_last_five_minutes", "luminance_last_five_minutes"],
+      "supply_ledger": ["name", "wcid", "count", "icon", "overlay", "underlay", "effects", "item_type"],
+      "companion_permission": "data"
+    },
     "policy_modules": [
       "ucm",
       "itemtools"
@@ -405,6 +417,7 @@
       "notice": [
         "show"
       ],
+      "resources": ["read"],
       "sound": ["play"],
       "log": [
         "append",
@@ -568,8 +581,10 @@
         "permission": "inventory",
         "fields": [
           "item",
-          "target"
-        ]
+          "target",
+          "placement"
+        ],
+        "notes": "Automation. Move a whole carried or open-storage item between the main pack (player GUID), side packs and the currently open external container or its packs. Optional nonnegative integer placement inserts into the item or pack list after removal, clamped to the end, with auto-merge disabled. Omit placement for normal whole-stack auto-merge or insertion at zero. Confirm through server inventory updates. Inventory, contents and external_pack_contents rows expose direct container and zero-based placement (-1 if unknown)."
       },
       "give": {
         "permission": "inventory",
@@ -856,6 +871,7 @@
       "confirmations",
       "container",
       "container_is_corpse",
+      "external_pack_contents",
       "contents",
       "contents_ready",
       "cooldowns",

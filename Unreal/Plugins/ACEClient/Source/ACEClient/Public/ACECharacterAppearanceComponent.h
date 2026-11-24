@@ -46,6 +46,7 @@ public:
 	void SetTurnInput(float Turn);
 	bool IsMovementLockedByAction() const;
 	bool HasPendingCombatForwardMotion() const;
+	bool HasPendingCastForwardMotion() const;
 	FTransform AdvanceWalkingMotion(float Dt, float& CycleSeconds);
 	void SetRemoteWalkingFrame(const ACEWalkingMotion::FLink& Link, float CycleSeconds, bool bHadTransition, float CycleTime = -1.f);
 	bool HasWalkingTransition() const { return WalkingMotion.HasPending(); }
@@ -114,6 +115,7 @@ public:
 		bool bLeftTracked, bool bRightTracked, float Dt);
 	void ResetVRLowerBody() { bVRLowerBodyReady = false; VRGaitTime = VRGaitBlend = 0.f; VRTorsoAngles = FVector::ZeroVector; }
 private:
+	bool UsesClassicCasting() const;
 	FVector VRTorsoAngles = FVector::ZeroVector;
 	bool bVRLowerBodyReady = false;
 	FVector VRPreviousBodyLocation = FVector::ZeroVector;

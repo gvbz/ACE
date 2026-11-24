@@ -6,6 +6,7 @@
 #include "ACEPlaySessionRedirect.h"
 #include "ACERenderAudit.h"
 #include "ACEFrameDiagnostics.h"
+#include "Mods/ACEPluginSubsystem.h"
 #include "ACETerrainPresenterComponent.h"
 #include "Dat/ACEEnvCellMeshBuilder.h"
 #include "ACELandblockActor.h"
@@ -80,7 +81,8 @@ public:
    return;
   }
   const FString Scene=Args.Num()?Args[0]:TEXT("outdoor");
-  if(Scene!=TEXT("outdoor") && Scene!=TEXT("indoor") && Scene!=TEXT("effects") && Scene!=TEXT("caul") && Scene!=TEXT("swarm") && Scene!=TEXT("wasps") && Scene!=TEXT("frozen") && Scene!=TEXT("frozen-tuskers") && Scene!=TEXT("glenden") && Scene!=TEXT("facility"))return;
+  const bool bCaulTower=Scene==TEXT("caul-tower");
+  if(Scene!=TEXT("outdoor") && Scene!=TEXT("indoor") && Scene!=TEXT("effects") && Scene!=TEXT("caul") && !bCaulTower && Scene!=TEXT("swarm") && Scene!=TEXT("wasps") && Scene!=TEXT("frozen") && Scene!=TEXT("frozen-tuskers") && Scene!=TEXT("glenden") && Scene!=TEXT("facility"))return;
   UE_LOG(LogTemp,Display,TEXT("ACE PerfScene preparing %s"),*Scene);
   // The login path intentionally defers cell DAT indexing. This offline setup
   // phase is outside the timed sample and needs both databases immediately.
@@ -91,6 +93,11 @@ public:
   FACEPosition Spawn;Spawn.CellId=0x7D640001;Spawn.Location=FVector(100,100,0);
   // Dense authored ambient particles at the landblock captured on Quest.
   if(Scene==TEXT("caul"))Spawn.CellId=0x09050001;
+  if(bCaulTower)
+  {
+   Spawn.CellId=0x0909000B;Spawn.Location=FVector(40.174632,71.359301,14.006000);
+   Spawn.RotationW=.829232f;Spawn.RotationXYZ=FVector(0,0,.558905);
+  }
   if(Scene==TEXT("frozen") || Scene==TEXT("frozen-tuskers"))
   {
    // 83.7N, 4.5W: use the reported location, with authored region scenery.
@@ -166,7 +173,8 @@ public:
    Dat->GetOrBuildLandblockMesh(Spawn.CellId & 0xFFFF0000,100);
    const FVector P=Spawn.ToUnrealLocation(100);float Z=0;
    if(!Dat->SampleOutdoorGroundZ(P.X,P.Y,100,Z))return;
-   Spawn.Location.Z=Z/100;Spawn.NormalizeOutdoorLandblock();
+   if(!bCaulTower)Spawn.Location.Z=Z/100;
+   Spawn.NormalizeOutdoorLandblock();
   }
   Session->PlayerGuid=0x7100F000;Session->PlayerPosition=Spawn;
   FACEWorldObject Self;Self.Guid=Session->PlayerGuid;Self.Name=TEXT("Offline performance fixture");
@@ -181,7 +189,10 @@ public:
   // A static camera benchmark has no walking input. Keep the reported cell
   // while the asynchronous dungeon loads instead of predicting a fall in it.
   if(Scene==TEXT("wasps") || Scene==TEXT("glenden") || Scene==TEXT("facility"))PC->bSyncPossessedPawn=false;
-  int32 Count=(Scene==TEXT("frozen") || Scene==TEXT("facility"))?0:Scene==TEXT("frozen-tuskers")?12:Scene==TEXT("swarm")?64:(Scene==TEXT("indoor") || Scene==TEXT("glenden"))?8:32;
+  int32 Count=(Scene==TEXT("frozen") || Scene==TEXT("facility") || bCaulTower)?0:Scene==TEXT("frozen-tuskers")?12:Scene==TEXT("swarm")?64:(Scene==TEXT("indoor") || Scene==TEXT("glenden"))?8:32;
+  FString CaulPolicy;
+  if(bCaulTower)FParse::Value(FCommandLine::Get(),TEXT("ACEPerfCaulUCM="),CaulPolicy);
+  if(bCaulTower && (!CaulPolicy.IsEmpty() || FParse::Param(FCommandLine::Get(),TEXT("ACEPerfCaulCrowd"))))Count=112;
   Run->bCrowdMotion=FParse::Param(FCommandLine::Get(),TEXT("ACEPerfCrowdMotion"));
   if(Scene==TEXT("wasps") || (Scene==TEXT("glenden") && Run->bCrowdMotion))
   {
@@ -201,6 +212,24 @@ public:
   {
    FACEWorldObject NPC=Self;NPC.Guid+=I+1;NPC.bIsSelf=false;NPC.bIsPlayer=false;
    NPC.Position.Location+=FVector(3+(I%8)*1.4,(I/8-1.5)*1.4,0);
+   if(bCaulTower)
+   {
+    // Size and setups from the 0909000B slow-frame log. Placement is synthetic.
+    const bool bWretched=(I%2)==0;
+    NPC.Name=bWretched?TEXT("Wretched"):TEXT("Void Knight");
+    NPC.SetupId=bWretched?0x0200071B:0x02000001;
+    NPC.MotionTableId=bWretched?0x09000093:0x09000001;
+    NPC.PhysicsState=ACEPhysicsState::Gravity;
+    NPC.ObjectDescriptionFlags=ACEObjectDescFlag::Attackable;
+    NPC.Position.Location=Spawn.Location+FVector((I%14-6.5)*5.,(I/14-3.5)*7.,0);
+    if(I>=80)
+    {
+     NPC.Name=TEXT("Corpse of ")+NPC.Name;
+     NPC.ItemType=ACEItemType::Container;
+     NPC.ObjectDescriptionFlags=ACEObjectDescFlag::Corpse|ACEObjectDescFlag::Openable;
+     NPC.InitialMotionCommand=ACEMotion::Dead;
+    }
+   }
    if(Scene==TEXT("frozen-tuskers"))ACEPerfApplySnowTusker(NPC);
    if(Scene==TEXT("swarm"))
    {
@@ -225,6 +254,31 @@ public:
    }
    Session->WorldObjects.Add(NPC.Guid,NPC);Client->OnObjectCreated.Broadcast(NPC);
    if(Scene==TEXT("frozen-tuskers"))Run->SnowCreatures.Add(NPC);
+  }
+  if(!CaulPolicy.IsEmpty())
+  {
+   auto* Host=World->GetGameInstance()->GetSubsystem<UACEPluginSubsystem>();
+   const auto* Stock=Host->Plugins.FindByPredicate([](const auto& Entry){return Entry->bBundledUCM;});
+   if(!Stock || (CaulPolicy!=TEXT("baseline") && CaulPolicy!=TEXT("optimized")))
+   {UE_LOG(LogTemp,Error,TEXT("Caul policy benchmark requires bundled UCM and baseline or optimized."));return;}
+   auto& V=Session->PlayerVitals;V.bValid=true;V.Level=275;
+   V.Health=V.MaxHealth=V.Stamina=V.MaxStamina=V.Mana=V.MaxMana=500;
+   for(int32 Id=1;Id<7000 && Session->KnownSpells.Num()<2048;++Id)
+   {FString Name;uint32 Icon=0;if(Dat->TryGetSpellInfo(Id,Name,Icon))Session->KnownSpells.Add(Id);}
+   for(int32 I=0;I<512;++I)
+   {
+    FACEWorldObject Item;Item.Guid=0x71001000+I;Item.ContainerId=Self.Guid;
+    Item.Name=TEXT("Fixture armor");Item.ItemType=ACEItemType::Armor;Item.WeenieClassId=100+I;
+    Session->WorldObjects.Add(Item.Guid,Item);
+   }
+   // Exercise real stationary policy decisions with an in-memory idle profile.
+   auto P=*Stock;P->ProfileLinks.Reset();P->Profile=MakeShared<FJsonObject>();P->Enabled=true;
+   P->Profile->SetStringField(TEXT("combat"),TEXT("off"));
+   for(const TCHAR* Key:{TEXT("buffing"),TEXT("recovery"),TEXT("looting"),TEXT("navigation"),TEXT("idle_peace"),TEXT("item_mana")})
+    P->Profile->SetBoolField(Key,false);
+   P->bBundledUCM=CaulPolicy==TEXT("optimized");
+   if(!Host->Start(P->Id)){UE_LOG(LogTemp,Error,TEXT("Caul policy fixture failed: %s"),*Host->Notice);return;}
+   UE_LOG(LogTemp,Display,TEXT("Caul policy fixture: %s, %d spells, 512 items"),*CaulPolicy,Session->KnownSpells.Num());
   }
   if(!Run->Wasps.IsEmpty() && FParse::Param(FCommandLine::Get(),TEXT("ACEPerfNetworkLag")))
   {
@@ -255,7 +309,7 @@ public:
   }
   Run->Camera=World->SpawnActor<ACameraActor>();
   const FVector Center=Spawn.ToUnrealLocation(100);
-  const FVector Forward=FACEPosition::AceVectorToUnreal(FVector(Scene==TEXT("wasps")?-1:1,0,0),1);
+  const FVector Forward=bCaulTower?Spawn.GetAceForwardVector():FACEPosition::AceVectorToUnreal(FVector(Scene==TEXT("wasps")?-1:1,0,0),1);
   // The standalone fixture has a full desktop avatar. An eye at its head clips
   // through the model and hides much of the measured scene. Keep outdoor runs
   // behind/above it, looking over the synthetic crowd. The indoor eye sits
@@ -770,7 +824,7 @@ private:
  }
 };
 static FAutoConsoleCommandWithWorldAndArgs GACEPerfScene(TEXT("ace.PerfScene"),
- TEXT("Disconnected development benchmark: outdoor, indoor, glenden (dungeon camera sweep), facility (Hub stairs/room replay), effects, caul, swarm, wasps (idle/cast/stop/death), frozen or frozen-tuskers (spawn/death/corpse cycles). Writes Saved/Performance after 75 seconds (wasps: 105). -ACEPerfCleanView hides HUD; -ACEPerfResolution=WxH overrides 1920x1080. Wasps: -ACEPerfPlayerMotion exercises keyboard movement/jumps, -ACEPerfWaspCount=32 (1-128), -ACEPerfVolleyInterval=3 (.5-3 seconds), -ACEPerfVolleyWasps limits each staggered volley, -ACEPerfCastingSeconds runs sustained casts instead of phases. -ACEPerfCombatChat floods combat messages; -ACEPerfConfigPanel opens Options."),
+ TEXT("Disconnected development benchmark: outdoor, indoor, glenden (dungeon camera sweep), facility (Hub stairs/room replay), effects, caul, caul-tower (stationary at 0909000B; -ACEPerfCaulCrowd adds 80 creatures and 32 corpses; -ACEPerfCaulUCM=baseline or optimized includes the crowd and stationary UCM workload), swarm, wasps (idle/cast/stop/death), frozen or frozen-tuskers (spawn/death/corpse cycles). Writes Saved/Performance after 75 seconds (wasps: 105). -ACEPerfCleanView hides HUD; -ACEPerfResolution=WxH overrides 1920x1080. Wasps: -ACEPerfPlayerMotion exercises keyboard movement/jumps, -ACEPerfWaspCount=32 (1-128), -ACEPerfVolleyInterval=3 (.5-3 seconds), -ACEPerfVolleyWasps limits each staggered volley, -ACEPerfCastingSeconds runs sustained casts instead of phases. -ACEPerfCombatChat floods combat messages; -ACEPerfConfigPanel opens Options."),
  FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&FACEPerformanceScene::Start));
 #endif
 

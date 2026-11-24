@@ -159,7 +159,7 @@ bool FACEUCMLootBuilderTest::RunTest(const FString&)
             Frame();Frame();auto W=Find(Panel,Tag);if(!TestTrue(Tag,W.IsValid()))return false;auto Combo=StaticCastSharedPtr<SComboButton>(W);Combo->SetIsOpen(true);Frame();auto Menu=Combo->GetMenuWindow();
             if(!TestTrue(TEXT("Menu opens"),Menu.IsValid()))return false;auto Entry=Find(Menu.ToSharedRef(),FName(*(FString(TEXT("UCMMenu."))+Caption)));if(!TestTrue(Caption,Entry.IsValid()))return false;StaticCastSharedPtr<SButton>(Entry)->SimulateClick();return true;
         };
-        if(!Click(TEXT("UCMLootTool.New"))||!Click(TEXT("UCMLootTool.Weapon type")))return false;
+        if(!Click(TEXT("UCMLootTool.New rule"))||!Click(TEXT("UCMLootTool.Weapon type")))return false;
         auto Unarmed=StaticCastSharedPtr<SCheckBox>(Find(Panel,TEXT("UCMLootValue.1")));if(!TestTrue(TEXT("Unarmed checkbox exists"),Unarmed.IsValid()))return false;Unarmed->ToggleCheckedState();
         if(!Click(TEXT("UCMChoice.Apply requirement"))||!Click(TEXT("UCMLootTool.New requirement")))return false;
         if(!Choose(TEXT("UCMLootType"),TEXT("Text / name"))||!Choose(TEXT("UCMLootTextMode"),TEXT("OR - any text separated by |")))return false;

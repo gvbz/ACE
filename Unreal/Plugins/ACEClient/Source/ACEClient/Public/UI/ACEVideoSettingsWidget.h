@@ -85,6 +85,8 @@ private:
  UPROPERTY() TObjectPtr<UCheckBox> InvertMouseX;
  UPROPERTY() TObjectPtr<UCheckBox> InvertMouseY;
  UPROPERTY() TObjectPtr<UCheckBox> ToggleMouseLook;
+ UPROPERTY() TObjectPtr<UCheckBox> ClassicMovement;
+ UPROPERTY() TObjectPtr<UCheckBox> StationaryMissileAttacks;
  UPROPERTY() TObjectPtr<UComboBoxString> DesktopScale;
  UPROPERTY() TObjectPtr<USlider> CursorScale;
  UPROPERTY() TObjectPtr<UTextBlock> CursorScaleLabel;

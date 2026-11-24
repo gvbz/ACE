@@ -1,24 +1,17 @@
-# AC:Unreal / AC:VR release 164
+# AC:Unreal / AC:VR release 166
 
-Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.23.164**.
+Windows desktop, PC VR, native Linux, standalone Quest, and the Android phone and tablet preview share version **2026.11.24.166**.
 
-## Waypoint
+## Plugin Manager
 
-- **Browse XML file** opens the atlas file picker. **Search locations** opens the imported GoArrow or CoD atlas from NAV or the full map.
-- **Find route** opens a separate desktop **Waypoint Route** window with clickable steps. Use **Show route** to reopen your directions while the route is active.
+- Open **Plugin Manager** on the account screen to browse official and community plugins, view the developer and repository, and install the ones you want. Update one plugin or use **Update all**.
+- Fresh installs start with an empty plugin list. Existing installations with a recognized previous profile can restore their previously bundled plugins. Uninstalling a managed plugin keeps its saved profiles.
+- Developers can register a GitHub repository once in [ACUnrealPlugins](https://github.com/Thwargle/ACUnrealPlugins). The catalog checks for new published packages hourly.
+- Pack-management plugins can move items between the main pack, side packs, and open external storage, including its accessible side packs. Plugins can choose a placement slot.
 
-## UCM
+## Display and combat
 
-- Enable **Craft ammunition from bundles** and set a minimum stock level for your launcher. Crafting uses the matching bundled components and requires trained Fletching.
-- A clear return path lets UCM rejoin its navigation route directly after combat. Edit stored route points while navigation is active.
-- Buff maintenance checks active combat and remaining enchantment time, including equipment banes.
-- UCM continues running in the background. **Play Audio in Background** in Sound Options controls whether game sounds stay audible while alt-tabbed.
-
-## Inventory, housing, and graphics
-
-- Pickup tries whole-stack merges and uses retail pack order. Grid moves preserve the requested slot even while item details are arriving.
-- Item Tools proceeds to the next merge as soon as it observes the inventory change. Reduced armor uses its current slot coverage.
-- The House tab shows coordinates. **Max Fog Distance** controls the far fog limit, with a softer horizon band when Far Terrain Horizon is enabled.
-- Vendor purchases and restocking account for the quoted alternate-currency balance. Hooked items and entrance lighting use the expected interior materials.
-
-The README and Lua plugin documentation have been shortened. Players supply their own retail data. See the release verification record for the automated checks.
+- Resize the Waypoint direction arrow by dragging its corner with the interface unlocked.
+- Desktop display options support 32:9 ultrawide screens.
+- Enable **Stand still to shoot** to require a stop before firing a missile weapon. Turning in place still works. ACE server operators can enforce this with the optional `missile_block_while_moving` property in the updated server.
+- Improve selection and combat sight for small creatures at the waterline, including Bog Moars. Movement releases during an interaction also reach the server when movement resumes.

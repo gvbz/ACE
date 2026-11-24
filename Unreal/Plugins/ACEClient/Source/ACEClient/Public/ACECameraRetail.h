@@ -66,7 +66,10 @@ namespace ACECameraRetail
 	inline float HorizontalFovDegrees(float AspectWH, float GameFovDegrees = 90.f)
 	{
 		const float Aspect = FMath::Max(AspectWH, 0.2f);
-		const float Denom = FMath::Max(Aspect - 0.1f, 0.2f);
+		// Keep the retail lens through 3840x1600. On wider desktops hold that
+		// vertical framing and let the extra width extend the horizontal view.
+		constexpr float WidestRetailAspect = 3840.f / 1600.f;
+		const float Denom = FMath::Max(FMath::Min(Aspect, WidestRetailAspect) - 0.1f, 0.2f);
 		// Apply the preference before converting retail's vertical projection
 		// to Unreal's horizontal FOV. Scaling the result changes the lens curve.
 		const float VRad = FMath::DegreesToRadians(FMath::Clamp(GameFovDegrees / Denom, 1.f, 179.f));

@@ -237,6 +237,7 @@ bool FACESession::GetVRSpellProfile(int32 Spell, float& Speed, bool& Gravity, fl
 bool FACESession::SendVRCombat(uint32 Kind, uint32 Cell, int32 Weapon, int32 Subject, int32 Target,
 	const FVector& OriginAc, const FVector& DirectionOrEndAc, float Amount, float Duration, float RequestedPower)
 {
+	if (Kind == 3 && IsMissileMovementBlocked()) return false;
 	if (State != EACESessionState::InWorld || !SupportsVRCombat() || Kind < 1 || Kind > 3
 		|| (Weapon == 0 && (Kind != 2 || !SupportsVRUnarmed() || Subject < 0 || Subject > 1))
 		|| OriginAc.ContainsNaN() || DirectionOrEndAc.ContainsNaN() || !FMath::IsFinite(Amount) || !FMath::IsFinite(Duration)

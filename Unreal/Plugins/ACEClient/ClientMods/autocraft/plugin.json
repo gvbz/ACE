@@ -1,1 +1,1 @@
-{"api":1,"id":"autocraft","name":"Auto Craft","short_name":"CRAFT","version":"1.0.0","description":"Search the crafting catalog, prepare ingredients and make a chosen quantity or the maximum available across your packs.","permissions":["inventory","confirm"]}
+{"api":1,"id":"autocraft","name":"Auto Craft","short_name":"CRAFT","version":"1.0.0","description":"Find recipes and craft a chosen quantity with ingredients from your packs.","permissions":["inventory","confirm"]}

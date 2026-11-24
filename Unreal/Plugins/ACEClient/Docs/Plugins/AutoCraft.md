@@ -1,9 +1,7 @@
 # Auto Craft
 
-Enable **Auto Craft** in **Plugin Manager**, then open its mortar-and-pestle icon
-on the plugin bar. It is independent of UCM and Item Tools. It uses the same
-movable, resizable, pinnable window and background-opacity settings as the other
-plugins. Disabling its manager checkbox also stops the job.
+Open **Auto Craft** from its mortar-and-pestle icon to run a crafting job independently
+of UCM. Disabling the plugin stops the job.
 
 Choose a **Category**, then an **Item**. Every dropdown has a search field: type
 words in any order to narrow its results, then click a result or press Enter for

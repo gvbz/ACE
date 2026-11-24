@@ -1,8 +1,11 @@
 using System;
 using System.Numerics;
 
+using ACE.Common.Logging;
 using ACE.Entity.Enum;
+using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
+using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Physics.Animation;
@@ -20,6 +23,30 @@ namespace ACE.Server.WorldObjects
         }
 
         public Creature MissileTarget;
+
+        private const string StationaryMissileMessage = "You can't shoot while moving.";
+
+        private bool MovementBlocksMissile(Vector3? aimPosition = null)
+        {
+            if (!PropertyManager.GetBool("missile_block_while_moving").Item)
+                return false;
+
+            if (PhysicsObj == null) return true; // Detached during the delayed aim/release.
+
+            // Legacy physics can advance the feet from position reports alone.
+            // A shot aimed from a different place must be drawn again.
+            if (aimPosition.HasValue)
+            {
+                var delta = Location.ToGlobal() - aimPosition.Value;
+                if (delta.X * delta.X + delta.Y * delta.Y > 0.01f) return true; // 10 cm
+            }
+
+            var move = PhysicsObj.MovementManager?.MoveToManager?.MovementType;
+            var travel = PhysicsObj.CachedVelocity;
+            return IsJumping || CurrentMoveToState?.RawMotionState?.HasTranslation() == true
+                || move is MovementType.MoveToObject or MovementType.MoveToPosition
+                || (FastTick && travel.X * travel.X + travel.Y * travel.Y > 0.0001f);
+        }
 
         public PowerAccuracy GetAccuracyRange()
         {
@@ -65,6 +92,13 @@ namespace ACE.Server.WorldObjects
             {
                 SendWeenieError(WeenieError.YouCantDoThatWhileInTheAir);
                 OnAttackDone();
+                return;
+            }
+
+            if (MovementBlocksMissile())
+            {
+                SendTransientError(StationaryMissileMessage);
+                if (!Attacking) OnAttackDone();
                 return;
             }
 
@@ -169,6 +203,13 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            if (MovementBlocksMissile())
+            {
+                SendTransientError(StationaryMissileMessage);
+                OnAttackDone();
+                return;
+            }
+
             if (!TargetInRange(target))
             {
                 // this must also be sent to actually display the transient message
@@ -189,7 +230,7 @@ namespace ACE.Server.WorldObjects
             }
 
             // launch animation
-            // point of no return beyond this point -- cannot be cancelled
+            // A normal cancel during the launch animation stops the next repeat.
             actionChain.AddAction(this, () => Attacking = true);
 
             if (subsequent)
@@ -226,9 +267,25 @@ namespace ACE.Server.WorldObjects
 
             var launchTime = EnqueueMotionPersist(actionChain, aimLevel);
 
-            // launch projectile
+            // Movement can start during Aim. Only a released shot consumes
+            // resources or starts the out-of-ammo, reload and repeat actions.
+            var afterLaunch = new ActionChain();
+            var aimPosition = Location.ToGlobal();
             actionChain.AddAction(this, () =>
             {
+                if (MovementBlocksMissile(aimPosition))
+                {
+                    if (CurrentMotionState.Stance == stance && CurrentMotionState.MotionState.ForwardCommand == aimLevel)
+                    {
+                        CurrentMotionState.SetForwardCommand(MotionCommand.Ready);
+                        EnqueueBroadcastMotion(CurrentMotionState);
+                    }
+                    SendTransientError(StationaryMissileMessage);
+                    Attacking = false;
+                    OnAttackDone();
+                    return;
+                }
+
                 // handle self-procs
                 TryProcEquippedItems(this, this, true, weapon);
 
@@ -243,12 +300,13 @@ namespace ACE.Server.WorldObjects
 
                 var projectile = LaunchProjectile(launcher, ammo, target, origin, orientation, velocity);
                 UpdateAmmoAfterLaunch(ammo);
+                afterLaunch.EnqueueChain();
             });
 
             // ammo remaining?
             if (!ammo.UnlimitedUse && (ammo.StackSize == null || ammo.StackSize <= 1))
             {
-                actionChain.AddAction(this, () =>
+                afterLaunch.AddAction(this, () =>
                 {
                     Session.Network.EnqueueSend(new GameEventCommunicationTransientString(Session, "You are out of ammunition!"));
                     SetCombatMode(CombatMode.NonCombat);
@@ -262,22 +320,22 @@ namespace ACE.Server.WorldObjects
 
             // reload animation
             var animSpeed = GetAnimSpeed();
-            var reloadTime = EnqueueMotionPersist(actionChain, stance, MotionCommand.Reload, animSpeed);
+            var reloadTime = EnqueueMotionPersist(afterLaunch, stance, MotionCommand.Reload, animSpeed);
 
             // reset for next projectile
-            EnqueueMotionPersist(actionChain, stance, MotionCommand.Ready);
+            EnqueueMotionPersist(afterLaunch, stance, MotionCommand.Ready);
             var linkTime = MotionTable.GetAnimationLength(MotionTableId, stance, MotionCommand.Reload, MotionCommand.Ready);
             //var cycleTime = MotionTable.GetCycleLength(MotionTableId, CurrentMotionState.Stance, MotionCommand.Ready);
 
-            actionChain.AddAction(this, () =>
+            afterLaunch.AddAction(this, () =>
             {
                 if (CombatMode == CombatMode.Missile)
                     EnqueueBroadcast(new GameMessageParentEvent(this, ammo, ACE.Entity.Enum.ParentLocation.RightHand, ACE.Entity.Enum.Placement.RightHandCombat));
             }); 
 
-            actionChain.AddDelaySeconds(linkTime);
+            afterLaunch.AddDelaySeconds(linkTime);
 
-            actionChain.AddAction(this, () =>
+            afterLaunch.AddAction(this, () =>
             {
                 Attacking = false;
 

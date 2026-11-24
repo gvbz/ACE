@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='utf-8'?>
+<catalog schema="1">
+  <plugin id="actiondeck" repository="https://github.com/Thwargle/ACE">
+    <name>Action Deck</name>
+    <developer>AC:Unreal</developer>
+    <description>Bind items, spells, attacks and chat macros to a movable bar with up to 48 slots.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.1.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/actiondeck.acplugin" sha256="9f4f9695990fbe04d88f75c3206bbf82c973ade552e60e492277b1cbb2e6b3e4" bytes="471" />
+  </plugin>
+  <plugin id="autocraft" repository="https://github.com/Thwargle/ACE">
+    <name>Auto Craft</name>
+    <developer>AC:Unreal</developer>
+    <description>Find recipes and craft a chosen quantity with ingredients from your packs.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.0.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/autocraft.acplugin" sha256="c04b40dcec6715c12408e92b0159ab491f505330fc898cbfbc57353738db864f" bytes="7847992" />
+  </plugin>
+  <plugin id="derethlens" repository="https://github.com/Thwargle/ACE">
+    <name>Dereth Lens</name>
+    <developer>AC:Unreal</developer>
+    <description>Highlight impassable terrain, show radar range and brighten dungeons.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.0.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/derethlens.acplugin" sha256="8f4c96240a139fbe8ab819e384bcf09f0be19751714b69e96419b0d89501dc74" bytes="5495" />
+  </plugin>
+  <plugin id="foundry" repository="https://github.com/Thwargle/ACE">
+    <name>Dereth Foundry</name>
+    <developer>AC:Unreal</developer>
+    <description>Import, edit and place ACE world content with server administrator tools.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.0.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/foundry.acplugin" sha256="bb1283a426b62e7b014b8e5b4f56bd6b205485df4a161059fb6a979f17258536" bytes="17653" />
+  </plugin>
+  <plugin id="huntledger" repository="https://github.com/Thwargle/ACE">
+    <name>Hunt Ledger</name>
+    <developer>AC:Unreal</developer>
+    <description>Track XP and luminance gains, hourly rates and estimated time to level.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.0.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/huntledger.acplugin" sha256="09a814e802f97df9d0364361e81b394f683f40d09924b3f7005601fa33a49630" bytes="303" />
+  </plugin>
+  <plugin id="itemtools" repository="https://github.com/Thwargle/ACE">
+    <name>Item Tools</name>
+    <developer>AC:Unreal</developer>
+    <description>Give items in bulk, merge stacks, open keyed chests and restock at vendors.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.1.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/itemtools.acplugin" sha256="6ef4d8c91642c7eac7934d935637e2aba3e0eabe98f61cd023c0fa65b25f876d" bytes="25479" />
+  </plugin>
+  <plugin id="looteditor" repository="https://github.com/Thwargle/ACE">
+    <name>Loot Profile Editor</name>
+    <developer>AC:Unreal</developer>
+    <description>Edit shared loot rules and review Virindi profile imports.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="0.1.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/looteditor.acplugin" sha256="c7c3b5d074415f59576b249533e2fe731631d1458f2981503d382fa2889acfd5" bytes="309" />
+  </plugin>
+  <plugin id="supplyledger" repository="https://github.com/Thwargle/ACE">
+    <name>Supply Ledger</name>
+    <developer>AC:Unreal</developer>
+    <description>Pin a counter for selected items across your packs.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.0.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/supplyledger.acplugin" sha256="a7ecc0fca02979a56fd175a83adfd03046b3ac151808f43e05ecd2376c3b80f3" bytes="283" />
+  </plugin>
+  <plugin id="thirdeye" repository="https://github.com/Thwargle/ACE">
+    <name>Third Eye</name>
+    <developer>AC:Unreal</developer>
+    <description>Watch nearby spawns by name, mark matches and receive chat or sound alerts.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="1.3.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/thirdeye.acplugin" sha256="a65d1efdd8d98191bc36700174e1eea6d38ea1acd839b6399ca749a92514b01a" bytes="124376" />
+  </plugin>
+  <plugin id="ucm" repository="https://github.com/Thwargle/ACE">
+    <name>Unattended Combat Manager</name>
+    <developer>AC:Unreal</developer>
+    <description>Automate combat, recovery, buffs, crafting, fellowship, routes and looting.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="0.7.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/ucm.acplugin" sha256="570b8c62ab26d2fe4f14c905cad0c5109a8e2f5ae6bef8a24e0b0d0173c88791" bytes="511546" />
+  </plugin>
+  <plugin id="ucmmicro" repository="https://github.com/Thwargle/ACE">
+    <name>UCM Micro</name>
+    <developer>AC:Unreal</developer>
+    <description>Run combat and recovery from a compact panel, or control the full UCM profile when installed and enabled.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="0.2.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/ucmmicro.acplugin" sha256="0869d82f0dfb3cfea722302e982c3540166998814f9583e31374e1d34d9a1516" bytes="3239" />
+  </plugin>
+  <plugin id="waypoint" repository="https://github.com/Thwargle/ACE">
+    <name>Waypoint</name>
+    <developer>AC:Unreal</developer>
+    <description>Search the included or imported atlas, plan portal routes and follow them on the minimap.</description>
+    <release tag="plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f" version="0.2.0" download="https://github.com/Thwargle/ACE/releases/download/plugins-ce22581cc78f4fa7a7bb67e5ed6e9dff6310d54f/waypoint.acplugin" sha256="dd81725c0bdffdfcfc9d0b1137174f8a903350194755f852c61f049dcad18cab" bytes="543037" />
+  </plugin>
+</catalog>

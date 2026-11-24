@@ -277,7 +277,7 @@ public:
         Toolbar->AddSlot().AutoWidth()[SNew(SACEPluginTab).ContentPadding(FMargin(FACEPluginStyle::CompactButtonPadding)).Tag(TEXT("ActionDeck.Override")).FontSize(12)
             .Selected_Lambda([this]{return Deck->Override;})
             .Text_Lambda([this]{return FText::FromString(Deck->Override?TEXT("Override: On"):TEXT("Override: Off"));})
-            .ToolTip(FACEPluginStyle::Tooltip(FText::FromString(TEXT("Reserve keys for assigned slots while this window is open. Empty slots use native hotbars; depleted or disabled assignments keep their keys. Typing always takes priority."))))
+            .ToolTip(FACEPluginStyle::Tooltip(FText::FromString(TEXT("Assigned slots keep their hotkeys while the deck is open, even when depleted. Empty slots use native hotbars. Typing takes priority."))))
             .OnClicked_Lambda([this]{Deck->Override=!Deck->Override;Deck->Save();return FReply::Handled();})];
         Toolbar->AddSlot().AutoWidth().Padding(4,0)[SNew(SACEPluginTab).ContentPadding(FMargin(FACEPluginStyle::CompactButtonPadding)).Tag(TEXT("ActionDeck.Lock")).FontSize(12)
             .Selected_Lambda([this]{return Host->IsPluginWindowPinned(TEXT("actiondeck"));})
@@ -397,7 +397,7 @@ private:
         Body->AddSlot().AutoHeight()[DeckLabel(TEXT("Native bars return when Action Deck is closed or disabled."),11)];
         Option(TEXT("ActionDeck.TargetTimers"),TEXT("Show target debuff and damage-over-time timers"),&UACEActionDeckSubsystem::ShowTargetTimers);
         Body->AddSlot().AutoHeight()[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",11)).AutoWrapText(true)
-            .Text(FText::FromString(TEXT("Estimated time remaining from your confirmed casts on the selected target. Other players' effects and early dispels are not reported by the server. You can still recast.")))];
+            .Text(FText::FromString(TEXT("Timers estimate your own confirmed casts. Early dispels can make them inaccurate.")))];
         Body->AddSlot().AutoHeight().Padding(0,3)[SNew(SBox)
             .Visibility_Lambda([this]{return Host->IsPluginWindowPinned(TEXT("actiondeck"))?EVisibility::Visible:EVisibility::Collapsed;})
             [Button(TEXT("Unlock window"),[this]{Host->SetPluginWindowPinned(TEXT("actiondeck"),false);})]];
@@ -423,7 +423,7 @@ private:
             .Text_Lambda([this]{return FText::FromString(FString::Printf(TEXT("Row %d · Slot %d: %s"),Deck->DisplayRow(Selected)+1,Selected%UACEActionDeckSubsystem::Columns+1,*Deck->SlotName(Selected)));})
             .AutoWrapText(true)];
         auto Binding=SNew(SHorizontalBox);
-        Body->AddSlot().AutoHeight()[DeckLabel(TEXT("Click a deck slot while settings are open, then click Key to rebind it."),11)];
+        Body->AddSlot().AutoHeight()[DeckLabel(TEXT("Select a slot, then choose its key."),11)];
         Binding->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,8,0)[DeckLabel(TEXT("Key"))];
         Binding->AddSlot().FillWidth(1)[SAssignNew(KeySelector,SInputKeySelector).Tag(TEXT("ActionDeck.Key")).AllowModifierKeys(true).AllowGamepadKeys(false)
             .SelectedKey_Lambda([this]{return Deck->EffectiveKey(Selected);})
@@ -452,7 +452,7 @@ private:
             Body->AddSlot().AutoHeight()[Attacks];
         }
         Body->AddSlot().AutoHeight().Padding(0,4)[SNew(SACEPluginText).Font(FACEPluginStyle::NativeFont("Regular",12))
-            .AutoWrapText(true).Text(FText::FromString(TEXT("Click a slot above to edit it. Drag inventory items, your main backpack to target self, or spells from the spellbook or spell bar. Drag between deck slots to swap. Settings pause deck actions; Override reserves assigned slots only.")))];
+            .AutoWrapText(true).Text(FText::FromString(TEXT("Drag items or spells onto slots, or drag between slots to swap. Drag your main backpack to target yourself. Deck actions pause while editing.")))];
         Body->AddSlot().AutoHeight()[Button(TEXT("Restore default keys"),[this]
         {
             Deck->RowModifiers[0]=1;Deck->RowModifiers[1]=2;Deck->RowModifiers[2]=0;Deck->RowModifiers[3]=4;
