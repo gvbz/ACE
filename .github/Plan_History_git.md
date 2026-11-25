@@ -1,4 +1,4 @@
-# Plan history (gvbz at e0ae3c2c with the Development Dashboard, Fog Colors by Weather and Smooth light direction, plus the macOS build, client v164, 2026.11.23.164)
+# Plan history (gvbz at f76d5bcf with the Development Dashboard, Fog Colors by Weather and Smooth light direction, plus the macOS build, client v166, 2026.11.24.166)
 
 How each change in this fork was built: files, settings, how it works, tests, measurements, what it depends on in Thwargle's client, and what is still open. One section per change, oldest first, then an idea that was tried and dropped. Screenshots of each change, on and off, are in [Comparisons.md](Comparisons.md).
 
@@ -908,3 +908,10 @@ Thwargle's release v164 (f5bf3592, 2026.11.23.164), merged into `gvbz` as e0ae3c
 
 - Two conflicts, next to the fog distance lines that both sides had: the fog color and light direction includes in `ACESkyDomeActor.cpp` and the fog color line in `ACELegionsSkyTests.cpp`. Both were resolved with the `gvbz` lines.
 - Under `Unreal/` the branch differs from Thwargle's `master` by the Development Dashboard (section 7), Fog Colors by Weather and Smooth light direction (sections 9 and 10) and the macOS build (section 11). The dashboard's marked lines are now `ACEPluginSubsystem.cpp` 470 and 475; the fog color lines in `ACEVideoSettingsWidget.cpp` are now 207 and 208.
+
+### v165 and v166
+
+Thwargle's releases v165 (edee68cb, 2026.11.23.165) and v166 (a14add62, 2026.11.24.166), with his test commit 7e0abbd3, merged into `gvbz` as f76d5bcf. No change to the fork's features.
+
+- One conflict: v166 moves the plugin manifest checks from `Discover()` into `ParsePluginManifest` in `ACEPluginSubsystem.cpp`. The Development Dashboard's two `dev_tools` lines moved with them (now lines 457 and 462).
+- v166 no longer packages or loads the bundled plugins; plugins come from the Plugin Manager or `Saved/ClientPlugins/Installed`. The Development Dashboard stays in `ClientMods/devdash`, where its tests find it; a packaged client gets a copy in `Saved/ClientPlugins/Installed/devdash`.

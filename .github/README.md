@@ -6,7 +6,7 @@ with a few added options. The original README is in the repository root.
 ## Branches
 
 - `master` matches Thwargle's repository.
-- `gvbz` has the changes below, on top of client v164 (2026.11.23.164). The v158 changes are part of Thwargle's client since v159 (pull request #1), and Max Fog Distance with the Far Terrain Horizon band since v164 (pull request #2), with his later changes.
+- `gvbz` has the changes below, on top of client v166 (2026.11.24.166). The v158 changes are part of Thwargle's client since v159 (pull request #1), and Max Fog Distance with the Far Terrain Horizon band since v164 (pull request #2), with his later changes.
 
 ## Changes in v163
 
@@ -58,6 +58,7 @@ Max Fog Distance and Far Terrain Horizon were sent to Thwargle in pull request #
   saved), and an Admin tab with server admin commands, saved locations,
   place suggestions and map coordinates, for a server where the
   character is an admin. It uses a new plugin service `dev`.
+  Since client v166, bundled plugins are not packaged; for a packaged client, copy the `devdash` folder into its `Saved/ClientPlugins/Installed` folder.
 
 How each change was built: [Plan_History_git.md](Plan_History_git.md)
 
